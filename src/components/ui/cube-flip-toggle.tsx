@@ -34,6 +34,12 @@ export function CubeFlipToggle({
       className="group/flip relative h-7 w-[74px] shrink-0 cursor-pointer border-0 bg-transparent p-0"
       style={{ perspective: '600px' }}
     >
+      {/* Invisible hover buffer, slightly larger than the visible faces —
+          without it, the mouse sitting right at the button's edge can
+          flicker in and out of :hover (likely due to the 3D-rotated face's
+          painted extent shifting near the boundary during the transition),
+          which retriggers the flip animation repeatedly. */}
+      <span aria-hidden="true" className="absolute -inset-2" />
       <span
         className="absolute inset-0 [transform:rotateX(0deg)] group-hover/flip:[transform:rotateX(-90deg)] motion-reduce:transition-none"
         style={{

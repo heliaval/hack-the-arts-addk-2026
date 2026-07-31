@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Globe } from '@/components/ui/cobe-globe'
 import type { CountryDemographics } from '@/lib/worldbank'
 import { LANGUAGES, type Lang } from '@/lib/lang'
@@ -177,17 +177,6 @@ const CITIES = [
     pt: 'Cairo',
   },
   {
-    id: 'city-lagos',
-    location: [6.5244, 3.3792] as [number, number],
-    en: 'Lagos',
-    zh: '拉各斯',
-    ja: 'ラゴス',
-    ko: '라고스',
-    fr: 'Lagos',
-    es: 'Lagos',
-    pt: 'Lagos',
-  },
-  {
     id: 'city-mexicocity',
     location: [19.4326, -99.1332] as [number, number],
     en: 'Mexico City',
@@ -208,17 +197,6 @@ const CITIES = [
     fr: 'Toronto',
     es: 'Toronto',
     pt: 'Toronto',
-  },
-  {
-    id: 'city-singapore',
-    location: [1.3521, 103.8198] as [number, number],
-    en: 'Singapore',
-    zh: '新加坡',
-    ja: 'シンガポール',
-    ko: '싱가포르',
-    fr: 'Singapour',
-    es: 'Singapur',
-    pt: 'Singapura',
   },
   {
     id: 'city-seoul',
@@ -253,30 +231,115 @@ const CITIES = [
     es: 'Estambul',
     pt: 'Istambul',
   },
+  // Lagos and Singapore are deliberately last (indices 18/19) — they're the
+  // endpoints of the last two arc routes below, so those routes only
+  // appear once their cities have entered the slider's visible slice, and
+  // the 4th route only appears at the slider's max.
+  {
+    id: 'city-lagos',
+    location: [6.5244, 3.3792] as [number, number],
+    en: 'Lagos',
+    zh: '拉各斯',
+    ja: 'ラゴス',
+    ko: '라고스',
+    fr: 'Lagos',
+    es: 'Lagos',
+    pt: 'Lagos',
+  },
+  {
+    id: 'city-singapore',
+    location: [1.3521, 103.8198] as [number, number],
+    en: 'Singapore',
+    zh: '新加坡',
+    ja: 'シンガポール',
+    ko: '싱가포르',
+    fr: 'Singapour',
+    es: 'Singapur',
+    pt: 'Singapura',
+  },
 ]
 export const MIN_CITY_COUNT = 9
 export const MAX_CITY_COUNT = CITIES.length
 
 const CITY_MARKER_SIZE = 0.025
 
-// Fixed to the original first-4 cities (always present, since cityCount's
-// minimum is 9) so the two demo arcs never reference a sliced-out city.
-const ARC_ROUTES = [
-  { id: 'sf-tokyo', from: CITIES[0], to: CITIES[2] },
-  { id: 'nyc-london', from: CITIES[1], to: CITIES[3] },
-  { id: 'dubai-sydney', from: CITIES[6], to: CITIES[4] },
-  { id: 'capetown-saopaulo', from: CITIES[5], to: CITIES[8] },
+// Each route only appears once both its cities have entered the city-count
+// slider's visible slice (`cityCount >= requiredCityCount`) — routes
+// "propagate" in as the slider grows rather than all being fixed/always-on.
+// Lagos and Singapore are deliberately the last two entries in CITIES, so
+// the 4th route only appears at the slider's max.
+const CITY_INDEX = new Map(CITIES.map((city, i) => [city.id, i]))
+function cityById(id: string) {
+  return CITIES.find((c) => c.id === id)!
+}
+const ARC_ROUTE_DEFS = [
+  { id: 'sf-tokyo', fromId: 'city-sf', toId: 'city-tokyo' },
+  { id: 'nyc-london', fromId: 'city-nyc', toId: 'city-london' },
+  { id: 'saopaulo-lagos', fromId: 'city-saopaulo', toId: 'city-lagos' },
+  { id: 'dubai-singapore', fromId: 'city-dubai', toId: 'city-singapore' },
 ]
-
-// Variant arrays ordered to match LANGUAGES — only `activeLabelIndex` moves
-// on language change, which animates the swap via TextRotate instead of an
-// instant text replace.
-const ARCS = ARC_ROUTES.map((route) => ({
-  id: route.id,
-  from: route.from.location,
-  to: route.to.location,
-  label: LANGUAGES.map((l) => `${route.from[l]} → ${route.to[l]}`),
+const ARC_ROUTES = ARC_ROUTE_DEFS.map((def) => ({
+  id: def.id,
+  from: cityById(def.fromId),
+  to: cityById(def.toId),
+  requiredCityCount: Math.max(CITY_INDEX.get(def.fromId)!, CITY_INDEX.get(def.toId)!) + 1,
 }))
+
+const ARC_DRAW_DURATION_MS = 900
+function easeOutCubic(t: number) {
+  return 1 - (1 - t) ** 3
+}
+// Straight-line lerp in lat/lng space, not a true great-circle slerp — cobe
+// still draws a proper great-circle bulge between `from` and whatever `to`
+// we hand it each frame, so the arc still reads as smoothly extending
+// toward its real destination without needing 3D vector math here.
+function interpolateLocation(
+  from: [number, number],
+  to: [number, number],
+  t: number,
+): [number, number] {
+  return [from[0] + (to[0] - from[0]) * t, from[1] + (to[1] - from[1]) * t]
+}
+
+// Tracks, per route id, how long it's been visible — routes that just
+// became visible animate their `to` endpoint in from `from` over
+// ARC_DRAW_DURATION_MS so the flight line appears to "draw" itself rather
+// than popping in fully formed.
+function useArcDrawProgress(visibleIds: string[]) {
+  const [, forceRender] = useState(0)
+  const startTimes = useRef(new Map<string, number>())
+  const prevIds = useRef<string[]>([])
+  const idsKey = visibleIds.join(',')
+
+  useEffect(() => {
+    const newlyVisible = visibleIds.filter((id) => !prevIds.current.includes(id))
+    prevIds.current = visibleIds
+    if (newlyVisible.length === 0) return
+
+    const now = performance.now()
+    for (const id of newlyVisible) startTimes.current.set(id, now)
+
+    let rafId: number
+    function tick() {
+      let animating = false
+      const t = performance.now()
+      for (const start of startTimes.current.values()) {
+        if (t - start < ARC_DRAW_DURATION_MS) animating = true
+      }
+      forceRender((n) => n + 1)
+      if (animating) rafId = requestAnimationFrame(tick)
+    }
+    rafId = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(rafId)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [idsKey])
+
+  return (id: string) => {
+    const start = startTimes.current.get(id)
+    if (start == null) return 1
+    return easeOutCubic(Math.min(1, (performance.now() - start) / ARC_DRAW_DURATION_MS))
+  }
+}
 
 export function GlobeView({
   demographics,
@@ -305,12 +368,33 @@ export function GlobeView({
     [cityCount],
   )
 
+  const visibleRoutes = useMemo(
+    () => ARC_ROUTES.filter((route) => cityCount >= route.requiredCityCount),
+    [cityCount],
+  )
+  const drawProgress = useArcDrawProgress(visibleRoutes.map((r) => r.id))
+
+  // Deliberately not memoized on visibleRoutes alone — drawProgress changes
+  // every animation frame while a route is mid-draw, and each frame needs a
+  // fresh arcs array for cobe-globe's liveProps loop to pick up (its
+  // reference-equality check is exactly what makes this update cheap once
+  // the draw-in finishes and the array stops changing).
+  const arcs = visibleRoutes.map((route) => {
+    const t = drawProgress(route.id)
+    return {
+      id: route.id,
+      from: route.from.location,
+      to: t >= 1 ? route.to.location : interpolateLocation(route.from.location, route.to.location, t),
+      label: LANGUAGES.map((l) => `${route.from[l]} → ${route.to[l]}`),
+    }
+  })
+
   return (
     <div className="flex h-full w-full items-center justify-center p-8">
       <Globe
         className="w-full max-w-2xl"
         markers={markers}
-        arcs={ARCS}
+        arcs={arcs}
         activeLabelIndex={LANGUAGES.indexOf(lang)}
         speed={kmPerSecToPhiSpeed(rotationSpeedKmS)}
         {...GLOBE_COLORS}

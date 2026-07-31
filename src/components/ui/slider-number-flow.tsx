@@ -18,7 +18,7 @@ export default function Slider({ value, className, ...props }: RadixSlider.Slide
         <RadixSlider.Range className="absolute h-full rounded-full bg-accent transition-[width] duration-150 ease-out" />
       </RadixSlider.Track>
       <RadixSlider.Thumb
-        className="block size-3.5 rounded-full border border-accent bg-card shadow-sm transition-[left] duration-150 ease-out"
+        className="block size-3.5 rounded-full border border-accent bg-card shadow-sm transition-[left] duration-150 ease-out dark:border-[#912f40] dark:bg-accent-hover"
         aria-label={props['aria-label']}
       />
     </RadixSlider.Root>

@@ -794,3 +794,60 @@ its correct chronological position while writing this entry, no content
 lost.
 
 Status: done. Committed and pushed.
+
+## 2026-07-31 (continued) — Cube-flip jitter fix, thumb theming, arc route propagation + draw-in
+
+Several small, related asks in one pass:
+
+**Cube-flip hover jitter**: hovering right at the edge of the language/
+theme toggle buttons could flicker in and out of the 3D flip. Fixed in
+`src/components/ui/cube-flip-toggle.tsx` by adding an invisible `-inset-2`
+buffer span inside the button — hovering that (which extends past the
+button's own layout box) still counts as hovering the button per normal
+CSS containment, giving edge tolerance without changing the visible size.
+
+**Slider thumb theming** (`src/components/ui/slider-number-flow.tsx`,
+two rounds of feedback): dark mode's thumb fill is now `dark:bg-accent-hover`
+(the lighter pink-red, `#d99aa6`) while the border is pinned to the dark
+red (`#912f40`, hardcoded via `dark:border-[#912f40]` since it needs to
+stay dark in BOTH themes, unlike `border-accent` which flips with the
+theme token). Verified via computed styles in a live dark-mode session:
+border `rgb(145, 47, 64)`, fill `rgb(217, 154, 166)`.
+
+**Arc routes now propagate with the city-count slider**
+(`src/components/GlobeView.tsx`): previously all 4 routes were always on
+once cityCount ≥ 9. Reworked so each route only appears once BOTH its
+cities are within the current city-count slice — computed as
+`requiredCityCount = max(fromIndex, toIndex) + 1` per route, looked up
+dynamically by city id rather than hardcoded array indices (safer against
+future reordering). Reordered `CITIES` so Lagos and Singapore — endpoints
+of the two new routes — sit last (indices 18/19), and swapped those two
+routes' cities per explicit request: `saopaulo-lagos` (was
+`capetown-saopaulo`) and `dubai-singapore` (was `dubai-sydney`). Net
+effect: SF→Tokyo and NYC→London are always on (their cities are within
+the min-9 slice); São Paulo→Lagos appears at cityCount ≥ 19; Dubai→
+Singapore only at cityCount = 20 (the max) — matching "only at 20 should
+show all 4 flights" exactly, driven by data rather than an arbitrary
+quartile formula.
+
+**Arc "draw-in" animation**: new `useArcDrawProgress` hook in
+`GlobeView.tsx` tracks how long each route has been visible and, for
+routes that just appeared, animates their `to` endpoint in from `from`
+over 900ms (`easeOutCubic`) via straight lat/lng interpolation (not a
+true great-circle slerp — unnecessary complexity here, since cobe still
+renders a proper great-circle bulge between whatever `from`/`to` pair
+it's given each frame, so the line still reads as smoothly extending
+toward its real destination). The `arcs` array is intentionally
+unmemoized during the animation window so cobe-globe's existing
+`liveProps`/`lastArcs` reference-equality check (added in an earlier
+session to avoid needless GPU buffer re-uploads) naturally settles back
+to skipping updates once the draw-in finishes.
+
+Verified live: pill count (marker + arc label DOM nodes) matches
+expectations at both ends of the slider (11 at cityCount=9: 9 markers + 2
+always-on arcs; 24 at cityCount=20: 20 markers + 4 arcs), no console
+errors during or after the slider-driven animation, `aria-valuenow`
+confirms the slider itself still works correctly post-changes. Build and
+`oxlint src` both clean.
+
+Status: done. Committed and pushed.
