@@ -692,6 +692,50 @@ DOM/ARIA state, console, and network were all checked directly).
 
 Status: done. Committed and pushed.
 
+## 2026-07-31 (continued) — Control panel redesign: inline rows, no container box
+
+User feedback on the control panel from a screenshot: the floating
+NumberFlow readout above each thumb collided with the row/label below it
+(panel was too cramped, especially with the value positioned above the
+thumb per an earlier iteration in this same session), the panel clipped
+against the viewport bottom, and the boxed card container wasn't wanted
+for this element specifically (unlike the top-left "reading" panel, which
+keeps its card style). Also asked for: "ROTATION (KM/S)" as the label
+text, dot+label inline with the slider (not stacked above it), a smoother
+slider, and the live number moved to the end of the row instead of
+floating over the thumb.
+
+Reworked both files:
+- `src/components/ui/slider-number-flow.tsx`: dropped the built-in
+  absolutely-positioned `NumberFlow` overlay entirely (root cause of the
+  clipping/overlap — it had no reliable safe area regardless of panel
+  width or padding, since Radix's thumb positioning percentage is
+  computed against the Root's own padding-box, which made earlier `px-*`
+  padding attempts on the Root a dead end). Added
+  `transition-[width]`/`transition-[left]` to the Range/Thumb for a
+  smoother visual response to value changes.
+- `src/App.tsx`'s `ControlPanel`: each control is now a single flex row
+  — accent dot + uppercase label + `Slider` (flex-1) + a trailing
+  `NumberFlow` (imported directly here now) right-aligned at the row's
+  end. Removed the card/border/bg/shadow/backdrop-blur container
+  entirely per "I don't really like placing it in a container" — panel
+  is now bare, positioned `absolute bottom-4 left-4`. Rotation's label
+  changed to "rotation (km/s)"; the `unit` prop on `Slider` was dropped
+  since the unit now lives in the label instead of a trailing suffix on
+  the number.
+
+Verified live in the dev server: panel bottom now sits at 704px in a
+720px-tall viewport (16px clear margin, no clipping), both rows'
+dot/label/slider/number confirmed inline via DOM `getBoundingClientRect`
+checks, dragging the cities slider to its max (`aria-valuenow` 9→20) and
+back confirmed working with no console errors. (One transient "error
+occurred in ControlPanel" console warning was observed mid-session during
+an intermediate HMR save — did not reproduce on a fresh page load or
+after the final save, treated as a stale hot-reload artifact rather than
+a real bug.) Build and `oxlint src` both clean.
+
+Status: done. Committed and pushed.
+
 ## 2026-07-31 (continued) — Same hover hint for theme toggle
 
 User asked for the same treatment on the theme (light/dark) toggle. Added

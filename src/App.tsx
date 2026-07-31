@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import NumberFlow from '@number-flow/react'
 import { Globe as GlobeIcon, Moon, Sun } from 'lucide-react'
 import { GlobeView } from '@/components/GlobeView'
 import { useDemographics } from '@/lib/useDemographics'
@@ -121,12 +122,12 @@ function ControlPanel({
   onRotationSpeedChange: (value: number) => void
 }) {
   return (
-    <div className="absolute bottom-4 left-4 z-10 flex w-56 flex-col gap-4 rounded-[var(--radius)] border bg-card/90 px-3 py-3 text-card-foreground shadow-sm backdrop-blur-sm">
-      <div>
-        <div className="mb-3 flex items-center gap-1.5 text-[0.65rem] uppercase tracking-widest text-muted-foreground">
+    <div className="absolute bottom-4 left-4 z-10 flex w-96 flex-col gap-3 text-card-foreground">
+      <div className="flex items-center gap-2.5">
+        <span className="flex shrink-0 items-center gap-1.5 text-[0.65rem] uppercase tracking-widest text-muted-foreground">
           <span className="inline-block size-1.5 rounded-full bg-accent" />
           cities
-        </div>
+        </span>
         <Slider
           value={[cityCount]}
           onValueChange={([v]) => onCityCountChange(v)}
@@ -135,20 +136,27 @@ function ControlPanel({
           step={1}
           aria-label="Number of cities shown"
         />
+        <NumberFlow
+          value={cityCount}
+          className="w-6 shrink-0 text-right font-mono text-xs font-medium text-foreground"
+        />
       </div>
-      <div>
-        <div className="mb-3 flex items-center gap-1.5 text-[0.65rem] uppercase tracking-widest text-muted-foreground">
+      <div className="flex items-center gap-2.5">
+        <span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap text-[0.65rem] uppercase tracking-widest text-muted-foreground">
           <span className="inline-block size-1.5 rounded-full bg-accent" />
-          rotation
-        </div>
+          rotation (km/s)
+        </span>
         <Slider
           value={[rotationSpeedKmS]}
           onValueChange={([v]) => onRotationSpeedChange(v)}
           min={DEFAULT_ROTATION_SPEED_KM_S}
           max={MAX_ROTATION_SPEED_KM_S}
           step={1}
-          unit="km/s"
           aria-label="Globe rotation speed in kilometers per second"
+        />
+        <NumberFlow
+          value={rotationSpeedKmS}
+          className="w-11 shrink-0 text-right font-mono text-xs font-medium text-foreground"
         />
       </div>
     </div>
