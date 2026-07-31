@@ -851,3 +851,51 @@ confirms the slider itself still works correctly post-changes. Build and
 `oxlint src` both clean.
 
 Status: done. Committed and pushed.
+
+## 2026-07-31 (continued) — Slower arc draw-in + re-render optimizations
+
+User asked to slow the arc "draw" animation slightly, and to optimize the
+app without changing anything visually.
+
+**Slower draw-in**: `ARC_DRAW_DURATION_MS` in `GlobeView.tsx` bumped
+900ms → 1600ms.
+
+**Real optimization found while touching that code**: the `arcs` array
+was deliberately left unmemoized (comment said so, from the previous
+session) so it would update every animation frame during a draw-in — but
+that also meant it recomputed on every App re-render, including ones
+completely unrelated to the globe (e.g. hovering the theme toggle). Fixed
+by having `useArcDrawProgress` return a `Map` whose reference only
+changes on an actual rAF tick (previously it returned a plain closure,
+recreated every call), then `useMemo`'d `arcs` off `[visibleRoutes,
+drawProgress]` — now it only recomputes when the city-count slice changes
+or an animation is actually in flight, exactly matching cobe-globe's own
+`lastArcs` reference-equality check that this feeds into.
+
+**Broader re-render pass** (zero visual change, verified via unchanged
+CSS output in the build): wrapped `GlobeView` (the expensive one — wraps
+the WebGL globe) and the smaller leaf components (`ThemeToggle`,
+`ThemeHint`, `LanguageToggle`, `LanguageHint`, `ControlPanel`) in
+`React.memo`. For `GlobeView`'s memo to actually take effect, its
+callback prop needed a stable reference too — `onSelectCountry` was an
+inline arrow recreated every `App` render; replaced with a `useCallback`
+(`handleSelectCountry`, deps `[demographics]` — stable once loaded, since
+`useDemographics` only replaces its state object on an actual load/error
+transition). Same treatment for the language-cycle handler
+(`handleLanguageToggle`). Also moved `toggleTheme` inside `useTheme.ts`
+into a `useCallback` — it was a fresh arrow every hook call, which
+would've defeated `ThemeToggle`'s memo.
+
+Net effect: hovering the language/theme toggles (which toggles hint
+visibility state in `App`) or any other future unrelated `App` state
+change no longer re-renders the WebGL globe or the other toggles/hints —
+previously all of App's JSX re-ran on every such state change.
+
+Verified: `npm run build` output is byte-identical in shape (same CSS
+size, same warnings), confirming no visual/styling regression. Live
+check: page renders correctly on fresh load (all 9 default cities, 2
+arcs, no error overlay), dragging the city slider to max still correctly
+shows 24 pills (20 markers + 4 arcs) with the slower draw-in, no console
+errors. `oxlint src` clean.
+
+Status: done. Committed and pushed.

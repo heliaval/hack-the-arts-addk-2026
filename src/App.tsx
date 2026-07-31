@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { memo, useCallback, useState } from 'react'
 import NumberFlow from '@number-flow/react'
 import { Globe as GlobeIcon, Moon, Sun } from 'lucide-react'
 import { GlobeView } from '@/components/GlobeView'
@@ -17,8 +17,14 @@ interface ThemeToggleProps {
 }
 
 // Front face previews the mode a click switches TO; back face (hover)
-// shows the mode currently active.
-function ThemeToggle({ theme, toggleTheme, onHoverChange }: ThemeToggleProps) {
+// shows the mode currently active. Memoized: with stable callback props
+// (see App's useCallback usage below), this skips re-rendering on
+// unrelated state changes elsewhere in App.
+const ThemeToggle = memo(function ThemeToggle({
+  theme,
+  toggleTheme,
+  onHoverChange,
+}: ThemeToggleProps) {
   return (
     <div onMouseEnter={() => onHoverChange(true)} onMouseLeave={() => onHoverChange(false)}>
       {theme === 'dark' ? (
@@ -42,11 +48,17 @@ function ThemeToggle({ theme, toggleTheme, onHoverChange }: ThemeToggleProps) {
       )}
     </div>
   )
-}
+})
 
 // Same corner-anchored hint pattern as LanguageHint below, for the theme
 // toggle: current mode picked out in accent red, the other muted.
-function ThemeHint({ theme, visible }: { theme: 'light' | 'dark'; visible: boolean }) {
+const ThemeHint = memo(function ThemeHint({
+  theme,
+  visible,
+}: {
+  theme: 'light' | 'dark'
+  visible: boolean
+}) {
   return (
     <span
       aria-hidden="true"
@@ -60,7 +72,7 @@ function ThemeHint({ theme, visible }: { theme: 'light' | 'dark'; visible: boole
       {' · click to toggle'}
     </span>
   )
-}
+})
 
 interface LanguageToggleProps {
   lang: Lang
@@ -71,7 +83,11 @@ interface LanguageToggleProps {
 // Cycles through LANGUAGES on each click. Front face previews the language
 // a click switches TO (the next one in the cycle); back face (hover) shows
 // the one currently active.
-function LanguageToggle({ lang, onToggle, onHoverChange }: LanguageToggleProps) {
+const LanguageToggle = memo(function LanguageToggle({
+  lang,
+  onToggle,
+  onHoverChange,
+}: LanguageToggleProps) {
   const upcoming = nextLang(lang)
   return (
     <div onMouseEnter={() => onHoverChange(true)} onMouseLeave={() => onHoverChange(false)}>
@@ -84,12 +100,18 @@ function LanguageToggle({ lang, onToggle, onHoverChange }: LanguageToggleProps) 
       />
     </div>
   )
-}
+})
 
 // Rendered at the app's own bottom-right corner rather than anchored to the
 // toggle, per explicit request — visibility is driven by hover state lifted
 // up from LanguageToggle since the two are no longer DOM neighbors.
-function LanguageHint({ lang, visible }: { lang: Lang; visible: boolean }) {
+const LanguageHint = memo(function LanguageHint({
+  lang,
+  visible,
+}: {
+  lang: Lang
+  visible: boolean
+}) {
   return (
     <span
       aria-hidden="true"
@@ -106,7 +128,7 @@ function LanguageHint({ lang, visible }: { lang: Lang; visible: boolean }) {
       {' · click to cycle'}
     </span>
   )
-}
+})
 
 // Bottom-left instrument panel, mirroring the top-left "reading" panel's
 // card/border/uppercase-label styling.
@@ -114,7 +136,7 @@ function LanguageHint({ lang, visible }: { lang: Lang; visible: boolean }) {
 // never "locks" between a handful of visible positions; only the displayed
 // NumberFlow readout (and whatever consumes the value downstream) rounds to
 // the nearest whole number.
-function ControlPanel({
+const ControlPanel = memo(function ControlPanel({
   cityCountRaw,
   onCityCountRawChange,
   rotationSpeedRaw,
@@ -165,7 +187,7 @@ function ControlPanel({
       </div>
     </div>
   )
-}
+})
 
 function App() {
   const demographics = useDemographics()
@@ -178,6 +200,20 @@ function App() {
   const cityCount = Math.round(cityCountRaw)
   const rotationSpeedKmS = Math.round(rotationSpeedRaw)
   const { theme, toggleTheme } = useTheme()
+
+  // Stable references (required for GlobeView's React.memo to actually skip
+  // re-renders on unrelated App state changes) — must be declared before
+  // the early returns below, since hooks can't run conditionally.
+  const handleSelectCountry = useCallback(
+    (iso3: string) => {
+      setSelectedIso3(iso3)
+      if (demographics.status === 'ready') {
+        console.log('selected', iso3, demographics.data.get(iso3))
+      }
+    },
+    [demographics],
+  )
+  const handleLanguageToggle = useCallback(() => setLang(nextLang), [])
 
   if (demographics.status === 'loading') {
     return (
@@ -202,19 +238,12 @@ function App() {
       <GlobeView
         demographics={demographics.data}
         lang={lang}
-        onSelectCountry={(iso3) => {
-          setSelectedIso3(iso3)
-          console.log('selected', iso3, demographics.data.get(iso3))
-        }}
+        onSelectCountry={handleSelectCountry}
         cityCount={cityCount}
         rotationSpeedKmS={rotationSpeedKmS}
       />
       <div className="absolute right-4 top-4 z-10 flex gap-2">
-        <LanguageToggle
-          lang={lang}
-          onToggle={() => setLang(nextLang)}
-          onHoverChange={setLangHintVisible}
-        />
+        <LanguageToggle lang={lang} onToggle={handleLanguageToggle} onHoverChange={setLangHintVisible} />
         <ThemeToggle theme={theme} toggleTheme={toggleTheme} onHoverChange={setThemeHintVisible} />
       </div>
       <LanguageHint lang={lang} visible={langHintVisible} />

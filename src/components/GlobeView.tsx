@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { Globe } from '@/components/ui/cobe-globe'
 import type { CountryDemographics } from '@/lib/worldbank'
 import { LANGUAGES, type Lang } from '@/lib/lang'
@@ -285,7 +285,7 @@ const ARC_ROUTES = ARC_ROUTE_DEFS.map((def) => ({
   requiredCityCount: Math.max(CITY_INDEX.get(def.fromId)!, CITY_INDEX.get(def.toId)!) + 1,
 }))
 
-const ARC_DRAW_DURATION_MS = 900
+const ARC_DRAW_DURATION_MS = 1600
 function easeOutCubic(t: number) {
   return 1 - (1 - t) ** 3
 }
@@ -304,9 +304,11 @@ function interpolateLocation(
 // Tracks, per route id, how long it's been visible — routes that just
 // became visible animate their `to` endpoint in from `from` over
 // ARC_DRAW_DURATION_MS so the flight line appears to "draw" itself rather
-// than popping in fully formed.
-function useArcDrawProgress(visibleIds: string[]) {
-  const [, forceRender] = useState(0)
+// than popping in fully formed. Returns a Map whose reference only changes
+// on an actual animation tick (not on every unrelated App re-render), so
+// callers can safely useMemo off it.
+function useArcDrawProgress(visibleIds: string[]): Map<string, number> {
+  const [progress, setProgress] = useState<Map<string, number>>(new Map())
   const startTimes = useRef(new Map<string, number>())
   const prevIds = useRef<string[]>([])
   const idsKey = visibleIds.join(',')
@@ -321,12 +323,15 @@ function useArcDrawProgress(visibleIds: string[]) {
 
     let rafId: number
     function tick() {
-      let animating = false
       const t = performance.now()
-      for (const start of startTimes.current.values()) {
-        if (t - start < ARC_DRAW_DURATION_MS) animating = true
+      const next = new Map<string, number>()
+      let animating = false
+      for (const [id, start] of startTimes.current) {
+        const p = easeOutCubic(Math.min(1, (t - start) / ARC_DRAW_DURATION_MS))
+        next.set(id, p)
+        if (p < 1) animating = true
       }
-      forceRender((n) => n + 1)
+      setProgress(next)
       if (animating) rafId = requestAnimationFrame(tick)
     }
     rafId = requestAnimationFrame(tick)
@@ -334,14 +339,15 @@ function useArcDrawProgress(visibleIds: string[]) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [idsKey])
 
-  return (id: string) => {
-    const start = startTimes.current.get(id)
-    if (start == null) return 1
-    return easeOutCubic(Math.min(1, (performance.now() - start) / ARC_DRAW_DURATION_MS))
-  }
+  return progress
 }
 
-export function GlobeView({
+// Memoized — wraps the WebGL globe, by far the most expensive component in
+// the tree, so it shouldn't re-render on unrelated App state changes (hover
+// hints, theme toggle hover, etc.) as long as its own props are unchanged.
+// Requires callers to pass stable prop references (see App.tsx's
+// useCallback usage for onSelectCountry).
+export const GlobeView = memo(function GlobeView({
   demographics,
   lang,
   onSelectCountry,
@@ -374,20 +380,28 @@ export function GlobeView({
   )
   const drawProgress = useArcDrawProgress(visibleRoutes.map((r) => r.id))
 
-  // Deliberately not memoized on visibleRoutes alone — drawProgress changes
-  // every animation frame while a route is mid-draw, and each frame needs a
-  // fresh arcs array for cobe-globe's liveProps loop to pick up (its
-  // reference-equality check is exactly what makes this update cheap once
-  // the draw-in finishes and the array stops changing).
-  const arcs = visibleRoutes.map((route) => {
-    const t = drawProgress(route.id)
-    return {
-      id: route.id,
-      from: route.from.location,
-      to: t >= 1 ? route.to.location : interpolateLocation(route.from.location, route.to.location, t),
-      label: LANGUAGES.map((l) => `${route.from[l]} → ${route.to[l]}`),
-    }
-  })
+  // Memoized off [visibleRoutes, drawProgress] rather than recomputed every
+  // render — drawProgress's reference only changes on an actual animation
+  // tick, so this correctly recomputes each frame while a route is mid-draw
+  // but stays cheap (skipped) on unrelated App re-renders (e.g. hovering an
+  // unrelated toggle), same as cobe-globe's own liveProps/lastArcs check
+  // that this feeds into.
+  const arcs = useMemo(
+    () =>
+      visibleRoutes.map((route) => {
+        const t = drawProgress.get(route.id) ?? 1
+        return {
+          id: route.id,
+          from: route.from.location,
+          to:
+            t >= 1
+              ? route.to.location
+              : interpolateLocation(route.from.location, route.to.location, t),
+          label: LANGUAGES.map((l) => `${route.from[l]} → ${route.to[l]}`),
+        }
+      }),
+    [visibleRoutes, drawProgress],
+  )
 
   return (
     <div className="flex h-full w-full items-center justify-center p-8">
@@ -401,4 +415,4 @@ export function GlobeView({
       />
     </div>
   )
-}
+})
