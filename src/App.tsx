@@ -16,25 +16,35 @@ import { DEFAULT_ROTATION_SPEED_KM_S, MAX_ROTATION_SPEED_KM_S } from '@/lib/glob
 // GPU buffers — collapsing bursts of same-frame changes down to one commit
 // per animation frame keeps that re-upload rate capped at the display's
 // refresh rate instead of the input event rate.
+//
+// A single persistent per-frame check loop, started once on mount ([] dep)
+// — not a schedule/cancel-per-value-change dance keyed on `value`. That
+// earlier approach re-ran its effect (and cleanup) on every single value
+// change, and under React's dev-mode StrictMode double-invoke that raced:
+// the cleanup could cancel the in-flight frame after a new effect
+// invocation had already early-returned believing one was still pending,
+// permanently orphaning the update — `throttled` would get stuck and never
+// advance again. Comparing latestRef against throttledRef once per rAF
+// tick has no such race: it doesn't matter how many times the effect
+// fires, there's only ever the one mount-lifetime loop.
 function useRafThrottled<T>(value: T): T {
   const [throttled, setThrottled] = useState(value)
-  const frameRef = useRef<number | null>(null)
   const latestRef = useRef(value)
+  const throttledRef = useRef(value)
   latestRef.current = value
 
   useEffect(() => {
-    if (frameRef.current != null) return
-    frameRef.current = requestAnimationFrame(() => {
-      frameRef.current = null
-      setThrottled(latestRef.current)
-    })
-    return () => {
-      if (frameRef.current != null) {
-        cancelAnimationFrame(frameRef.current)
-        frameRef.current = null
+    let rafId: number
+    function tick() {
+      if (latestRef.current !== throttledRef.current) {
+        throttledRef.current = latestRef.current
+        setThrottled(latestRef.current)
       }
+      rafId = requestAnimationFrame(tick)
     }
-  }, [value])
+    rafId = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(rafId)
+  }, [])
 
   return throttled
 }

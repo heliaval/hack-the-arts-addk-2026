@@ -1,6 +1,8 @@
-import { useEffect, useRef, useCallback } from "react"
+import { useEffect, useRef, useCallback, useState, forwardRef, useImperativeHandle, memo } from "react"
+import type { MutableRefObject } from "react"
 import createGlobe, { type COBEOptions } from "cobe"
 import { TextRotate, type TextRotateRef } from "@/components/ui/text-rotate"
+import { computeSweepDelays } from "@/lib/sweep"
 
 interface Marker {
   id: string
@@ -40,6 +42,13 @@ interface GlobeProps {
   mapSamples?: number
   /** Which entry of each label's variant array is shown; animates the swap. */
   activeLabelIndex?: number
+}
+
+export interface GlobeRef {
+  /** Projects a lat/lng to current screen-space fraction (0-1), using the
+   * globe's live rotation — for callers that need to know where something
+   * is on screen right now (e.g. to order a sweep animation). */
+  project(location: [number, number]): { x: number; y: number }
 }
 
 // Mirrors cobe's own marker projection (node_modules/cobe/dist/index.esm.js,
@@ -110,7 +119,7 @@ function projectArcMidpoint(
   return project([sum[0] * scale, sum[1] * scale, sum[2] * scale], phi, theta)
 }
 
-export function Globe({
+export const Globe = forwardRef<GlobeRef, GlobeProps>(function Globe({
   markers = [],
   arcs = [],
   className = "",
@@ -129,10 +138,36 @@ export function Globe({
   diffuse = 1.5,
   mapSamples = 16000,
   activeLabelIndex = 0,
-}: GlobeProps) {
+}: GlobeProps, ref) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const labelRefs = useRef<Map<string, HTMLDivElement>>(new Map())
   const arcLabelRefs = useRef<Map<string, HTMLDivElement>>(new Map())
+  // Stable per-id setRef callbacks (created once, cached, reused) rather
+  // than a fresh inline arrow per render — LabelPill is memoized below, and
+  // a fresh setRef reference every render would defeat that memo for every
+  // label on every frame, even ones whose actual content hasn't changed.
+  const labelRefSetters = useRef<Map<string, (el: HTMLDivElement | null) => void>>(new Map())
+  const arcLabelRefSetters = useRef<Map<string, (el: HTMLDivElement | null) => void>>(new Map())
+  function getRefSetter(
+    cache: MutableRefObject<Map<string, (el: HTMLDivElement | null) => void>>,
+    target: MutableRefObject<Map<string, HTMLDivElement>>,
+    id: string,
+  ) {
+    let setter = cache.current.get(id)
+    if (!setter) {
+      setter = (el) => {
+        if (el) target.current.set(id, el)
+        else target.current.delete(id)
+      }
+      cache.current.set(id, setter)
+    }
+    return setter
+  }
+  // Live rotation snapshot, updated every animate() frame — lets project()
+  // (exposed via ref) and the language-sweep effect below compute current
+  // screen position between frames without threading phi/theta as props.
+  const currentPhiRef = useRef(0)
+  const currentThetaRef = useRef(theta)
   // Read by the animation loop every frame instead of being a useEffect
   // dependency — lets markers/arcs/colors update live without tearing down
   // and recreating the globe, which would reset its rotation to phi=0.
@@ -351,6 +386,8 @@ export function Globe({
         }
         globe!.update(updatePayload)
         updateLabels(currentPhi, currentTheta, p.markerElevation, p.arcHeight)
+        currentPhiRef.current = currentPhi
+        currentThetaRef.current = currentTheta
         animationId = requestAnimationFrame(animate)
       }
       animate()
@@ -379,6 +416,56 @@ export function Globe({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [theta, diffuse, mapSamples])
 
+  useImperativeHandle(
+    ref,
+    () => ({
+      project(location) {
+        const { x, y } = projectMarker(
+          location,
+          currentPhiRef.current,
+          currentThetaRef.current,
+          liveProps.current.markerElevation,
+        )
+        return { x, y }
+      },
+    }),
+    [],
+  )
+
+  // Language toggle flips every visible label at once by default. Sweep it
+  // instead: on each activeLabelIndex change (skipping the very first
+  // render — that's just each label settling to its correct initial
+  // language, not a toggle), snapshot every currently-labeled marker/arc's
+  // live screen position and stagger their TextRotate.jumpTo() calls
+  // top-left to bottom-right. New labels that mount later default to no
+  // delay (handled by LabelPill's `?? 0` below) since they're not part of
+  // an in-flight toggle.
+  const [labelDelays, setLabelDelays] = useState<Map<string, number>>(new Map())
+  const hasMountedRef = useRef(false)
+  useEffect(() => {
+    if (!hasMountedRef.current) {
+      hasMountedRef.current = true
+      return
+    }
+    const phi = currentPhiRef.current
+    const theta = currentThetaRef.current
+    const elevation = liveProps.current.markerElevation
+    const arcHeight = liveProps.current.arcHeight
+    const items = [
+      ...liveProps.current.markers
+        .filter((m) => m.label && m.label.length > 0)
+        .map((m) => ({ id: m.id, ...projectMarker(m.location, phi, theta, elevation) })),
+      ...liveProps.current.arcs
+        .filter((a) => a.label && a.label.length > 0)
+        .map((a) => {
+          const p = projectArcMidpoint(a.from, a.to, phi, theta, elevation, arcHeight)
+          return { id: a.id, x: p?.x ?? 0, y: p?.y ?? 0 }
+        }),
+    ]
+    setLabelDelays(computeSweepDelays(items))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeLabelIndex])
+
   return (
     <div className={`relative aspect-square select-none ${className}`}>
       <canvas
@@ -401,10 +488,8 @@ export function Globe({
             key={m.id}
             texts={m.label!}
             activeIndex={activeLabelIndex}
-            setRef={(el) => {
-              if (el) labelRefs.current.set(m.id, el)
-              else labelRefs.current.delete(m.id)
-            }}
+            sweepDelayMs={labelDelays.get(m.id) ?? 0}
+            setRef={getRefSetter(labelRefSetters, labelRefs, m.id)}
           />
         ))}
       {arcs
@@ -414,30 +499,38 @@ export function Globe({
             key={a.id}
             texts={a.label!}
             activeIndex={activeLabelIndex}
-            setRef={(el) => {
-              if (el) arcLabelRefs.current.set(a.id, el)
-              else arcLabelRefs.current.delete(a.id)
-            }}
+            sweepDelayMs={labelDelays.get(a.id) ?? 0}
+            setRef={getRefSetter(arcLabelRefSetters, arcLabelRefs, a.id)}
           />
         ))}
     </div>
   )
-}
+})
+Globe.displayName = "Globe"
 
-function LabelPill({
+// Memoized — Globe re-renders on every animation frame while any marker or
+// arc is mid-draw-in (necessary: that's how the moving endpoint reaches the
+// canvas), but that shouldn't force every OTHER already-settled label to
+// re-render too. Requires `texts`/`setRef` to be stable references, which
+// they now are (see CITY_LABELS/ARC_ROUTES.label in GlobeView.tsx and
+// getRefSetter above) — without that, memo would never actually hit.
+const LabelPill = memo(function LabelPill({
   texts,
   activeIndex,
+  sweepDelayMs = 0,
   setRef,
 }: {
   texts: string[]
   activeIndex: number
+  sweepDelayMs?: number
   setRef: (el: HTMLDivElement | null) => void
 }) {
   const rotateRef = useRef<TextRotateRef>(null)
 
   useEffect(() => {
-    rotateRef.current?.jumpTo(activeIndex)
-  }, [activeIndex])
+    const t = setTimeout(() => rotateRef.current?.jumpTo(activeIndex), sweepDelayMs)
+    return () => clearTimeout(t)
+  }, [activeIndex, sweepDelayMs])
 
   return (
     <div
@@ -474,4 +567,5 @@ function LabelPill({
       />
     </div>
   )
-}
+})
+LabelPill.displayName = "LabelPill"

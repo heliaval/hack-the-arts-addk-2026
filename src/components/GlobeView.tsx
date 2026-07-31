@@ -1,8 +1,9 @@
-import { memo, useEffect, useMemo, useRef, useState } from 'react'
-import { Globe } from '@/components/ui/cobe-globe'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Globe, type GlobeRef } from '@/components/ui/cobe-globe'
 import type { CountryDemographics } from '@/lib/worldbank'
 import { LANGUAGES, type Lang } from '@/lib/lang'
 import { kmPerSecToPhiSpeed } from '@/lib/globeSpeed'
+import { computeSweepDelays } from '@/lib/sweep'
 
 interface GlobeViewProps {
   demographics: Map<string, CountryDemographics>
@@ -263,6 +264,10 @@ export const MAX_CITY_COUNT = CITIES.length
 
 const CITY_MARKER_SIZE = 0.025
 
+// Precomputed once rather than inside the `markers` useMemo — see the
+// matching note above ARC_ROUTES for why a stable label reference matters.
+const CITY_LABELS = new Map(CITIES.map((city) => [city.id, LANGUAGES.map((l) => city[l])]))
+
 // Each route only appears once both its cities have entered the city-count
 // slider's visible slice (`cityCount >= requiredCityCount`) — routes
 // "propagate" in as the slider grows rather than all being fixed/always-on.
@@ -278,36 +283,65 @@ const ARC_ROUTE_DEFS = [
   { id: 'saopaulo-lagos', fromId: 'city-saopaulo', toId: 'city-lagos' },
   { id: 'dubai-singapore', fromId: 'city-dubai', toId: 'city-singapore' },
 ]
-const ARC_ROUTES = ARC_ROUTE_DEFS.map((def) => ({
-  id: def.id,
-  from: cityById(def.fromId),
-  to: cityById(def.toId),
-  requiredCityCount: Math.max(CITY_INDEX.get(def.fromId)!, CITY_INDEX.get(def.toId)!) + 1,
-}))
+// Label arrays are precomputed once here rather than inside the per-frame
+// `arcs` useMemo below — that memo recomputes every animation frame while
+// ANY route is mid-draw-in, and without this, LANGUAGES.map(...) would
+// reallocate a fresh label array for every route (not just the one
+// animating) on every one of those frames, for content that never
+// actually changes. A fresh array reference on every frame also defeats
+// TextRotate's own internal memoization (its `elements` useMemo keys off
+// the `texts` prop reference).
+const ARC_ROUTES = ARC_ROUTE_DEFS.map((def) => {
+  const from = cityById(def.fromId)
+  const to = cityById(def.toId)
+  return {
+    id: def.id,
+    from,
+    to,
+    requiredCityCount: Math.max(CITY_INDEX.get(def.fromId)!, CITY_INDEX.get(def.toId)!) + 1,
+    label: LANGUAGES.map((l) => `${from[l]} → ${to[l]}`),
+  }
+})
 
 const ARC_DRAW_DURATION_MS = 1600
 function easeOutCubic(t: number) {
   return 1 - (1 - t) ** 3
 }
-// Straight-line lerp in lat/lng space, not a true great-circle slerp — cobe
-// still draws a proper great-circle bulge between `from` and whatever `to`
-// we hand it each frame, so the arc still reads as smoothly extending
-// toward its real destination without needing 3D vector math here.
-function interpolateLocation(
-  from: [number, number],
-  to: [number, number],
-  t: number,
-): [number, number] {
-  return [from[0] + (to[0] - from[0]) * t, from[1] + (to[1] - from[1]) * t]
+function unitVector([lat, lng]: [number, number]): [number, number, number] {
+  const latRad = (lat * Math.PI) / 180
+  const lngRad = (lng * Math.PI) / 180
+  const cosLat = Math.cos(latRad)
+  return [cosLat * Math.cos(lngRad), cosLat * Math.sin(lngRad), Math.sin(latRad)]
 }
 
-// A fast slider drag can cross more than one route's `requiredCityCount`
-// threshold in a single commit, making several routes "newly visible" at
-// once. Starting their draw-ins simultaneously would stack their per-frame
-// setState + GPU arc-buffer re-upload on top of each other for the whole
-// 1.6s duration; staggering each one's start by this much instead spreads
-// that cost across frames.
-const ARC_DRAW_STAGGER_MS = 150
+function vectorToLocation([x, y, z]: [number, number, number]): [number, number] {
+  const lat = (Math.asin(Math.max(-1, Math.min(1, z))) * 180) / Math.PI
+  const lng = (Math.atan2(y, x) * 180) / Math.PI
+  return [lat, lng]
+}
+
+// True spherical interpolation along the great-circle geodesic between
+// `from` and `to` — NOT a straight lat/lng lerp. Any point along this path
+// lies on the same great circle as the final route, so cobe's own
+// bulge-height calculation for the growing partial arc is a genuine
+// sub-segment of the final curve's shape (small near the start, growing
+// correctly as it extends) instead of an unrelated shape that reads as
+// scaling up. Also incidentally takes the shorter side of the globe for
+// long east-west routes near the antimeridian, where a plain lat/lng lerp
+// would sweep the long way around.
+function slerpLocation(from: [number, number], to: [number, number], t: number): [number, number] {
+  if (t <= 0) return from
+  if (t >= 1) return to
+  const a = unitVector(from)
+  const b = unitVector(to)
+  const dot = Math.max(-1, Math.min(1, a[0] * b[0] + a[1] * b[1] + a[2] * b[2]))
+  const omega = Math.acos(dot)
+  if (omega < 1e-6) return to
+  const sinOmega = Math.sin(omega)
+  const s0 = Math.sin((1 - t) * omega) / sinOmega
+  const s1 = Math.sin(t * omega) / sinOmega
+  return vectorToLocation([a[0] * s0 + b[0] * s1, a[1] * s0 + b[1] * s1, a[2] * s0 + b[2] * s1])
+}
 
 // Tracks, per route id, how long it's been visible — routes that just
 // became visible animate their `to` endpoint in from `from` over
@@ -315,21 +349,38 @@ const ARC_DRAW_STAGGER_MS = 150
 // than popping in fully formed. Returns a Map whose reference only changes
 // on an actual animation tick (not on every unrelated App re-render), so
 // callers can safely useMemo off it.
-function useArcDrawProgress(visibleIds: string[]): Map<string, number> {
+//
+// A fast slider drag can cross more than one route's `requiredCityCount`
+// threshold in a single commit, making several routes "newly visible" at
+// once — their draw-ins are staggered (via computeSweepDelays, ordered by
+// each route's current on-screen midpoint) rather than starting together,
+// both to sweep left-to-right/top-to-bottom and to spread their per-frame
+// setState + GPU arc-buffer re-upload cost across frames instead of
+// stacking it up.
+function useArcDrawProgress(
+  visibleRoutes: { id: string; from: { location: [number, number] }; to: { location: [number, number] } }[],
+  project: (location: [number, number]) => { x: number; y: number },
+): Map<string, number> {
   const [progress, setProgress] = useState<Map<string, number>>(new Map())
   const startTimes = useRef(new Map<string, number>())
   const prevIds = useRef<string[]>([])
-  const idsKey = visibleIds.join(',')
+  const routesRef = useRef(visibleRoutes)
+  routesRef.current = visibleRoutes
+  const idsKey = visibleRoutes.map((r) => r.id).join(',')
 
   useEffect(() => {
-    const newlyVisible = visibleIds.filter((id) => !prevIds.current.includes(id))
-    prevIds.current = visibleIds
+    const routes = routesRef.current
+    const newlyVisible = routes.filter((r) => !prevIds.current.includes(r.id))
+    prevIds.current = routes.map((r) => r.id)
     if (newlyVisible.length === 0) return
 
-    const now = performance.now()
-    newlyVisible.forEach((id, i) => {
-      startTimes.current.set(id, now + i * ARC_DRAW_STAGGER_MS)
+    const items = newlyVisible.map((route) => {
+      const a = project(route.from.location)
+      const b = project(route.to.location)
+      return { id: route.id, x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }
     })
+    const now = performance.now()
+    for (const [id, delay] of computeSweepDelays(items)) startTimes.current.set(id, now + delay)
 
     let rafId: number
     function tick() {
@@ -352,6 +403,54 @@ function useArcDrawProgress(visibleIds: string[]): Map<string, number> {
   return progress
 }
 
+// Mirrors useArcDrawProgress's stagger approach for newly-eligible city
+// markers: instead of adding them to the rendered set all at once, reveal
+// them one at a time in sweep order (top-left to bottom-right by current
+// screen position). Each reveal mounts that city's LabelPill, which
+// already fades in via its own CSS opacity transition — no new fade code
+// needed here, just staggered mount timing. Cities dropped by the slider
+// moving back down are removed immediately (no sweep needed on the way
+// out). Returns a Set whose reference only changes on an actual
+// reveal/removal, so callers can safely useMemo off it.
+function useSweepReveal(
+  eligibleIds: string[],
+  locationOf: (id: string) => [number, number],
+  project: (location: [number, number]) => { x: number; y: number },
+): Set<string> {
+  const [revealed, setRevealed] = useState<Set<string>>(() => new Set(eligibleIds))
+  const prevIds = useRef<string[]>(eligibleIds)
+  const idsKey = eligibleIds.join(',')
+
+  useEffect(() => {
+    const eligibleSet = new Set(eligibleIds)
+    const newlyEligible = eligibleIds.filter((id) => !prevIds.current.includes(id))
+    prevIds.current = eligibleIds
+
+    setRevealed((prev) => {
+      if ([...prev].every((id) => eligibleSet.has(id))) return prev
+      const next = new Set<string>()
+      for (const id of prev) if (eligibleSet.has(id)) next.add(id)
+      return next
+    })
+
+    if (newlyEligible.length === 0) return
+
+    const items = newlyEligible.map((id) => {
+      const { x, y } = project(locationOf(id))
+      return { id, x, y }
+    })
+    const timers = [...computeSweepDelays(items)].map(([id, delay]) =>
+      window.setTimeout(() => {
+        setRevealed((prev) => (prev.has(id) ? prev : new Set(prev).add(id)))
+      }, delay),
+    )
+    return () => timers.forEach((t) => window.clearTimeout(t))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [idsKey])
+
+  return revealed
+}
+
 // Memoized — wraps the WebGL globe, by far the most expensive component in
 // the tree, so it shouldn't re-render on unrelated App state changes (hover
 // hints, theme toggle hover, etc.) as long as its own props are unchanged.
@@ -370,25 +469,44 @@ export const GlobeView = memo(function GlobeView({
   void demographics
   void onSelectCountry
 
-  // Memoized so the marker array reference only changes when cityCount
-  // actually does — cobe-globe's animation loop only re-uploads GPU marker
-  // buffers when the reference changes (see its `lastMarkers` check).
+  // Globe exposes live screen-space projection (see cobe-globe.tsx) so the
+  // reveal/draw-in stagger below can order itself top-left to bottom-right
+  // by each item's *current* on-screen position rather than fixed geography
+  // — stays correct regardless of how the globe is currently rotated.
+  const globeRef = useRef<GlobeRef>(null)
+  const project = useCallback(
+    (location: [number, number]) => globeRef.current?.project(location) ?? { x: 0, y: 0 },
+    [],
+  )
+
+  const eligibleCityIds = useMemo(() => CITIES.slice(0, cityCount).map((c) => c.id), [cityCount])
+  const revealedIds = useSweepReveal(
+    eligibleCityIds,
+    useCallback((id: string) => cityById(id).location, []),
+    project,
+  )
+
+  // Memoized so the marker array reference only changes when the revealed
+  // set actually does — cobe-globe's animation loop only re-uploads GPU
+  // marker buffers when the reference changes (see its `lastMarkers` check).
   const markers = useMemo(
     () =>
-      CITIES.slice(0, cityCount).map((city) => ({
-        id: city.id,
-        location: city.location,
-        label: LANGUAGES.map((l) => city[l]),
-        size: CITY_MARKER_SIZE,
-      })),
-    [cityCount],
+      CITIES.slice(0, cityCount)
+        .filter((city) => revealedIds.has(city.id))
+        .map((city) => ({
+          id: city.id,
+          location: city.location,
+          label: CITY_LABELS.get(city.id)!,
+          size: CITY_MARKER_SIZE,
+        })),
+    [cityCount, revealedIds],
   )
 
   const visibleRoutes = useMemo(
     () => ARC_ROUTES.filter((route) => cityCount >= route.requiredCityCount),
     [cityCount],
   )
-  const drawProgress = useArcDrawProgress(visibleRoutes.map((r) => r.id))
+  const drawProgress = useArcDrawProgress(visibleRoutes, project)
 
   // Memoized off [visibleRoutes, drawProgress] rather than recomputed every
   // render — drawProgress's reference only changes on an actual animation
@@ -403,11 +521,8 @@ export const GlobeView = memo(function GlobeView({
         return {
           id: route.id,
           from: route.from.location,
-          to:
-            t >= 1
-              ? route.to.location
-              : interpolateLocation(route.from.location, route.to.location, t),
-          label: LANGUAGES.map((l) => `${route.from[l]} → ${route.to[l]}`),
+          to: t >= 1 ? route.to.location : slerpLocation(route.from.location, route.to.location, t),
+          label: route.label,
         }
       }),
     [visibleRoutes, drawProgress],
@@ -416,6 +531,7 @@ export const GlobeView = memo(function GlobeView({
   return (
     <div className="flex h-full w-full items-center justify-center p-8">
       <Globe
+        ref={globeRef}
         className="w-full max-w-2xl"
         markers={markers}
         arcs={arcs}

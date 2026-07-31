@@ -983,4 +983,68 @@ so it can be profiled properly.
 Status: done. Committed and pushed per user's standing instruction to
 commit+push all changes without asking.
 
-Status: done. Committed and pushed.
+## 2026-07-31 15:49 — Sweep animation implementation + real useRafThrottled bug
+
+Continuation of the previous entry's design. Implemented the sweep design
+(`docs/superpowers/specs/2026-07-31-globe-sweep-animation-design.md`):
+`Globe` (`cobe-globe.tsx`) is now a `forwardRef` exposing `project(location)`
+for live screen-position lookups; `GlobeView.tsx` uses it to stagger newly-
+eligible city reveals and reorder the arc draw-in stagger by top-left-to-
+bottom-right sweep instead of array order; the language toggle's label
+re-flip is staggered the same way, self-contained inside `Globe` since it
+already tracks every label's projected position each frame. Arc draw-in
+switched from a linear lat/lng lerp to a proper spherical slerp
+(`slerpLocation`), fixing the user-reported "curve scales instead of being
+drawn" look — root cause: the linear lerp wasn't a sub-segment of the final
+great-circle path, so cobe's bulge-height calc for the growing partial arc
+didn't grow the way a real partial reveal would.
+
+**Found and fixed a genuine, unrelated regression while testing this**: the
+previous session's `useRafThrottled` (the fix for slider lag) never
+actually commits past its first value. Root cause, confirmed via targeted
+debug logging: its effect was keyed on `[value]`, so it re-ran on every
+single value change, cancelling and rescheduling its `requestAnimationFrame`
+call each time via a `frameRef` guard — under React's dev-mode StrictMode
+double-invoke, that schedule/cancel dance could race and leave `frameRef`
+permanently in a state where no new frame ever got scheduled, silently
+freezing the committed value forever (confirmed live: `cityCountRaw` tracked
+the slider correctly up to 20, but `cityCount` stayed stuck at 9 no matter
+how long you waited). Rewrote it as a single persistent per-frame comparison
+loop started once on mount (`[]` dep, no per-value scheduling) — structurally
+immune to that race regardless of how often the input value changes.
+
+**Verification limitation, disclosed to the user**: this session's Browser
+pane is not composited/visible (confirmed via a direct `requestAnimationFrame`
+probe that never resolved, and `computer.screenshot` erroring "pane is not
+displayed") — browsers pause or heavily throttle rAF for non-visible
+documents, so none of the rAF-driven behavior here (the throttle fix, the
+sweep timing, the arc draw-in) could be visually verified end-to-end in this
+sandbox. What WAS verified: `tsc -b` + `npm run build` + `oxlint src` clean
+throughout; live interaction (slider to max, language toggle, rapid
+min/max cycling) produced zero NEW console errors; the DOM/React side
+(markers/arcs mounting, no exceptions) behaved correctly. The `useRafThrottled`
+race itself was proven via debug-log evidence (not just code reading), so
+that fix is on solid ground; the sweep-timing and slerp-path correctness
+rest on code review, not a visual check — user should confirm the actual
+on-screen feel.
+
+**Additional real optimization found during review** (separate from the
+StrictMode bug): arc/marker label arrays (`LANGUAGES.map(...)`) were being
+reallocated inside the per-frame `arcs`/`markers` `useMemo`s — meaning
+during any arc draw-in, EVERY visible label's array got a fresh reference
+every single animation frame, not just the one actually animating. Moved
+label computation to module scope (`ARC_ROUTES[].label`, `CITY_LABELS` map)
+so references are stable across frames. This also enabled a previously-
+inert optimization: `cobe-globe.tsx`'s `LabelPill` is now wrapped in
+`React.memo` (it wasn't before), with its `setRef` callback changed from a
+fresh inline arrow per render to a cached per-id stable function
+(`getRefSetter`) — without both changes together, the memo would never
+actually skip a re-render since props would always look "different".
+Checked cobe's own `update()` source directly (`node_modules/cobe/dist/index.esm.js`)
+to rule out a suspected bigger issue: it only touches the GPU buffer for
+whichever key (`markers`/`arcs`/`mapSamples`) is actually present in the
+update payload, so the per-frame arc re-upload itself was never the
+expensive part — the label re-render fan-out was.
+
+Status: done, pending user's live confirmation of animation feel. Committed
+and pushed per user's standing instruction to commit+push without asking.
