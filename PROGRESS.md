@@ -621,3 +621,15 @@ Status: done. Committed and pushed to `origin/main`.
 User said the hint was still too small to read. Bumped `LanguageHint`
 from `text-[0.6rem]` to `text-xs` (0.75rem) in `src/App.tsx`. Build
 clean. Committed and pushed.
+
+## 2026-07-31 (continued) — Same hover hint for theme toggle
+
+User asked for the same treatment on the theme (light/dark) toggle. Added
+`ThemeHint` in `src/App.tsx`, same pattern as `LanguageHint` — bottom-4
+right-4 corner, fade in/out, `text-xs`/`text-muted-foreground/60`, active
+mode in `text-accent` — text reads "light · dark · click to toggle" with
+whichever mode is current highlighted. `ThemeToggle` now takes an
+`onHoverChange` prop (mirroring `LanguageToggle`) wired to a new
+`themeHintVisible` state in `App`. Both hints share the same corner but
+never show simultaneously since only one button can be hovered at a
+time. Build clean. Committed and pushed.

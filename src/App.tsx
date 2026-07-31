@@ -9,29 +9,52 @@ import { LANG_GLYPH, LANGUAGES, nextLang, type Lang } from '@/lib/lang'
 interface ThemeToggleProps {
   theme: 'light' | 'dark'
   toggleTheme: () => void
+  onHoverChange: (hovered: boolean) => void
 }
 
 // Front face previews the mode a click switches TO; back face (hover)
 // shows the mode currently active.
-function ThemeToggle({ theme, toggleTheme }: ThemeToggleProps) {
-  return theme === 'dark' ? (
-    <CubeFlipToggle
-      frontIcon={<Sun />}
-      frontLabel="Light"
-      backIcon={<Moon />}
-      backLabel="Dark"
-      onClick={toggleTheme}
-      ariaLabel="Switch to light mode"
-    />
-  ) : (
-    <CubeFlipToggle
-      frontIcon={<Moon />}
-      frontLabel="Dark"
-      backIcon={<Sun />}
-      backLabel="Light"
-      onClick={toggleTheme}
-      ariaLabel="Switch to dark mode"
-    />
+function ThemeToggle({ theme, toggleTheme, onHoverChange }: ThemeToggleProps) {
+  return (
+    <div onMouseEnter={() => onHoverChange(true)} onMouseLeave={() => onHoverChange(false)}>
+      {theme === 'dark' ? (
+        <CubeFlipToggle
+          frontIcon={<Sun />}
+          frontLabel="Light"
+          backIcon={<Moon />}
+          backLabel="Dark"
+          onClick={toggleTheme}
+          ariaLabel="Switch to light mode"
+        />
+      ) : (
+        <CubeFlipToggle
+          frontIcon={<Moon />}
+          frontLabel="Dark"
+          backIcon={<Sun />}
+          backLabel="Light"
+          onClick={toggleTheme}
+          ariaLabel="Switch to dark mode"
+        />
+      )}
+    </div>
+  )
+}
+
+// Same corner-anchored hint pattern as LanguageHint below, for the theme
+// toggle: current mode picked out in accent red, the other muted.
+function ThemeHint({ theme, visible }: { theme: 'light' | 'dark'; visible: boolean }) {
+  return (
+    <span
+      aria-hidden="true"
+      className={`pointer-events-none absolute bottom-4 right-4 z-10 font-mono text-xs tracking-wide text-muted-foreground/60 transition-opacity duration-300 ${
+        visible ? 'opacity-100' : 'opacity-0'
+      }`}
+    >
+      <span className={theme === 'light' ? 'text-accent' : undefined}>light</span>
+      {' · '}
+      <span className={theme === 'dark' ? 'text-accent' : undefined}>dark</span>
+      {' · click to toggle'}
+    </span>
   )
 }
 
@@ -86,6 +109,7 @@ function App() {
   const [selectedIso3, setSelectedIso3] = useState<string | null>(null)
   const [lang, setLang] = useState<Lang>('en')
   const [langHintVisible, setLangHintVisible] = useState(false)
+  const [themeHintVisible, setThemeHintVisible] = useState(false)
   const { theme, toggleTheme } = useTheme()
 
   if (demographics.status === 'loading') {
@@ -122,9 +146,10 @@ function App() {
           onToggle={() => setLang(nextLang)}
           onHoverChange={setLangHintVisible}
         />
-        <ThemeToggle theme={theme} toggleTheme={toggleTheme} />
+        <ThemeToggle theme={theme} toggleTheme={toggleTheme} onHoverChange={setThemeHintVisible} />
       </div>
       <LanguageHint lang={lang} visible={langHintVisible} />
+      <ThemeHint theme={theme} visible={themeHintVisible} />
       {selected && (
         <div className="pointer-events-none absolute left-4 top-4 rounded-[var(--radius)] border bg-card/90 px-3 py-2 text-card-foreground shadow-sm backdrop-blur-sm">
           <div className="flex items-center gap-1.5 text-[0.65rem] uppercase tracking-widest text-muted-foreground">
