@@ -633,3 +633,13 @@ whichever mode is current highlighted. `ThemeToggle` now takes an
 `themeHintVisible` state in `App`. Both hints share the same corner but
 never show simultaneously since only one button can be hovered at a
 time. Build clean. Committed and pushed.
+
+## 2026-07-31 (continued) — Hint color in dark mode
+
+User asked for the grey hint text to become white/off-white specifically
+in dark mode (dark mode's `--muted-foreground` is a mid-grey
+`oklch(0.65 0 0)`, not white). Added `dark:text-foreground/70` to both
+`LanguageHint` and `ThemeHint` in `src/App.tsx` — light mode keeps
+`text-muted-foreground/60`, dark mode overrides to the near-white
+`--foreground` token (`oklch(0.95 0 0)`) at 70% opacity. Build clean.
+Committed and pushed.

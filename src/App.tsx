@@ -46,7 +46,7 @@ function ThemeHint({ theme, visible }: { theme: 'light' | 'dark'; visible: boole
   return (
     <span
       aria-hidden="true"
-      className={`pointer-events-none absolute bottom-4 right-4 z-10 font-mono text-xs tracking-wide text-muted-foreground/60 transition-opacity duration-300 ${
+      className={`pointer-events-none absolute bottom-4 right-4 z-10 font-mono text-xs tracking-wide text-muted-foreground/60 transition-opacity duration-300 dark:text-foreground/70 ${
         visible ? 'opacity-100' : 'opacity-0'
       }`}
     >
@@ -89,7 +89,7 @@ function LanguageHint({ lang, visible }: { lang: Lang; visible: boolean }) {
   return (
     <span
       aria-hidden="true"
-      className={`pointer-events-none absolute bottom-4 right-4 z-10 font-mono text-xs tracking-wide text-muted-foreground/60 transition-opacity duration-300 ${
+      className={`pointer-events-none absolute bottom-4 right-4 z-10 font-mono text-xs tracking-wide text-muted-foreground/60 transition-opacity duration-300 dark:text-foreground/70 ${
         visible ? 'opacity-100' : 'opacity-0'
       }`}
     >
