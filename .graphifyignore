@@ -1,0 +1,5 @@
+node_modules
+.agents
+.claude/skills
+dist
+graphify-out

@@ -1,0 +1,475 @@
+import { useEffect, useRef, useCallback } from "react"
+import createGlobe, { type COBEOptions } from "cobe"
+import { TextRotate, type TextRotateRef } from "@/components/ui/text-rotate"
+
+interface Marker {
+  id: string
+  location: [number, number]
+  /** Renders a permanent label pill for this marker when set — one entry per
+   * language variant, index-aligned with `activeLabelIndex`. Omit for
+   * unlabeled dots. */
+  label?: string[]
+  /** Overrides the globe-wide `markerSize` prop for this marker. */
+  size?: number
+}
+
+interface Arc {
+  id: string
+  from: [number, number]
+  to: [number, number]
+  label?: string[]
+}
+
+interface GlobeProps {
+  markers?: Marker[]
+  arcs?: Arc[]
+  className?: string
+  markerColor?: [number, number, number]
+  baseColor?: [number, number, number]
+  arcColor?: [number, number, number]
+  glowColor?: [number, number, number]
+  dark?: number
+  mapBrightness?: number
+  markerSize?: number
+  markerElevation?: number
+  arcWidth?: number
+  arcHeight?: number
+  speed?: number
+  theta?: number
+  diffuse?: number
+  mapSamples?: number
+  /** Which entry of each label's variant array is shown; animates the swap. */
+  activeLabelIndex?: number
+}
+
+// Mirrors cobe's own marker projection (node_modules/cobe/dist/index.esm.js,
+// functions U/O/W) so label positions match the WebGL-rendered dots exactly.
+// Re-derived here (rather than driven off cobe's built-in CSS-anchor label
+// system) because that system rewrites its <style> tag's textContent every
+// animation frame, which restarts the CSS opacity transition every frame and
+// it never settles — labels never actually become visible.
+function projectMarker(
+  location: [number, number],
+  phi: number,
+  theta: number,
+  elevation: number,
+): { x: number; y: number; visible: boolean } {
+  const r = 0.8 + elevation
+  const u = unitSphere(location)
+  return project([u[0] * r, u[1] * r, u[2] * r], phi, theta)
+}
+
+function unitSphere(location: [number, number]): [number, number, number] {
+  const [lat, lon] = location
+  const latRad = (lat * Math.PI) / 180
+  const lonRad = (lon * Math.PI) / 180 - Math.PI
+  const cosLat = Math.cos(latRad)
+  return [-cosLat * Math.cos(lonRad), Math.sin(latRad), cosLat * Math.sin(lonRad)]
+}
+
+function project(
+  point: [number, number, number],
+  phi: number,
+  theta: number,
+): { x: number; y: number; visible: boolean } {
+  const cosTheta = Math.cos(theta)
+  const sinTheta = Math.sin(theta)
+  const cosPhi = Math.cos(phi)
+  const sinPhi = Math.sin(phi)
+  const [px, py, pz] = point
+
+  const c = cosPhi * px + sinPhi * pz
+  const s = sinPhi * sinTheta * px + cosTheta * py - cosPhi * sinTheta * pz
+  const facing = -sinPhi * cosTheta * px + sinTheta * py + cosPhi * cosTheta * pz
+
+  return {
+    x: (c + 1) / 2,
+    y: (-s + 1) / 2,
+    visible: facing >= 0 || c * c + s * s >= 0.64,
+  }
+}
+
+// Mirrors cobe's arc-midpoint projection (function X in its source) for
+// placing arc labels at the peak of the arc's bulge.
+function projectArcMidpoint(
+  from: [number, number],
+  to: [number, number],
+  phi: number,
+  theta: number,
+  elevation: number,
+  arcHeight: number,
+): { x: number; y: number; visible: boolean } | null {
+  const base = 0.8 + elevation
+  const uFrom = unitSphere(from)
+  const uTo = unitSphere(to)
+  const sum: [number, number, number] = [uFrom[0] + uTo[0], uFrom[1] + uTo[1], uFrom[2] + uTo[2]]
+  const mag = Math.sqrt(sum[0] ** 2 + sum[1] ** 2 + sum[2] ** 2)
+  if (mag < 0.001) return null
+
+  const scale = 0.25 * base + (0.5 * (base + arcHeight)) / mag
+  return project([sum[0] * scale, sum[1] * scale, sum[2] * scale], phi, theta)
+}
+
+export function Globe({
+  markers = [],
+  arcs = [],
+  className = "",
+  markerColor = [0.3, 0.45, 0.85],
+  baseColor = [1, 1, 1],
+  arcColor = [0.3, 0.45, 0.85],
+  glowColor = [0.94, 0.93, 0.91],
+  dark = 0,
+  mapBrightness = 10,
+  markerSize = 0.025,
+  markerElevation = 0.01,
+  arcWidth = 0.5,
+  arcHeight = 0.25,
+  speed = 0.003,
+  theta = 0.2,
+  diffuse = 1.5,
+  mapSamples = 16000,
+  activeLabelIndex = 0,
+}: GlobeProps) {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const labelRefs = useRef<Map<string, HTMLDivElement>>(new Map())
+  const arcLabelRefs = useRef<Map<string, HTMLDivElement>>(new Map())
+  // Read by the animation loop every frame instead of being a useEffect
+  // dependency — lets markers/arcs/colors update live without tearing down
+  // and recreating the globe, which would reset its rotation to phi=0.
+  const liveProps = useRef({
+    markers,
+    arcs,
+    markerColor,
+    baseColor,
+    arcColor,
+    glowColor,
+    dark,
+    mapBrightness,
+    markerSize,
+    markerElevation,
+    arcWidth,
+    arcHeight,
+  })
+  liveProps.current = {
+    markers,
+    arcs,
+    markerColor,
+    baseColor,
+    arcColor,
+    glowColor,
+    dark,
+    mapBrightness,
+    markerSize,
+    markerElevation,
+    arcWidth,
+    arcHeight,
+  }
+  const pointerInteracting = useRef<{ x: number; y: number } | null>(null)
+  const lastPointer = useRef<{ x: number; y: number; t: number } | null>(null)
+  const dragOffset = useRef({ phi: 0, theta: 0 })
+  const velocity = useRef({ phi: 0, theta: 0 })
+  const phiOffsetRef = useRef(0)
+  const thetaOffsetRef = useRef(0)
+  const isPausedRef = useRef(false)
+
+  const handlePointerDown = useCallback((e: React.PointerEvent) => {
+    pointerInteracting.current = { x: e.clientX, y: e.clientY }
+    if (canvasRef.current) canvasRef.current.style.cursor = "grabbing"
+    isPausedRef.current = true
+  }, [])
+
+  const handlePointerMove = useCallback((e: PointerEvent) => {
+    if (pointerInteracting.current !== null) {
+      const deltaX = e.clientX - pointerInteracting.current.x
+      const deltaY = e.clientY - pointerInteracting.current.y
+      dragOffset.current = { phi: deltaX / 300, theta: deltaY / 1000 }
+      const now = Date.now()
+      if (lastPointer.current) {
+        const dt = Math.max(now - lastPointer.current.t, 1)
+        const maxVelocity = 0.15
+        velocity.current = {
+          phi: Math.max(
+            -maxVelocity,
+            Math.min(maxVelocity, ((e.clientX - lastPointer.current.x) / dt) * 0.3)
+          ),
+          theta: Math.max(
+            -maxVelocity,
+            Math.min(maxVelocity, ((e.clientY - lastPointer.current.y) / dt) * 0.08)
+          ),
+        }
+      }
+      lastPointer.current = { x: e.clientX, y: e.clientY, t: now }
+    }
+  }, [])
+
+  const handlePointerUp = useCallback(() => {
+    if (pointerInteracting.current !== null) {
+      phiOffsetRef.current += dragOffset.current.phi
+      thetaOffsetRef.current += dragOffset.current.theta
+      dragOffset.current = { phi: 0, theta: 0 }
+      lastPointer.current = null
+    }
+    pointerInteracting.current = null
+    if (canvasRef.current) canvasRef.current.style.cursor = "grab"
+    isPausedRef.current = false
+  }, [])
+
+  useEffect(() => {
+    window.addEventListener("pointermove", handlePointerMove, { passive: true })
+    window.addEventListener("pointerup", handlePointerUp, { passive: true })
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove)
+      window.removeEventListener("pointerup", handlePointerUp)
+    }
+  }, [handlePointerMove, handlePointerUp])
+
+  useEffect(() => {
+    if (!canvasRef.current) return
+    const canvas = canvasRef.current
+    let globe: ReturnType<typeof createGlobe> | null = null
+    let animationId: number
+    let phi = 0
+
+    function init() {
+      const width = canvas.offsetWidth
+      if (width === 0 || globe) return
+
+      const dpr = Math.min(window.devicePixelRatio || 1, 2)
+      const initial = liveProps.current
+      globe = createGlobe(canvas, {
+        devicePixelRatio: dpr,
+        width,
+        height: width,
+        phi: 0,
+        theta,
+        dark: initial.dark,
+        diffuse,
+        mapSamples,
+        mapBrightness: initial.mapBrightness,
+        baseColor: initial.baseColor,
+        markerColor: initial.markerColor,
+        glowColor: initial.glowColor,
+        markerElevation: initial.markerElevation,
+        markers: initial.markers.map((m) => ({
+          location: m.location,
+          size: m.size ?? initial.markerSize,
+          id: m.id,
+        })),
+        arcs: initial.arcs.map((a) => ({
+          from: a.from,
+          to: a.to,
+          id: a.id,
+        })),
+        arcColor: initial.arcColor,
+        arcWidth: initial.arcWidth,
+        arcHeight: initial.arcHeight,
+        opacity: 0.7,
+      })
+
+      function updateLabels(currentPhi: number, currentTheta: number, markerElevation: number, arcHeight: number) {
+        for (const m of liveProps.current.markers) {
+          const el = labelRefs.current.get(m.id)
+          if (!el) continue
+          const { x, y, visible } = projectMarker(m.location, currentPhi, currentTheta, markerElevation)
+          el.style.left = `${x * 100}%`
+          el.style.top = `${y * 100}%`
+          el.style.opacity = visible ? "1" : "0"
+        }
+        for (const a of liveProps.current.arcs) {
+          const el = arcLabelRefs.current.get(a.id)
+          if (!el) continue
+          const projected = projectArcMidpoint(a.from, a.to, currentPhi, currentTheta, markerElevation, arcHeight)
+          if (!projected) {
+            el.style.opacity = "0"
+            continue
+          }
+          el.style.left = `${projected.x * 100}%`
+          el.style.top = `${projected.y * 100}%`
+          el.style.opacity = projected.visible ? "1" : "0"
+        }
+      }
+
+      let lastMarkers: Marker[] | null = null
+      let lastArcs: Arc[] | null = null
+
+      function animate() {
+        if (!isPausedRef.current) {
+          phi += speed
+          if (
+            Math.abs(velocity.current.phi) > 0.0001 ||
+            Math.abs(velocity.current.theta) > 0.0001
+          ) {
+            phiOffsetRef.current += velocity.current.phi
+            thetaOffsetRef.current += velocity.current.theta
+            velocity.current.phi *= 0.95
+            velocity.current.theta *= 0.95
+          }
+          const thetaMin = -0.4,
+            thetaMax = 0.4
+          if (thetaOffsetRef.current < thetaMin) {
+            thetaOffsetRef.current += (thetaMin - thetaOffsetRef.current) * 0.1
+          } else if (thetaOffsetRef.current > thetaMax) {
+            thetaOffsetRef.current += (thetaMax - thetaOffsetRef.current) * 0.1
+          }
+        }
+        const p = liveProps.current
+        const currentPhi = phi + phiOffsetRef.current + dragOffset.current.phi
+        const currentTheta = theta + thetaOffsetRef.current + dragOffset.current.theta
+
+        // cobe re-uploads the marker/arc GPU buffers whenever these keys are
+        // present in the update payload, even if the data is identical —
+        // only include them when the reference actually changed (our marker/
+        // arc lists are static after mount, so normally this is just once).
+        const updatePayload: Partial<COBEOptions> = {
+          phi: currentPhi,
+          theta: currentTheta,
+          dark: p.dark,
+          mapBrightness: p.mapBrightness,
+          markerColor: p.markerColor,
+          baseColor: p.baseColor,
+          glowColor: p.glowColor,
+          arcColor: p.arcColor,
+          markerElevation: p.markerElevation,
+        }
+        if (p.markers !== lastMarkers) {
+          updatePayload.markers = p.markers.map((m) => ({
+            location: m.location,
+            size: m.size ?? p.markerSize,
+            id: m.id,
+          }))
+          lastMarkers = p.markers
+        }
+        if (p.arcs !== lastArcs) {
+          updatePayload.arcs = p.arcs.map((a) => ({
+            from: a.from,
+            to: a.to,
+            id: a.id,
+          }))
+          lastArcs = p.arcs
+        }
+        globe!.update(updatePayload)
+        updateLabels(currentPhi, currentTheta, p.markerElevation, p.arcHeight)
+        animationId = requestAnimationFrame(animate)
+      }
+      animate()
+      setTimeout(() => canvas && (canvas.style.opacity = "1"))
+    }
+
+    if (canvas.offsetWidth > 0) {
+      init()
+    } else {
+      const ro = new ResizeObserver((entries) => {
+        if (entries[0]?.contentRect.width > 0) {
+          ro.disconnect()
+          init()
+        }
+      })
+      ro.observe(canvas)
+    }
+
+    return () => {
+      if (animationId) cancelAnimationFrame(animationId)
+      if (globe) globe.destroy()
+    }
+    // Deliberately excludes markers/arcs/colors/etc — those are read live via
+    // liveProps each frame so changing them doesn't reset rotation. Only
+    // structural init-time values (read once by createGlobe) go here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [speed, theta, diffuse, mapSamples])
+
+  return (
+    <div className={`relative aspect-square select-none ${className}`}>
+      <canvas
+        ref={canvasRef}
+        onPointerDown={handlePointerDown}
+        style={{
+          width: "100%",
+          height: "100%",
+          cursor: "grab",
+          opacity: 0,
+          transition: "opacity 1.2s ease",
+          borderRadius: "50%",
+          touchAction: "none",
+        }}
+      />
+      {markers
+        .filter((m) => m.label && m.label.length > 0)
+        .map((m) => (
+          <LabelPill
+            key={m.id}
+            texts={m.label!}
+            activeIndex={activeLabelIndex}
+            setRef={(el) => {
+              if (el) labelRefs.current.set(m.id, el)
+              else labelRefs.current.delete(m.id)
+            }}
+          />
+        ))}
+      {arcs
+        .filter((a) => a.label && a.label.length > 0)
+        .map((a) => (
+          <LabelPill
+            key={a.id}
+            texts={a.label!}
+            activeIndex={activeLabelIndex}
+            setRef={(el) => {
+              if (el) arcLabelRefs.current.set(a.id, el)
+              else arcLabelRefs.current.delete(a.id)
+            }}
+          />
+        ))}
+    </div>
+  )
+}
+
+function LabelPill({
+  texts,
+  activeIndex,
+  setRef,
+}: {
+  texts: string[]
+  activeIndex: number
+  setRef: (el: HTMLDivElement | null) => void
+}) {
+  const rotateRef = useRef<TextRotateRef>(null)
+
+  useEffect(() => {
+    rotateRef.current?.jumpTo(activeIndex)
+  }, [activeIndex])
+
+  return (
+    <div
+      ref={setRef}
+      style={{
+        position: "absolute",
+        transform: "translate(-50%, calc(-100% - 10px))",
+        pointerEvents: "none",
+        opacity: 0,
+        transition: "opacity 1.4s ease",
+      }}
+    >
+      <TextRotate
+        ref={rotateRef}
+        texts={texts}
+        auto={false}
+        loop={false}
+        splitBy="characters"
+        staggerDuration={0.015}
+        animatePresenceMode="popLayout"
+        transition={{ type: "spring", damping: 30, stiffness: 400 }}
+        mainClassName="rounded-[3px] bg-foreground px-1.5 py-0.5 font-mono text-[0.6rem] tracking-wider text-background uppercase whitespace-nowrap shadow-sm"
+      />
+      <span
+        className="bg-foreground"
+        style={{
+          position: "absolute",
+          bottom: -3,
+          left: "50%",
+          width: 6,
+          height: 6,
+          transform: "translateX(-50%) rotate(45deg)",
+        }}
+      />
+    </div>
+  )
+}

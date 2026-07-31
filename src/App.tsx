@@ -1,0 +1,110 @@
+import { useState } from 'react'
+import { Globe as GlobeIcon, Moon, Sun } from 'lucide-react'
+import { GlobeView } from '@/components/GlobeView'
+import { useDemographics } from '@/lib/useDemographics'
+import { useTheme } from '@/lib/useTheme'
+import { CubeFlipToggle } from '@/components/ui/cube-flip-toggle'
+import { LANG_GLYPH, nextLang, type Lang } from '@/lib/lang'
+
+interface ThemeToggleProps {
+  theme: 'light' | 'dark'
+  toggleTheme: () => void
+}
+
+// Front face previews the mode a click switches TO; back face (hover)
+// shows the mode currently active.
+function ThemeToggle({ theme, toggleTheme }: ThemeToggleProps) {
+  return theme === 'dark' ? (
+    <CubeFlipToggle
+      frontIcon={<Sun />}
+      frontLabel="Light"
+      backIcon={<Moon />}
+      backLabel="Dark"
+      onClick={toggleTheme}
+      ariaLabel="Switch to light mode"
+    />
+  ) : (
+    <CubeFlipToggle
+      frontIcon={<Moon />}
+      frontLabel="Dark"
+      backIcon={<Sun />}
+      backLabel="Light"
+      onClick={toggleTheme}
+      ariaLabel="Switch to dark mode"
+    />
+  )
+}
+
+interface LanguageToggleProps {
+  lang: Lang
+  onToggle: () => void
+}
+
+// Cycles through LANGUAGES on each click. Front face previews the language
+// a click switches TO (the next one in the cycle); back face (hover) shows
+// the one currently active.
+function LanguageToggle({ lang, onToggle }: LanguageToggleProps) {
+  const upcoming = nextLang(lang)
+  return (
+    <CubeFlipToggle
+      frontIcon={<GlobeIcon />}
+      frontLabel={LANG_GLYPH[upcoming]}
+      backLabel={LANG_GLYPH[lang]}
+      onClick={onToggle}
+      ariaLabel={`Switch language to ${LANG_GLYPH[upcoming]}`}
+    />
+  )
+}
+
+function App() {
+  const demographics = useDemographics()
+  const [selectedIso3, setSelectedIso3] = useState<string | null>(null)
+  const [lang, setLang] = useState<Lang>('en')
+  const { theme, toggleTheme } = useTheme()
+
+  if (demographics.status === 'loading') {
+    return (
+      <div className="flex h-full items-center justify-center font-mono text-sm text-muted-foreground">
+        loading population data…
+      </div>
+    )
+  }
+
+  if (demographics.status === 'error') {
+    return (
+      <div className="flex h-full items-center justify-center font-mono text-sm text-destructive">
+        failed to load population data: {demographics.error.message}
+      </div>
+    )
+  }
+
+  const selected = selectedIso3 ? demographics.data.get(selectedIso3) : undefined
+
+  return (
+    <div className="relative h-full w-full">
+      <GlobeView
+        demographics={demographics.data}
+        lang={lang}
+        onSelectCountry={(iso3) => {
+          setSelectedIso3(iso3)
+          console.log('selected', iso3, demographics.data.get(iso3))
+        }}
+      />
+      <div className="absolute right-4 top-4 z-10 flex gap-2">
+        <LanguageToggle lang={lang} onToggle={() => setLang(nextLang)} />
+        <ThemeToggle theme={theme} toggleTheme={toggleTheme} />
+      </div>
+      {selected && (
+        <div className="pointer-events-none absolute left-4 top-4 rounded-[var(--radius)] border bg-card/90 px-3 py-2 text-card-foreground shadow-sm backdrop-blur-sm">
+          <div className="flex items-center gap-1.5 text-[0.65rem] uppercase tracking-widest text-muted-foreground">
+            <span className="inline-block size-1.5 rounded-full bg-accent" />
+            reading
+          </div>
+          <div className="font-mono text-sm font-medium">{selected.name}</div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+export default App
