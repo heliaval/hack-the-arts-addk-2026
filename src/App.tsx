@@ -4,7 +4,7 @@ import { GlobeView } from '@/components/GlobeView'
 import { useDemographics } from '@/lib/useDemographics'
 import { useTheme } from '@/lib/useTheme'
 import { CubeFlipToggle } from '@/components/ui/cube-flip-toggle'
-import { LANG_GLYPH, nextLang, type Lang } from '@/lib/lang'
+import { LANG_GLYPH, LANGUAGES, nextLang, type Lang } from '@/lib/lang'
 
 interface ThemeToggleProps {
   theme: 'light' | 'dark'
@@ -46,13 +46,27 @@ interface LanguageToggleProps {
 function LanguageToggle({ lang, onToggle }: LanguageToggleProps) {
   const upcoming = nextLang(lang)
   return (
-    <CubeFlipToggle
-      frontIcon={<GlobeIcon />}
-      frontLabel={LANG_GLYPH[upcoming]}
-      backLabel={LANG_GLYPH[lang]}
-      onClick={onToggle}
-      ariaLabel={`Switch language to ${LANG_GLYPH[upcoming]}`}
-    />
+    <div className="group/flip relative">
+      <CubeFlipToggle
+        frontIcon={<GlobeIcon />}
+        frontLabel={LANG_GLYPH[upcoming]}
+        backLabel={LANG_GLYPH[lang]}
+        onClick={onToggle}
+        ariaLabel={`Switch language to ${LANG_GLYPH[upcoming]}`}
+      />
+      <span
+        aria-hidden="true"
+        className="pointer-events-none absolute right-0 top-full mt-1.5 w-max font-mono text-[0.55rem] tracking-wide text-muted-foreground/60 opacity-0 transition-opacity duration-300 group-hover/flip:opacity-100"
+      >
+        {LANGUAGES.map((l, i) => (
+          <span key={l}>
+            <span className={l === lang ? 'text-accent' : undefined}>{LANG_GLYPH[l]}</span>
+            {i < LANGUAGES.length - 1 && ' · '}
+          </span>
+        ))}
+        {' · click to cycle'}
+      </span>
+    </div>
   )
 }
 

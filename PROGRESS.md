@@ -561,3 +561,35 @@ correctly scoped, GitHub repo initialized and pushed. Outstanding product
 work is unchanged from the previous entry: click-to-select on globe
 markers unresolved, hourglass scene still 0% started — deadline is
 2026-08-01 8:45pm PDT.
+
+## 2026-07-31 (continued) — Language toggle hover tooltip
+
+Started: user asked for a small hover subtitle under the language toggle
+listing available languages and how to cycle them, with a fade in/out
+transition, in grey.
+
+Implemented in `src/App.tsx`'s `LanguageToggle`: wrapped the existing
+`CubeFlipToggle` button in a `group/flip relative` div, added an
+`aria-hidden`, `pointer-events-none` absolute-positioned `<span>` that
+fades in/out (`opacity-0` -> `group-hover/flip:opacity-100`,
+`duration-300`) on hover. Iterated twice per user feedback:
+- First pass: centered below the button, `text-muted-foreground/60` at
+  `text-[0.5rem]`.
+- Second pass: moved to bottom-right (`right-0` instead of centered),
+  bumped to `text-[0.55rem]`, and the currently-active language's glyph
+  is now rendered in `text-accent` (the app's one wine-red chromatic
+  token, `#912f40` light / `#c17b8a` dark) while the rest stay muted grey
+  — highlights the current selection within the "EN · ZH · JA · KO · FR ·
+  ES · PT · click to cycle" list. Requires importing `LANGUAGES` from
+  `src/lib/lang.ts` (previously only `LANG_GLYPH`/`nextLang` were used).
+
+Verification: `npm run build` clean after both passes, `graphify update .`
+run after. **Not visually screenshotted** — same recurring limitation
+noted throughout this project (browser preview pane doesn't composite
+frames in this environment); user should eyeball the hover state in
+`npm run dev` before the demo.
+
+User also instructed: auto-commit changes going forward without asking
+first, for the remainder of this project.
+
+Status: done.
