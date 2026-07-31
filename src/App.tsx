@@ -4,7 +4,10 @@ import { GlobeView } from '@/components/GlobeView'
 import { useDemographics } from '@/lib/useDemographics'
 import { useTheme } from '@/lib/useTheme'
 import { CubeFlipToggle } from '@/components/ui/cube-flip-toggle'
+import { Slider } from '@/components/ui/slider-number-flow'
 import { LANG_GLYPH, LANGUAGES, nextLang, type Lang } from '@/lib/lang'
+import { MIN_CITY_COUNT, MAX_CITY_COUNT } from '@/components/GlobeView'
+import { DEFAULT_ROTATION_SPEED_KM_S, MAX_ROTATION_SPEED_KM_S } from '@/lib/globeSpeed'
 
 interface ThemeToggleProps {
   theme: 'light' | 'dark'
@@ -104,12 +107,62 @@ function LanguageHint({ lang, visible }: { lang: Lang; visible: boolean }) {
   )
 }
 
+// Bottom-left instrument panel, mirroring the top-left "reading" panel's
+// card/border/uppercase-label styling.
+function ControlPanel({
+  cityCount,
+  onCityCountChange,
+  rotationSpeedKmS,
+  onRotationSpeedChange,
+}: {
+  cityCount: number
+  onCityCountChange: (value: number) => void
+  rotationSpeedKmS: number
+  onRotationSpeedChange: (value: number) => void
+}) {
+  return (
+    <div className="absolute bottom-4 left-4 z-10 flex w-56 flex-col gap-4 rounded-[var(--radius)] border bg-card/90 px-3 py-3 text-card-foreground shadow-sm backdrop-blur-sm">
+      <div>
+        <div className="mb-3 flex items-center gap-1.5 text-[0.65rem] uppercase tracking-widest text-muted-foreground">
+          <span className="inline-block size-1.5 rounded-full bg-accent" />
+          cities
+        </div>
+        <Slider
+          value={[cityCount]}
+          onValueChange={([v]) => onCityCountChange(v)}
+          min={MIN_CITY_COUNT}
+          max={MAX_CITY_COUNT}
+          step={1}
+          aria-label="Number of cities shown"
+        />
+      </div>
+      <div>
+        <div className="mb-3 flex items-center gap-1.5 text-[0.65rem] uppercase tracking-widest text-muted-foreground">
+          <span className="inline-block size-1.5 rounded-full bg-accent" />
+          rotation
+        </div>
+        <Slider
+          value={[rotationSpeedKmS]}
+          onValueChange={([v]) => onRotationSpeedChange(v)}
+          min={DEFAULT_ROTATION_SPEED_KM_S}
+          max={MAX_ROTATION_SPEED_KM_S}
+          step={1}
+          unit="km/s"
+          aria-label="Globe rotation speed in kilometers per second"
+        />
+      </div>
+    </div>
+  )
+}
+
 function App() {
   const demographics = useDemographics()
   const [selectedIso3, setSelectedIso3] = useState<string | null>(null)
   const [lang, setLang] = useState<Lang>('en')
   const [langHintVisible, setLangHintVisible] = useState(false)
   const [themeHintVisible, setThemeHintVisible] = useState(false)
+  const [cityCount, setCityCount] = useState(MIN_CITY_COUNT)
+  const [rotationSpeedKmS, setRotationSpeedKmS] = useState(DEFAULT_ROTATION_SPEED_KM_S)
   const { theme, toggleTheme } = useTheme()
 
   if (demographics.status === 'loading') {
@@ -139,6 +192,8 @@ function App() {
           setSelectedIso3(iso3)
           console.log('selected', iso3, demographics.data.get(iso3))
         }}
+        cityCount={cityCount}
+        rotationSpeedKmS={rotationSpeedKmS}
       />
       <div className="absolute right-4 top-4 z-10 flex gap-2">
         <LanguageToggle
@@ -150,6 +205,12 @@ function App() {
       </div>
       <LanguageHint lang={lang} visible={langHintVisible} />
       <ThemeHint theme={theme} visible={themeHintVisible} />
+      <ControlPanel
+        cityCount={cityCount}
+        onCityCountChange={setCityCount}
+        rotationSpeedKmS={rotationSpeedKmS}
+        onRotationSpeedChange={setRotationSpeedKmS}
+      />
       {selected && (
         <div className="pointer-events-none absolute left-4 top-4 rounded-[var(--radius)] border bg-card/90 px-3 py-2 text-card-foreground shadow-sm backdrop-blur-sm">
           <div className="flex items-center gap-1.5 text-[0.65rem] uppercase tracking-widest text-muted-foreground">

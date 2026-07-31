@@ -622,6 +622,76 @@ User said the hint was still too small to read. Bumped `LanguageHint`
 from `text-[0.6rem]` to `text-xs` (0.75rem) in `src/App.tsx`. Build
 clean. Committed and pushed.
 
+## 2026-07-31 (continued) — Bottom-left control panel: city count + rotation speed sliders
+
+User pasted a shadcn-style component-integration prompt for a NumberFlow
++ Radix slider (`@number-flow/react`, `@radix-ui/react-slider`) and asked
+for two sliders bottom-left: number of cities shown, and globe rotation
+speed in km/s. Both: min = current value, max = "something reasonable" —
+delegated to my judgment.
+
+Installed `@radix-ui/react-slider` + `@number-flow/react` (`clsx` was
+already a dependency). Judgment calls made, flagged here per the
+delegated scope:
+- **Cities max = 20.** `src/components/GlobeView.tsx`'s `CITIES` array
+  (previously fixed at 9) got 11 more entries (Moscow, Beijing, Delhi,
+  Cairo, Lagos, Mexico City, Toronto, Singapore, Seoul, Mumbai, Istanbul)
+  with full 7-language labels matching the existing set's shape. Appended
+  after the original 9 (not interspersed) so the slider's minimum
+  position renders pixel-identical to before. `MIN_CITY_COUNT`/
+  `MAX_CITY_COUNT` exported from the module. The two hardcoded demo arcs
+  (SF→Tokyo, NYC→London) stay pinned to `CITIES[0..3]`, always present
+  since the count never drops below 9.
+- **Rotation speed unit = km/s via v = ω·r.** cobe's `speed` prop is an
+  opaque radians-per-frame constant, not a real unit. Rather than expose
+  that directly, `src/lib/globeSpeed.ts` treats it as the equatorial
+  surface velocity implied by the spin rate (Earth's real 6371km radius,
+  assumed 60fps) — turns the default `speed=0.003` into a computed
+  instrument reading of ~1147 km/s (not literal — the visual spin is
+  already far faster than real life — but keeps with the app's
+  tide-gauge/instrument-reading design language rather than an arbitrary
+  slider number). Min = that computed default, max = 6× it (~6882 km/s)
+  for a dramatic-but-still-legible fast spin.
+
+**Real bug caught before shipping**: `cobe-globe.tsx`'s `speed` prop was
+still a `useEffect` dependency (`[speed, theta, diffuse, mapSamples]`) —
+the exact "prop change tears down and recreates the globe, resetting
+rotation to phi=0" bug already fixed for markers/arcs/colors/theme in an
+earlier session (see the "Globe polish marathon" entry above), just never
+triggered before because nothing live-changed `speed` until now. Fixed by
+moving `speed` into the existing `liveProps` ref pattern (read live each
+animation frame via `liveProps.current.speed` instead of the effect's
+closure) and dropping it from the dependency array. Verified live in a
+running dev server: dragged both sliders through their full range via
+keyboard (Radix slider Home/End/ArrowRight), single stable `<canvas>`
+throughout, no reinit/rotation-jump, no console errors.
+
+New `Slider` component (`src/components/ui/slider-number-flow.tsx`) is
+the pasted reference restyled off this app's own tokens (`--accent`,
+`--card`, `font-mono`) instead of the original's hardcoded zinc/black —
+per the project's anti-AI-slop design rule. Dropped the pasted
+`continuous` prop on `NumberFlow`; not present in the installed
+`@number-flow/react` version, caused a build error. New `ControlPanel`
+component in `src/App.tsx` mirrors the existing top-left "reading"
+panel's card/border/uppercase-label instrument styling, placed
+bottom-left.
+
+**Also fixed in passing**: created `.claude/launch.json` so this
+project's dev server can be launched via the Browser pane's
+`preview_start` tool going forward (didn't exist before this session;
+had to fall back to manually backgrounding `npm run dev` this time after
+`preview_start` couldn't resolve `npm`/`node` in its own spawn
+environment — the launch.json is still worth having for future sessions
+where that resolves cleanly).
+
+Verification: `npm run build` clean, `oxlint src` clean (only the
+pre-existing unrelated `button.tsx` warning), live-browser slider
+interaction verified as described above (screenshots still not possible
+in this environment — same recurring composited-frame limitation — but
+DOM/ARIA state, console, and network were all checked directly).
+
+Status: done. Committed and pushed.
+
 ## 2026-07-31 (continued) — Same hover hint for theme toggle
 
 User asked for the same treatment on the theme (light/dark) toggle. Added

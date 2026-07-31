@@ -1,11 +1,15 @@
+import { useMemo } from 'react'
 import { Globe } from '@/components/ui/cobe-globe'
 import type { CountryDemographics } from '@/lib/worldbank'
 import { LANGUAGES, type Lang } from '@/lib/lang'
+import { kmPerSecToPhiSpeed } from '@/lib/globeSpeed'
 
 interface GlobeViewProps {
   demographics: Map<string, CountryDemographics>
   lang: Lang
   onSelectCountry: (iso3: string) => void
+  cityCount: number
+  rotationSpeedKmS: number
 }
 
 // The globe sphere always stays white, like the original reference demo —
@@ -125,24 +129,146 @@ const CITIES = [
     es: 'São Paulo',
     pt: 'São Paulo',
   },
+  // Extra cities beyond the original 9-city demo set, added so the city-count
+  // slider has room to grow. Appended after the original set rather than
+  // interspersed, so the default (min) view is pixel-identical to before.
+  {
+    id: 'city-moscow',
+    location: [55.7558, 37.6173] as [number, number],
+    en: 'Moscow',
+    zh: '莫斯科',
+    ja: 'モスクワ',
+    ko: '모스크바',
+    fr: 'Moscou',
+    es: 'Moscú',
+    pt: 'Moscou',
+  },
+  {
+    id: 'city-beijing',
+    location: [39.9042, 116.4074] as [number, number],
+    en: 'Beijing',
+    zh: '北京',
+    ja: '北京',
+    ko: '베이징',
+    fr: 'Pékin',
+    es: 'Pekín',
+    pt: 'Pequim',
+  },
+  {
+    id: 'city-delhi',
+    location: [28.6139, 77.209] as [number, number],
+    en: 'Delhi',
+    zh: '德里',
+    ja: 'デリー',
+    ko: '델리',
+    fr: 'Delhi',
+    es: 'Delhi',
+    pt: 'Deli',
+  },
+  {
+    id: 'city-cairo',
+    location: [30.0444, 31.2357] as [number, number],
+    en: 'Cairo',
+    zh: '开罗',
+    ja: 'カイロ',
+    ko: '카이로',
+    fr: 'Le Caire',
+    es: 'El Cairo',
+    pt: 'Cairo',
+  },
+  {
+    id: 'city-lagos',
+    location: [6.5244, 3.3792] as [number, number],
+    en: 'Lagos',
+    zh: '拉各斯',
+    ja: 'ラゴス',
+    ko: '라고스',
+    fr: 'Lagos',
+    es: 'Lagos',
+    pt: 'Lagos',
+  },
+  {
+    id: 'city-mexicocity',
+    location: [19.4326, -99.1332] as [number, number],
+    en: 'Mexico City',
+    zh: '墨西哥城',
+    ja: 'メキシコシティ',
+    ko: '멕시코시티',
+    fr: 'Mexico',
+    es: 'Ciudad de México',
+    pt: 'Cidade do México',
+  },
+  {
+    id: 'city-toronto',
+    location: [43.6532, -79.3832] as [number, number],
+    en: 'Toronto',
+    zh: '多伦多',
+    ja: 'トロント',
+    ko: '토론토',
+    fr: 'Toronto',
+    es: 'Toronto',
+    pt: 'Toronto',
+  },
+  {
+    id: 'city-singapore',
+    location: [1.3521, 103.8198] as [number, number],
+    en: 'Singapore',
+    zh: '新加坡',
+    ja: 'シンガポール',
+    ko: '싱가포르',
+    fr: 'Singapour',
+    es: 'Singapur',
+    pt: 'Singapura',
+  },
+  {
+    id: 'city-seoul',
+    location: [37.5665, 126.978] as [number, number],
+    en: 'Seoul',
+    zh: '首尔',
+    ja: 'ソウル',
+    ko: '서울',
+    fr: 'Séoul',
+    es: 'Seúl',
+    pt: 'Seul',
+  },
+  {
+    id: 'city-mumbai',
+    location: [19.076, 72.8777] as [number, number],
+    en: 'Mumbai',
+    zh: '孟买',
+    ja: 'ムンバイ',
+    ko: '뭄바이',
+    fr: 'Bombay',
+    es: 'Bombay',
+    pt: 'Mumbai',
+  },
+  {
+    id: 'city-istanbul',
+    location: [41.0082, 28.9784] as [number, number],
+    en: 'Istanbul',
+    zh: '伊斯坦布尔',
+    ja: 'イスタンブール',
+    ko: '이스탄불',
+    fr: 'Istanbul',
+    es: 'Estambul',
+    pt: 'Istambul',
+  },
 ]
+export const MIN_CITY_COUNT = 9
+export const MAX_CITY_COUNT = CITIES.length
+
 const CITY_MARKER_SIZE = 0.025
 
+// Fixed to the original first-4 cities (always present, since cityCount's
+// minimum is 9) so the two demo arcs never reference a sliced-out city.
 const ARC_ROUTES = [
   { id: 'sf-tokyo', from: CITIES[0], to: CITIES[2] },
   { id: 'nyc-london', from: CITIES[1], to: CITIES[3] },
 ]
 
-// Variant arrays ordered to match LANGUAGES — stable references so the
-// globe never reinits on language change; only `activeLabelIndex` moves,
-// which animates the swap via TextRotate instead of an instant text replace.
-const MARKERS = CITIES.map((city) => ({
-  id: city.id,
-  location: city.location,
-  label: LANGUAGES.map((l) => city[l]),
-  size: CITY_MARKER_SIZE,
-}))
-
+// Variant arrays ordered to match LANGUAGES — only `activeLabelIndex` moves
+// on language change, which animates the swap via TextRotate instead of an
+// instant text replace.
 const ARCS = ARC_ROUTES.map((route) => ({
   id: route.id,
   from: route.from.location,
@@ -150,20 +276,41 @@ const ARCS = ARC_ROUTES.map((route) => ({
   label: LANGUAGES.map((l) => `${route.from[l]} → ${route.to[l]}`),
 }))
 
-export function GlobeView({ demographics, lang, onSelectCountry }: GlobeViewProps) {
+export function GlobeView({
+  demographics,
+  lang,
+  onSelectCountry,
+  cityCount,
+  rotationSpeedKmS,
+}: GlobeViewProps) {
   // Country-level demographics/selection isn't wired into the globe right
   // now — dots are city-only until the per-country marker approach is
   // revisited. See PROGRESS.md.
   void demographics
   void onSelectCountry
 
+  // Memoized so the marker array reference only changes when cityCount
+  // actually does — cobe-globe's animation loop only re-uploads GPU marker
+  // buffers when the reference changes (see its `lastMarkers` check).
+  const markers = useMemo(
+    () =>
+      CITIES.slice(0, cityCount).map((city) => ({
+        id: city.id,
+        location: city.location,
+        label: LANGUAGES.map((l) => city[l]),
+        size: CITY_MARKER_SIZE,
+      })),
+    [cityCount],
+  )
+
   return (
     <div className="flex h-full w-full items-center justify-center p-8">
       <Globe
         className="w-full max-w-2xl"
-        markers={MARKERS}
+        markers={markers}
         arcs={ARCS}
         activeLabelIndex={LANGUAGES.indexOf(lang)}
+        speed={kmPerSecToPhiSpeed(rotationSpeedKmS)}
         {...GLOBE_COLORS}
       />
     </div>

@@ -149,6 +149,7 @@ export function Globe({
     markerElevation,
     arcWidth,
     arcHeight,
+    speed,
   })
   liveProps.current = {
     markers,
@@ -163,6 +164,7 @@ export function Globe({
     markerElevation,
     arcWidth,
     arcHeight,
+    speed,
   }
   const pointerInteracting = useRef<{ x: number; y: number } | null>(null)
   const lastPointer = useRef<{ x: number; y: number; t: number } | null>(null)
@@ -294,7 +296,7 @@ export function Globe({
 
       function animate() {
         if (!isPausedRef.current) {
-          phi += speed
+          phi += liveProps.current.speed
           if (
             Math.abs(velocity.current.phi) > 0.0001 ||
             Math.abs(velocity.current.theta) > 0.0001
@@ -371,11 +373,11 @@ export function Globe({
       if (animationId) cancelAnimationFrame(animationId)
       if (globe) globe.destroy()
     }
-    // Deliberately excludes markers/arcs/colors/etc — those are read live via
-    // liveProps each frame so changing them doesn't reset rotation. Only
-    // structural init-time values (read once by createGlobe) go here.
+    // Deliberately excludes markers/arcs/colors/speed/etc — those are read
+    // live via liveProps each frame so changing them doesn't reset rotation.
+    // Only structural init-time values (read once by createGlobe) go here.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [speed, theta, diffuse, mapSamples])
+  }, [theta, diffuse, mapSamples])
 
   return (
     <div className={`relative aspect-square select-none ${className}`}>
