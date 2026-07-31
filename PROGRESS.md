@@ -593,3 +593,25 @@ User also instructed: auto-commit changes going forward without asking
 first, for the remainder of this project.
 
 Status: done.
+
+## 2026-07-31 (continued) — Language hint repositioned + push
+
+Started: user clarified "bottom right" meant the whole web app's corner,
+not just below the toggle button, and asked to also push commits (not
+just commit locally) going forward without asking.
+
+Reworked `src/App.tsx`: the hint text can no longer live nested inside
+`LanguageToggle` since it now renders at the app root's `bottom-4 right-4`
+corner, physically far from the toggle button. Lifted hover state up —
+`LanguageToggle` takes an `onHoverChange` prop (plain
+`onMouseEnter`/`onMouseLeave`, replacing the CSS-only `group/flip` hover
+trick used before) — and split the hint into its own `LanguageHint`
+component rendered as a sibling of the toggle row, controlled by
+`langHintVisible` state in `App`. Fade transition, muted-grey text, and
+the accent-red current-language highlight are unchanged from the previous
+entry; bumped hint text to `0.6rem` per "slightly bigger" from that
+entry (was `0.55rem`).
+
+Verification: `npm run build` clean.
+
+Status: done. Committed and pushed to `origin/main`.
