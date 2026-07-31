@@ -264,6 +264,8 @@ const CITY_MARKER_SIZE = 0.025
 const ARC_ROUTES = [
   { id: 'sf-tokyo', from: CITIES[0], to: CITIES[2] },
   { id: 'nyc-london', from: CITIES[1], to: CITIES[3] },
+  { id: 'dubai-sydney', from: CITIES[6], to: CITIES[4] },
+  { id: 'capetown-saopaulo', from: CITIES[5], to: CITIES[8] },
 ]
 
 // Variant arrays ordered to match LANGUAGES — only `activeLabelIndex` moves

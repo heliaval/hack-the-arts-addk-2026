@@ -110,16 +110,20 @@ function LanguageHint({ lang, visible }: { lang: Lang; visible: boolean }) {
 
 // Bottom-left instrument panel, mirroring the top-left "reading" panel's
 // card/border/uppercase-label styling.
+// Slider position itself is a continuous float (fine step) so dragging
+// never "locks" between a handful of visible positions; only the displayed
+// NumberFlow readout (and whatever consumes the value downstream) rounds to
+// the nearest whole number.
 function ControlPanel({
-  cityCount,
-  onCityCountChange,
-  rotationSpeedKmS,
-  onRotationSpeedChange,
+  cityCountRaw,
+  onCityCountRawChange,
+  rotationSpeedRaw,
+  onRotationSpeedRawChange,
 }: {
-  cityCount: number
-  onCityCountChange: (value: number) => void
-  rotationSpeedKmS: number
-  onRotationSpeedChange: (value: number) => void
+  cityCountRaw: number
+  onCityCountRawChange: (value: number) => void
+  rotationSpeedRaw: number
+  onRotationSpeedRawChange: (value: number) => void
 }) {
   return (
     <div className="absolute bottom-4 left-4 z-10 flex w-96 flex-col gap-3 text-card-foreground">
@@ -129,15 +133,15 @@ function ControlPanel({
           cities
         </span>
         <Slider
-          value={[cityCount]}
-          onValueChange={([v]) => onCityCountChange(v)}
+          value={[cityCountRaw]}
+          onValueChange={([v]) => onCityCountRawChange(v)}
           min={MIN_CITY_COUNT}
           max={MAX_CITY_COUNT}
-          step={1}
+          step={0.01}
           aria-label="Number of cities shown"
         />
         <NumberFlow
-          value={cityCount}
+          value={Math.round(cityCountRaw)}
           className="w-6 shrink-0 text-right font-mono text-xs font-medium text-foreground"
         />
       </div>
@@ -147,15 +151,15 @@ function ControlPanel({
           rotation (km/s)
         </span>
         <Slider
-          value={[rotationSpeedKmS]}
-          onValueChange={([v]) => onRotationSpeedChange(v)}
+          value={[rotationSpeedRaw]}
+          onValueChange={([v]) => onRotationSpeedRawChange(v)}
           min={DEFAULT_ROTATION_SPEED_KM_S}
           max={MAX_ROTATION_SPEED_KM_S}
-          step={1}
+          step={0.01}
           aria-label="Globe rotation speed in kilometers per second"
         />
         <NumberFlow
-          value={rotationSpeedKmS}
+          value={Math.round(rotationSpeedRaw)}
           className="w-11 shrink-0 text-right font-mono text-xs font-medium text-foreground"
         />
       </div>
@@ -169,8 +173,10 @@ function App() {
   const [lang, setLang] = useState<Lang>('en')
   const [langHintVisible, setLangHintVisible] = useState(false)
   const [themeHintVisible, setThemeHintVisible] = useState(false)
-  const [cityCount, setCityCount] = useState(MIN_CITY_COUNT)
-  const [rotationSpeedKmS, setRotationSpeedKmS] = useState(DEFAULT_ROTATION_SPEED_KM_S)
+  const [cityCountRaw, setCityCountRaw] = useState(MIN_CITY_COUNT)
+  const [rotationSpeedRaw, setRotationSpeedRaw] = useState(DEFAULT_ROTATION_SPEED_KM_S)
+  const cityCount = Math.round(cityCountRaw)
+  const rotationSpeedKmS = Math.round(rotationSpeedRaw)
   const { theme, toggleTheme } = useTheme()
 
   if (demographics.status === 'loading') {
@@ -214,10 +220,10 @@ function App() {
       <LanguageHint lang={lang} visible={langHintVisible} />
       <ThemeHint theme={theme} visible={themeHintVisible} />
       <ControlPanel
-        cityCount={cityCount}
-        onCityCountChange={setCityCount}
-        rotationSpeedKmS={rotationSpeedKmS}
-        onRotationSpeedChange={setRotationSpeedKmS}
+        cityCountRaw={cityCountRaw}
+        onCityCountRawChange={setCityCountRaw}
+        rotationSpeedRaw={rotationSpeedRaw}
+        onRotationSpeedRawChange={setRotationSpeedRaw}
       />
       {selected && (
         <div className="pointer-events-none absolute left-4 top-4 rounded-[var(--radius)] border bg-card/90 px-3 py-2 text-card-foreground shadow-sm backdrop-blur-sm">

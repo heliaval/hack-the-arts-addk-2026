@@ -757,3 +757,40 @@ in dark mode (dark mode's `--muted-foreground` is a mid-grey
 `text-muted-foreground/60`, dark mode overrides to the near-white
 `--foreground` token (`oklch(0.95 0 0)`) at 70% opacity. Build clean.
 Committed and pushed.
+
+## 2026-07-31 (continued) — Continuous sliders + 4 arc routes
+
+User asked for two things: (1) sliders shouldn't "lock" to discrete
+positions while dragging — the displayed number should just round to
+nearest wherever the thumb sits; (2) grow the demo arcs from 2 to 4,
+specifically suggesting Dubai→Sydney and Cape Town→São Paulo.
+
+`src/components/GlobeView.tsx`: `ARC_ROUTES` now has 4 entries — the
+original SF→Tokyo/NYC→London plus the two suggested (`CITIES[6]→CITIES[4]`
+for Dubai→Sydney, `CITIES[5]→CITIES[8]` for Cape Town→São Paulo), giving
+good spread across the Pacific, Atlantic, Indian Ocean, and South
+Atlantic. All indices ≤8, safe since the city-count slider's minimum
+never drops below 9.
+
+`src/App.tsx`: `cityCount`/`rotationSpeedKmS` state split into raw float
+state (`cityCountRaw`, `rotationSpeedRaw`, slider `step={0.01}`) plus
+`Math.round()`'d derived values used everywhere downstream (GlobeView
+props, the NumberFlow display). The thumb now moves continuously with
+the pointer instead of visibly snapping between the ~11 discrete
+positions the cities range previously had at `step={1}`; only the
+displayed number rounds.
+
+Verified live: dispatched keyboard events directly against the focused
+slider and confirmed the underlying value is genuinely fractional
+(`aria-valuenow` showed `9.01` after five 0.01-step arrow presses, thumb
+`left` position moved sub-pixel), and counted 13 label pills on the
+default view (9 city markers + 4 arc labels, matching the new route
+count). Build and `oxlint src` both clean.
+
+**Also noted**: this log had a mis-ordered entry from earlier in this
+session (an edit anchored to a repeated "Status: done. Committed and
+pushed." phrase landed mid-file instead of at the true end) — moved to
+its correct chronological position while writing this entry, no content
+lost.
+
+Status: done. Committed and pushed.
