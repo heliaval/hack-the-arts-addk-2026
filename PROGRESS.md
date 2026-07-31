@@ -533,3 +533,31 @@ which drowned out the actual app in the community-hub listing. Added
 `.graphifyignore` (`node_modules`, `.agents`, `.claude/skills`, `dist`,
 `graphify-out`) and re-ran with `--force`: 259 nodes, 292 edges, 17
 communities, 29 files — correctly scoped to this app's actual source now.
+`graphify-out/` itself is gitignored (regenerable via `graphify update .`,
+not committed).
+
+**git/GitHub**: project was not a git repo at all until now (confirmed via
+`git status` at session start — no `.git`). Ran `git init`, renamed the
+default branch to `main`, added `graphify-out` to `.gitignore` (generated
+artifact), scanned for stray `.env`/credential files before staging
+(none found), `git add -A`, and committed 359 files as the initial commit.
+Added `origin` pointing at
+`https://github.com/heliaval/hack-the-arts-addk-2026.git`, confirmed via
+`git ls-remote` that it was empty and reachable before pushing (no risk of
+clobbering existing history), then `git push -u origin main`. Pushed
+clean, `main` now tracks `origin/main`.
+
+One judgment call made without asking first, flagged here for the user to
+override if unwanted: `.claude/` and `.agents/` (the installed Claude
+Code / Codex skill tooling, ~3.2MB and ~3.5MB respectively) were
+committed as-is rather than excluded — they're not huge and excluding
+them felt like a bigger call to make unilaterally than including them.
+Worth revisiting if the user wants a leaner public repo for the hackathon
+submission.
+
+Status: done. All three asks from this task complete: PROGRESS.md caught
+up (this entry + the one above it), graphify verified working and
+correctly scoped, GitHub repo initialized and pushed. Outstanding product
+work is unchanged from the previous entry: click-to-select on globe
+markers unresolved, hourglass scene still 0% started — deadline is
+2026-08-01 8:45pm PDT.
