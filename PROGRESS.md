@@ -898,4 +898,89 @@ arcs, no error overlay), dragging the city slider to max still correctly
 shows 24 pills (20 markers + 4 arcs) with the slower draw-in, no console
 errors. `oxlint src` clean.
 
+## 2026-07-31 14:46 — Resumed on new machine, dependency/path check
+
+Started: user transferred to a new computer; asked to continue the
+project and verify dependencies still work.
+
+- Cloned `https://github.com/heliaval/hack-the-arts-addk-2026` fresh
+  into the project directory (new machine had nothing local yet).
+- This machine already had Node v24.15.0 / npm 11.12.1 preinstalled
+  (global `C:\Program Files\nodejs\`, not the old machine's per-user
+  portable install). `npm install` completed clean (439 packages, 0
+  vulnerabilities). `npm run build` (tsc -b && vite build) and
+  `oxlint src` both clean.
+- **Found and fixed 2 hardcoded old-machine paths** left over from the
+  previous computer's per-user tool installs (old user folder was
+  `C:\Users\Alber\`, new one is `C:\Users\Albert.T4\`):
+  - `.claude/settings.json` — both `PreToolUse` hooks called
+    `C:/Users/Alber/.local/bin/graphify.EXE`, which doesn't exist on
+    this machine (graphify is installed at
+    `C:\Users\Albert.T4\.local\bin\graphify.exe` here). Updated both
+    hook commands to the correct path.
+  - `.claude/launch.json` — `runtimeExecutable` pointed at
+    `C:\Users\Alber\AppData\Local\nodejs\npm.cmd` (old portable Node
+    install). Updated to `C:\Program Files\nodejs\npm.cmd`, this
+    machine's actual npm location.
+- Verified live via the dev server (`npm run dev`, port 5173): app
+  boots as "Hourglass Earth", globe renders with all 9 default city
+  markers + 2 arc routes, language/theme toggles and city/rotation
+  sliders present, zero console errors, all asset/module requests
+  200 OK.
+
+Status: done. Project is fully runnable on the new machine.
+
+## 2026-07-31 14:55 — Fix city-count slider lag
+
+Started: user reported the bottom-left control-panel sliders lag,
+especially the city-count one, with their own hypothesis that newly
+"propagated" markers/arcs were all animating in at the same time.
+
+Root-caused via code inspection (not guessed): two compounding causes,
+both specific to `cityCount`, which explains why the rotation-speed
+slider (fed straight into a per-frame-read uniform, no re-render) doesn't
+show the same lag.
+1. `cityCount` derived straight from the raw slider value with no
+   throttling — a fast drag fires `onValueChange` many times within a
+   single rendered frame, and each integer crossing makes `GlobeView`
+   recompute its marker/arc arrays and makes cobe re-upload their GPU
+   buffers (`globe.update()`), so multiple re-uploads could happen inside
+   one frame instead of one.
+2. `useArcDrawProgress` (`GlobeView.tsx`) started every newly-visible
+   route's 1.6s draw-in animation at the identical timestamp. Each route's
+   animation runs its own `requestAnimationFrame` loop calling `setState`
+   ~60x/sec for the full 1.6s, and every tick creates a new `arcs` array
+   reference, triggering another GPU arc-buffer re-upload. A fast drag
+   that crosses more than one route's `requiredCityCount` threshold at
+   once (several are close together) started multiple of these 60fps
+   loops simultaneously — up to 4 concurrent re-upload loops for 1.6s
+   straight, matching the user's "all propagate at once" read of the
+   symptom.
+
+Fix:
+- `App.tsx` — added `useRafThrottled`, a small hook that coalesces rapid
+  value changes into at most one committed update per animation frame.
+  Applied to the rounded `cityCount` (not the raw slider position, which
+  still updates instantly for a smooth drag feel/NumberFlow readout) —
+  caps GlobeView's marker/arc recompute + cobe's GPU re-upload rate at
+  the display refresh rate regardless of input event rate.
+- `GlobeView.tsx` — `useArcDrawProgress` now staggers simultaneously-
+  newly-visible routes' start times by `ARC_DRAW_STAGGER_MS` (150ms)
+  each instead of starting them all at the same `now`, so their 1.6s
+  per-frame GPU-upload windows overlap less. Also clamped the progress
+  calc to `[0, 1]` (`Math.max(0, ...)`) since a staggered route's start
+  time can now be in the future relative to a given tick.
+
+Verified: `npm run build` and `oxlint src` clean. Live check via dev
+server — rapidly toggling the city slider between min/max (Home/End keys,
+the worst-case burst this fix targets) produced zero console errors and
+landed correctly at the max value (20, `aria-valuenow` confirmed). No
+automated performance/FPS measurement was done (no profiler available in
+this session) — the fix targets the mechanism found via code inspection,
+not a measured-then-reproduced number; flag to the user if lag persists
+so it can be profiled properly.
+
+Status: done. Committed and pushed per user's standing instruction to
+commit+push all changes without asking.
+
 Status: done. Committed and pushed.

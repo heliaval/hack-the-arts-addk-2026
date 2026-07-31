@@ -1,4 +1,4 @@
-import { memo, useCallback, useState } from 'react'
+import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import NumberFlow from '@number-flow/react'
 import { Globe as GlobeIcon, Moon, Sun } from 'lucide-react'
 import { GlobeView } from '@/components/GlobeView'
@@ -9,6 +9,35 @@ import { Slider } from '@/components/ui/slider-number-flow'
 import { LANG_GLYPH, LANGUAGES, nextLang, type Lang } from '@/lib/lang'
 import { MIN_CITY_COUNT, MAX_CITY_COUNT } from '@/components/GlobeView'
 import { DEFAULT_ROTATION_SPEED_KM_S, MAX_ROTATION_SPEED_KM_S } from '@/lib/globeSpeed'
+
+// Dragging the city-count slider fires onValueChange many times per
+// rendered frame (one per pointermove tick). Each integer crossing forces
+// GlobeView to recompute its marker/arc arrays and cobe to re-upload their
+// GPU buffers — collapsing bursts of same-frame changes down to one commit
+// per animation frame keeps that re-upload rate capped at the display's
+// refresh rate instead of the input event rate.
+function useRafThrottled<T>(value: T): T {
+  const [throttled, setThrottled] = useState(value)
+  const frameRef = useRef<number | null>(null)
+  const latestRef = useRef(value)
+  latestRef.current = value
+
+  useEffect(() => {
+    if (frameRef.current != null) return
+    frameRef.current = requestAnimationFrame(() => {
+      frameRef.current = null
+      setThrottled(latestRef.current)
+    })
+    return () => {
+      if (frameRef.current != null) {
+        cancelAnimationFrame(frameRef.current)
+        frameRef.current = null
+      }
+    }
+  }, [value])
+
+  return throttled
+}
 
 interface ThemeToggleProps {
   theme: 'light' | 'dark'
@@ -197,7 +226,12 @@ function App() {
   const [themeHintVisible, setThemeHintVisible] = useState(false)
   const [cityCountRaw, setCityCountRaw] = useState(MIN_CITY_COUNT)
   const [rotationSpeedRaw, setRotationSpeedRaw] = useState(DEFAULT_ROTATION_SPEED_KM_S)
-  const cityCount = Math.round(cityCountRaw)
+  // Slider position (cityCountRaw) updates instantly for a smooth drag feel;
+  // the committed value that actually drives the globe is rAF-throttled so
+  // GlobeView/cobe only do their (comparatively expensive) marker/arc-buffer
+  // work once per rendered frame, no matter how many pointer events the
+  // drag produces in that time. See useRafThrottled above.
+  const cityCount = useRafThrottled(Math.round(cityCountRaw))
   const rotationSpeedKmS = Math.round(rotationSpeedRaw)
   const { theme, toggleTheme } = useTheme()
 

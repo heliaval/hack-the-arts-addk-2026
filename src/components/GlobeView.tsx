@@ -301,6 +301,14 @@ function interpolateLocation(
   return [from[0] + (to[0] - from[0]) * t, from[1] + (to[1] - from[1]) * t]
 }
 
+// A fast slider drag can cross more than one route's `requiredCityCount`
+// threshold in a single commit, making several routes "newly visible" at
+// once. Starting their draw-ins simultaneously would stack their per-frame
+// setState + GPU arc-buffer re-upload on top of each other for the whole
+// 1.6s duration; staggering each one's start by this much instead spreads
+// that cost across frames.
+const ARC_DRAW_STAGGER_MS = 150
+
 // Tracks, per route id, how long it's been visible — routes that just
 // became visible animate their `to` endpoint in from `from` over
 // ARC_DRAW_DURATION_MS so the flight line appears to "draw" itself rather
@@ -319,7 +327,9 @@ function useArcDrawProgress(visibleIds: string[]): Map<string, number> {
     if (newlyVisible.length === 0) return
 
     const now = performance.now()
-    for (const id of newlyVisible) startTimes.current.set(id, now)
+    newlyVisible.forEach((id, i) => {
+      startTimes.current.set(id, now + i * ARC_DRAW_STAGGER_MS)
+    })
 
     let rafId: number
     function tick() {
@@ -327,7 +337,7 @@ function useArcDrawProgress(visibleIds: string[]): Map<string, number> {
       const next = new Map<string, number>()
       let animating = false
       for (const [id, start] of startTimes.current) {
-        const p = easeOutCubic(Math.min(1, (t - start) / ARC_DRAW_DURATION_MS))
+        const p = easeOutCubic(Math.max(0, Math.min(1, (t - start) / ARC_DRAW_DURATION_MS)))
         next.set(id, p)
         if (p < 1) animating = true
       }
