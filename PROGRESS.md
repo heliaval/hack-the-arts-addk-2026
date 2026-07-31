@@ -615,3 +615,9 @@ entry (was `0.55rem`).
 Verification: `npm run build` clean.
 
 Status: done. Committed and pushed to `origin/main`.
+
+## 2026-07-31 (continued) — Language hint size bump
+
+User said the hint was still too small to read. Bumped `LanguageHint`
+from `text-[0.6rem]` to `text-xs` (0.75rem) in `src/App.tsx`. Build
+clean. Committed and pushed.
