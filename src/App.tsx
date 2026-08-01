@@ -187,7 +187,7 @@ const LagWarning = memo(function LagWarning({ remainingSeconds }: { remainingSec
       {visible && (
         <>
           {' · '}
-          <span className="text-amber-500 dark:text-amber-400">{remainingSeconds}s</span>
+          <span className="text-accent">{remainingSeconds}s</span>
         </>
       )}
     </span>
