@@ -1878,3 +1878,96 @@ run.
 
 Status: done, pending live visual confirmation in a real browser (same
 rAF limitation as the centered-globe change above).
+
+## Bead scene, phase 3 — marbles
+
+Three changes on top of the glass work, none of which touches physics,
+spawn rates, colour resolution or the click-to-select mechanic.
+
+Evicted beads no longer vanish. The cap-trim used to delete the oldest
+bead the instant a new one spawned, and after a few seconds the oldest
+bead is one that has already settled at the bottom of the pile — so the
+eviction read as a settled bead blinking out of existence. Now the oldest
+live bead is flagged `dying` and a conditionally-mounted `useFrame`
+companion (`BeadFadeOut`) shrinks its mesh scale to nothing over 420ms
+before a callback finally removes it. Scale rather than opacity,
+deliberately: opacity lives on the material, and fading it would mean
+cloning a material per dying bead — exactly the per-bead allocation the
+glass phase removed. Scale lives on the mesh's own Object3D, so it is
+per-bead by nature and touches no shared state. `MAX_BEADS` now caps live
+beads rather than array length; at the fastest spawn interval at most
+about seven dying beads ride along at a time.
+
+Beads are swirled marbles. Eight `CanvasTexture`s — three swirl variants
+and one catseye, per tint — are painted once per theme at 256x128 and used
+as each material's `map`. Canvas 2D, no assets and no new packages. The
+layout is equirectangular because `SphereGeometry`'s UVs are: a stroke
+drawn top-to-bottom in the canvas becomes a ribbon converging at both
+poles of the bead, which is how the ribbons in a real swirl marble and the
+vanes in a real cat's eye are actually arranged, so the usual
+equirectangular pole pinch works for us here. The one thing that had to be
+true for any of this to work is that a `map` survives `transmission: 0.9`
+instead of being mixed out by it, and three's shader is explicit: the map
+multiplies into `diffuseColor`, which is passed to
+`getIBLVolumeRefraction` and multiplied into the *refracted* light
+(`transmittance = diffuseColor * volumeAttenuation(...)`), not just into
+the 10% of the diffuse term transmission holds back. Beer-Lambert
+attenuation had to be pulled back — it multiplies the same term, so at its
+previous one-radius, full-tint strength it flattened the swirl back into a
+single hue. All colours are still derived from `--accent` and
+`--foreground` through the existing rasterisation round-trip, so the
+birth/death distinction is intact; the death tint is a pure grey, so those
+marbles come out as smoke swirls rather than rainbow ones, which is
+correct. Eight materials rather than two does not weaken the sharing
+argument: identical shader defines means one compiled program, one draw
+call per bead, and still one transmission pass per frame.
+
+Reflections got sharper for very little. The environment cube map went
+from 64px to 256px, which is not a marginal tweak — three's own roughness
+clamp carries the comment "0.0525 corresponds to the base mip of a 256
+cubemap", and at `roughness = 0.08` the shader was asking a 64px map for
+near-mirror detail it did not have, so every highlight came back as a
+blob. With `frames={1}` the bake happens once, so the whole cost is about
+4.5MB of VRAM. A `clearcoat` layer adds a second, sharper specular lobe
+that is neither tinted by the glass nor blurred by the base roughness —
+the cheapest "looks raytraced" cue there is, one extra cube sample per
+fragment and no extra texture. And a fifth, small, bright, clearly
+rectangular lightformer was added, because a reflection reads as real when
+you can identify the shape being reflected.
+
+Performance was treated as the hard constraint it is. The reasoned budget:
+about 77 draw calls per frame (the transmission pass renders only opaque
+objects, and nothing here is opaque); under 400k bead fragments at the
+capped 1.5 dpr, each doing roughly seven texture fetches; one compiled
+program for all eight materials; under 10MB of texture memory all in. The
+sandbox cannot measure frame rate — `requestAnimationFrame` does not tick
+reliably in an unfocused browser pane, as the phase-2 entry above already
+records — so the floor was verified by a human with Chrome's own FPS meter
+(Task 4 of the phase-3 plan). Implemented from
+docs/superpowers/plans/2026-08-02-bead-scene-marbles.md (planned by Opus).
+
+`npx tsc --noEmit` and `oxlint src` clean apart from the pre-existing
+`baseUrl` deprecation and `button.tsx` warnings — including the HSL
+colour-space round-trip and post-construction `dispersion`/`clearcoat`
+assignment, both of which the plan flagged as possible `@types/three`
+lag points and neither of which needed a workaround. Verified live:
+selecting, toggling theme, and deselecting all produced zero new console
+errors (a fixed set of 6 stale HMR messages persisted across every check
+and never grew, confirmed as historical noise per the established pattern
+in this file); zero network requests to `raw.githack.com` or any `.hdr`
+URL even at the higher 256px environment resolution; the bead canvas's
+WebGL context stayed alive throughout a 60-second soak specifically
+chosen to exercise the new eviction path (the load-bearing check: an
+unbounded `dying`-array leak would show up here as a context loss or a
+"too many WebGL contexts" warning, and none appeared).
+
+What could NOT be verified in this sandbox, same limitation as every
+prior phase: whether the marbles actually look like swirled/catseye glass,
+whether the birth/death colour distinction survives through the texture,
+whether reflections read as sharper, and the frame rate itself. Task 4 of
+the plan is an explicit human checkpoint for exactly this (a script of six
+visual questions plus a Chrome FPS-meter measurement) and has not been
+run yet — needed before this is final.
+
+Status: done, pending the plan's Task 4 human checkpoint (visual quality +
+frame rate, same rAF/compositing limitation as every prior phase).
