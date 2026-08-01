@@ -557,12 +557,12 @@ const LabelPill = memo(function LabelPill({
         transition={{ type: "spring", damping: 30, stiffness: 400 }}
         mainClassName={
           inverted
-            ? "rounded-[3px] border border-foreground/40 bg-background px-1.5 py-0.5 font-mono text-[0.6rem] tracking-wider text-foreground uppercase whitespace-nowrap shadow-sm"
+            ? "rounded-[3px] border border-foreground/10 bg-background px-1.5 py-0.5 font-mono text-[0.6rem] tracking-wider text-foreground uppercase whitespace-nowrap shadow-sm"
             : "rounded-[3px] bg-foreground px-1.5 py-0.5 font-mono text-[0.6rem] tracking-wider text-background uppercase whitespace-nowrap shadow-sm"
         }
       />
       <span
-        className={inverted ? "border border-foreground/40 bg-background" : "bg-foreground"}
+        className={inverted ? "border border-foreground/10 bg-background" : "bg-foreground"}
         style={{
           position: "absolute",
           bottom: -3,
