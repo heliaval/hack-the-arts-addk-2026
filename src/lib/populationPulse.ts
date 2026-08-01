@@ -19,6 +19,7 @@ export interface PopulationPulse {
   id: string
   cityId: string
   kind: 'birth' | 'death'
+  spawnedAt: number
 }
 
 // Ticks on a plain setInterval rather than requestAnimationFrame (unlike
@@ -62,13 +63,13 @@ export function usePopulationPulses(
         acc.birth += elapsed * (country.birthsPerSecond / divisor)
         while (acc.birth >= PULSE_THRESHOLD) {
           acc.birth -= PULSE_THRESHOLD
-          newPulses.push({ id: `pulse-${nextId.current++}`, cityId: city.id, kind: 'birth' })
+          newPulses.push({ id: `pulse-${nextId.current++}`, cityId: city.id, kind: 'birth', spawnedAt: now })
         }
 
         acc.death += elapsed * (country.deathsPerSecond / divisor)
         while (acc.death >= PULSE_THRESHOLD) {
           acc.death -= PULSE_THRESHOLD
-          newPulses.push({ id: `pulse-${nextId.current++}`, cityId: city.id, kind: 'death' })
+          newPulses.push({ id: `pulse-${nextId.current++}`, cityId: city.id, kind: 'death', spawnedAt: now })
         }
       }
 
