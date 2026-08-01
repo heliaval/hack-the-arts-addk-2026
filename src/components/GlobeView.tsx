@@ -412,6 +412,14 @@ function useArcDrawProgress(
 // moving back down are removed immediately (no sweep needed on the way
 // out). Returns a Set whose reference only changes on an actual
 // reveal/removal, so callers can safely useMemo off it.
+// computeSweepDelays gives a lone newly-eligible item (the common case for
+// a slow, deliberate drag) a delay of 0ms — staggering only kicks in once
+// several items cross their threshold in the same frame. That made a
+// single new city mount instantly, with no time for its label's existing
+// fade-in transition to actually read as an entrance. This floor ensures
+// every reveal, even a lone one, waits at least this long first.
+const MIN_REVEAL_DELAY_MS = 300
+
 function useSweepReveal(
   eligibleIds: string[],
   locationOf: (id: string) => [number, number],
@@ -442,7 +450,7 @@ function useSweepReveal(
     const timers = [...computeSweepDelays(items)].map(([id, delay]) =>
       window.setTimeout(() => {
         setRevealed((prev) => (prev.has(id) ? prev : new Set(prev).add(id)))
-      }, delay),
+      }, Math.max(delay, MIN_REVEAL_DELAY_MS)),
     )
     return () => timers.forEach((t) => window.clearTimeout(t))
     // eslint-disable-next-line react-hooks/exhaustive-deps
