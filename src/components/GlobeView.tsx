@@ -520,7 +520,7 @@ export const GlobeView = memo(function GlobeView({
   )
   const populationPulses = usePopulationPulses(CITIES, visibleCityIds, demographics)
   const pulses = useMemo(
-    () => populationPulses.map((p) => ({ id: p.id, markerId: p.cityId, kind: p.kind })),
+    () => populationPulses.map((p) => ({ id: p.id, markerId: p.cityId, kind: p.kind, spawnedAt: p.spawnedAt })),
     [populationPulses],
   )
 
