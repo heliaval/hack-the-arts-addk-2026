@@ -25,6 +25,7 @@ interface Arc {
 interface GlobeProps {
   markers?: Marker[]
   arcs?: Arc[]
+  pulses?: { id: string; markerId: string; kind: "birth" | "death" }[]
   className?: string
   markerColor?: [number, number, number]
   baseColor?: [number, number, number]
@@ -122,6 +123,7 @@ function projectArcMidpoint(
 export const Globe = forwardRef<GlobeRef, GlobeProps>(function Globe({
   markers = [],
   arcs = [],
+  pulses = [],
   className = "",
   markerColor = [0.3, 0.45, 0.85],
   baseColor = [1, 1, 1],
@@ -148,6 +150,8 @@ export const Globe = forwardRef<GlobeRef, GlobeProps>(function Globe({
   // label on every frame, even ones whose actual content hasn't changed.
   const labelRefSetters = useRef<Map<string, (el: HTMLDivElement | null) => void>>(new Map())
   const arcLabelRefSetters = useRef<Map<string, (el: HTMLDivElement | null) => void>>(new Map())
+  const pulseRefs = useRef<Map<string, HTMLDivElement>>(new Map())
+  const pulseRefSetters = useRef<Map<string, (el: HTMLDivElement | null) => void>>(new Map())
   function getRefSetter(
     cache: MutableRefObject<Map<string, (el: HTMLDivElement | null) => void>>,
     target: MutableRefObject<Map<string, HTMLDivElement>>,
@@ -174,6 +178,7 @@ export const Globe = forwardRef<GlobeRef, GlobeProps>(function Globe({
   const liveProps = useRef({
     markers,
     arcs,
+    pulses,
     markerColor,
     baseColor,
     arcColor,
@@ -189,6 +194,7 @@ export const Globe = forwardRef<GlobeRef, GlobeProps>(function Globe({
   liveProps.current = {
     markers,
     arcs,
+    pulses,
     markerColor,
     baseColor,
     arcColor,
@@ -326,6 +332,22 @@ export const Globe = forwardRef<GlobeRef, GlobeProps>(function Globe({
         }
       }
 
+      function updatePulses(currentPhi: number, currentTheta: number, markerElevation: number) {
+        for (const pulse of liveProps.current.pulses) {
+          const el = pulseRefs.current.get(pulse.id)
+          if (!el) continue
+          const marker = liveProps.current.markers.find((m) => m.id === pulse.markerId)
+          if (!marker) {
+            el.style.opacity = "0"
+            continue
+          }
+          const { x, y, visible } = projectMarker(marker.location, currentPhi, currentTheta, markerElevation)
+          el.style.left = `${x * 100}%`
+          el.style.top = `${y * 100}%`
+          el.style.opacity = visible ? "1" : "0"
+        }
+      }
+
       let lastMarkers: Marker[] | null = null
       let lastArcs: Arc[] | null = null
 
@@ -386,6 +408,7 @@ export const Globe = forwardRef<GlobeRef, GlobeProps>(function Globe({
         }
         globe!.update(updatePayload)
         updateLabels(currentPhi, currentTheta, p.markerElevation, p.arcHeight)
+        updatePulses(currentPhi, currentTheta, p.markerElevation)
         currentPhiRef.current = currentPhi
         currentThetaRef.current = currentTheta
         animationId = requestAnimationFrame(animate)
@@ -504,6 +527,13 @@ export const Globe = forwardRef<GlobeRef, GlobeProps>(function Globe({
             inverted
           />
         ))}
+      {pulses.map((pulse) => (
+        <Pulse
+          key={pulse.id}
+          kind={pulse.kind}
+          setRef={getRefSetter(pulseRefSetters, pulseRefs, pulse.id)}
+        />
+      ))}
     </div>
   )
 })
@@ -576,3 +606,35 @@ const LabelPill = memo(function LabelPill({
   )
 })
 LabelPill.displayName = "LabelPill"
+
+// One-shot expanding ring, spawned by usePopulationPulses (GlobeView.tsx)
+// for a single birth/death threshold crossing. Position (left/top) and
+// occlusion opacity are imperative, updated every animate() frame like
+// labels -- but the ring's own scale/fade is a plain CSS keyframe
+// (`pulse-ring` in index.css) on the inner span, so the two don't fight
+// over the same `opacity` property.
+const Pulse = memo(function Pulse({
+  kind,
+  setRef,
+}: {
+  kind: "birth" | "death"
+  setRef: (el: HTMLDivElement | null) => void
+}) {
+  return (
+    <div
+      ref={setRef}
+      style={{
+        position: "absolute",
+        transform: "translate(-50%, -50%)",
+        pointerEvents: "none",
+        opacity: 0,
+      }}
+    >
+      <span
+        className="block size-8 rounded-full border-2 [animation:pulse-ring_1.1s_ease-out_forwards]"
+        style={{ borderColor: kind === "birth" ? "var(--accent)" : "#000000" }}
+      />
+    </div>
+  )
+})
+Pulse.displayName = "Pulse"

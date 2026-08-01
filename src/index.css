@@ -165,3 +165,14 @@ body {
     @apply font-sans;
   }
 }
+
+@keyframes pulse-ring {
+  from {
+    transform: scale(0.2);
+    opacity: 0.9;
+  }
+  to {
+    transform: scale(1.6);
+    opacity: 0;
+  }
+}
