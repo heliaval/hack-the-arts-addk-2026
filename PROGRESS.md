@@ -1135,3 +1135,38 @@ one specifically couldn't be conclusively verified in-session.
 
 Status: shipped, unverified pending user confirmation. Committed and
 pushed per standing instruction.
+
+## 2026-07-31 22:18 — Revert enableLayoutAnimation entirely: "too instant"
+
+User reported the label swap now feels "too instant" — the crossfade
+animation itself wasn't visibly happening. Two consecutive partial-disable
+attempts on `TextRotate`'s `layout` prop each broke something different
+(first: old+new text coexisting; then, after fixing that: the transition
+losing its visible motion). Rather than continue tweaking which of the two
+wrapper elements gets `layout`, reverted the whole `enableLayoutAnimation`
+experiment — removed the prop from `text-rotate.tsx` entirely, restored
+`layout` unconditionally on both wrapper elements (the original, previously
+user-confirmed-working design), and removed the now-nonexistent prop from
+`LabelPill`'s usage in `cobe-globe.tsx`.
+
+This gives up the FLIP-batching perf reduction from two entries back for
+the 20-city-translate case, in favor of correct, confirmed-good animated
+behavior — the user's priority ordering across this whole thread has
+consistently been "smooth/correct over faster," and the perf angle was
+never conclusively verified in-session anyway (rAF-pause limitation).
+
+**Tooling note**: hit the same stale-console-buffer issue as earlier in
+this session again — `read_console_messages` kept reporting an old
+`enableLayoutAnimation` PropTypes-style warning long after the source was
+confirmed clean (verified via a cache-busted `fetch()` of the live dev
+server's response body) and after a full dev-server restart. Opening a
+*new* browser tab (rather than reusing/reloading the existing one) cleared
+it — worth remembering for future sessions in this environment.
+
+Verified: `npm run build` + `oxlint src` clean, no `enableLayoutAnimation`
+references left in `src/`. Fresh-tab console clean after toggling language.
+The animation smoothness itself still can't be watched end-to-end in this
+non-compositing pane — needs the user's live confirmation.
+
+Status: done, pending user's live confirmation. Committed and pushed per
+standing instruction.
