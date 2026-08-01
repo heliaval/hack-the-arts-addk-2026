@@ -4,6 +4,7 @@ import type { CountryDemographics } from '@/lib/worldbank'
 import { LANGUAGES, type Lang } from '@/lib/lang'
 import { kmPerSecToPhiSpeed } from '@/lib/globeSpeed'
 import { computeSweepDelays } from '@/lib/sweep'
+import { usePopulationPulses } from '@/lib/populationPulse'
 
 interface GlobeViewProps {
   demographics: Map<string, CountryDemographics>
@@ -491,10 +492,9 @@ export const GlobeView = memo(function GlobeView({
   cityCount,
   rotationSpeedKmS,
 }: GlobeViewProps) {
-  // Country-level demographics/selection isn't wired into the globe right
-  // now — dots are city-only until the per-country marker approach is
-  // revisited. See PROGRESS.md.
-  void demographics
+  // onSelectCountry isn't wired into the globe yet -- no click-to-select
+  // exists on the cobe-based globe (drag-to-rotate only). demographics IS
+  // now used, by usePopulationPulses below.
   void onSelectCountry
 
   // Globe exposes live screen-space projection (see cobe-globe.tsx) so the
@@ -512,6 +512,16 @@ export const GlobeView = memo(function GlobeView({
     eligibleCityIds,
     useCallback((id: string) => cityById(id).location, []),
     project,
+  )
+
+  const visibleCityIds = useMemo(
+    () => new Set(CITIES.slice(0, cityCount).filter((c) => revealedIds.has(c.id)).map((c) => c.id)),
+    [cityCount, revealedIds],
+  )
+  const populationPulses = usePopulationPulses(CITIES, visibleCityIds, demographics)
+  const pulses = useMemo(
+    () => populationPulses.map((p) => ({ id: p.id, markerId: p.cityId, kind: p.kind })),
+    [populationPulses],
   )
 
   // Memoized so the marker array reference only changes when the revealed
@@ -563,6 +573,7 @@ export const GlobeView = memo(function GlobeView({
         className="aspect-square w-full max-w-[min(80vh,48rem)]"
         markers={markers}
         arcs={arcs}
+        pulses={pulses}
         activeLabelIndex={LANGUAGES.indexOf(lang)}
         speed={kmPerSecToPhiSpeed(rotationSpeedKmS)}
         {...GLOBE_COLORS}
