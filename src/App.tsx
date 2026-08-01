@@ -101,7 +101,7 @@ const ThemeHint = memo(function ThemeHint({
   return (
     <span
       aria-hidden="true"
-      className={`pointer-events-none absolute bottom-4 right-4 z-10 font-mono text-xs tracking-wide text-muted-foreground/60 transition-opacity duration-300 dark:text-foreground/70 ${
+      className={`pointer-events-none absolute bottom-4 right-4 z-20 font-mono text-xs tracking-wide text-muted-foreground/60 transition-opacity duration-300 dark:text-foreground/70 ${
         visible ? 'opacity-100' : 'opacity-0'
       }`}
     >
@@ -154,7 +154,7 @@ const LanguageHint = memo(function LanguageHint({
   return (
     <span
       aria-hidden="true"
-      className={`pointer-events-none absolute bottom-4 right-4 z-10 font-mono text-xs tracking-wide text-muted-foreground/60 transition-opacity duration-300 dark:text-foreground/70 ${
+      className={`pointer-events-none absolute bottom-4 right-4 z-20 font-mono text-xs tracking-wide text-muted-foreground/60 transition-opacity duration-300 dark:text-foreground/70 ${
         visible ? 'opacity-100' : 'opacity-0'
       }`}
     >
@@ -165,6 +165,26 @@ const LanguageHint = memo(function LanguageHint({
         </span>
       ))}
       {' · click to cycle'}
+    </span>
+  )
+})
+
+// Shares the language/theme hints' bottom-right corner and fade pattern,
+// but unlike those it isn't hover-driven — it's shown once, automatically,
+// the first time the city count hits its max. Sits at a lower z-index than
+// the hover hints so hovering the language/theme toggle visually covers it
+// without needing to coordinate visibility state between the three.
+const LagWarning = memo(function LagWarning({ remainingSeconds }: { remainingSeconds: number | null }) {
+  const visible = remainingSeconds !== null
+  return (
+    <span
+      aria-hidden="true"
+      className={`pointer-events-none absolute bottom-4 right-4 z-10 font-mono text-xs tracking-wide text-amber-500 transition-opacity duration-300 dark:text-amber-400 ${
+        visible ? 'opacity-100' : 'opacity-0'
+      }`}
+    >
+      please be advised that WebGL performance may degrade at 20 cities
+      {visible && ` · ${remainingSeconds}s`}
     </span>
   )
 })
@@ -236,6 +256,8 @@ function App() {
   const [themeHintVisible, setThemeHintVisible] = useState(false)
   const [cityCountRaw, setCityCountRaw] = useState(MIN_CITY_COUNT)
   const [rotationSpeedRaw, setRotationSpeedRaw] = useState(DEFAULT_ROTATION_SPEED_KM_S)
+  const [lagWarningRemaining, setLagWarningRemaining] = useState<number | null>(null)
+  const hasShownLagWarningRef = useRef(false)
   // Slider position (cityCountRaw) updates instantly for a smooth drag feel;
   // the committed value that actually drives the globe is rAF-throttled so
   // GlobeView/cobe only do their (comparatively expensive) marker/arc-buffer
@@ -244,6 +266,23 @@ function App() {
   const cityCount = useRafThrottled(Math.round(cityCountRaw))
   const rotationSpeedKmS = Math.round(rotationSpeedRaw)
   const { theme, toggleTheme } = useTheme()
+
+  // Shows the lag warning once, ever, the first time the slider hits max.
+  useEffect(() => {
+    if (cityCount !== MAX_CITY_COUNT || hasShownLagWarningRef.current) return
+    hasShownLagWarningRef.current = true
+    setLagWarningRemaining(5)
+  }, [cityCount])
+
+  useEffect(() => {
+    if (lagWarningRemaining === null) return
+    if (lagWarningRemaining === 0) {
+      setLagWarningRemaining(null)
+      return
+    }
+    const t = setTimeout(() => setLagWarningRemaining((s) => (s === null ? null : s - 1)), 1000)
+    return () => clearTimeout(t)
+  }, [lagWarningRemaining])
 
   // Stable references (required for GlobeView's React.memo to actually skip
   // re-renders on unrelated App state changes) — must be declared before
@@ -292,6 +331,7 @@ function App() {
       </div>
       <LanguageHint lang={lang} visible={langHintVisible} />
       <ThemeHint theme={theme} visible={themeHintVisible} />
+      <LagWarning remainingSeconds={lagWarningRemaining} />
       <ControlPanel
         cityCountRaw={cityCountRaw}
         onCityCountRawChange={setCityCountRaw}
