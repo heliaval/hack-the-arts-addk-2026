@@ -179,12 +179,18 @@ const LagWarning = memo(function LagWarning({ remainingSeconds }: { remainingSec
   return (
     <span
       aria-hidden="true"
-      className={`pointer-events-none absolute bottom-4 right-4 z-10 font-mono text-xs tracking-wide text-amber-500 transition-opacity duration-300 dark:text-amber-400 ${
+      className={`pointer-events-none absolute bottom-4 right-4 z-10 font-mono text-xs tracking-wide text-muted-foreground/60 transition-opacity duration-700 ease-in-out dark:text-foreground/70 ${
         visible ? 'opacity-100' : 'opacity-0'
       }`}
     >
-      please be advised that WebGL performance may degrade at 20 cities
-      {visible && ` · ${remainingSeconds}s`}
+      please be advised that WebGL performance may degrade at{' '}
+      <span className="text-amber-500 dark:text-amber-400">20</span> cities
+      {visible && (
+        <>
+          {' · '}
+          <span className="text-amber-500 dark:text-amber-400">{remainingSeconds}s</span>
+        </>
+      )}
     </span>
   )
 })
