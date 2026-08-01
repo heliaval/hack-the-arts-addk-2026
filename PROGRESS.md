@@ -1335,3 +1335,67 @@ confirmation of ring visibility/position (the one part genuinely
 untestable in this sandbox). All other items in this entry fully done
 and verified. Committed and pushed throughout (commits `e5fb9fc` through
 `8d69074`).
+
+## 2026-08-01 — Spherical shockwave: real geodesic ripple instead of flat CSS circle
+
+Started: user wanted the shockwave ring to actually "travel around the
+globe" following its curvature (foreshortening, disappearing over the
+horizon) rather than being a flat CSS circle that just scales in 2D
+screen-space — "start fast and strong, fizzle out." Asked for a plan
+before implementing.
+
+Design + plan written and committed first (per CLAUDE.md):
+`docs/superpowers/specs/2026-08-01-spherical-shockwave-design.md`,
+`docs/superpowers/plans/2026-08-01-spherical-shockwave.md`. Ran
+`graphify update .` (graph didn't exist yet this session — first use of
+graphify in this session) and `graphify query` to confirm the existing
+projection helpers before designing around them, per CLAUDE.md's graphify
+rule.
+
+**Implemented across 3 commits**:
+- `src/lib/populationPulse.ts`: added `spawnedAt: number` to
+  `PopulationPulse`, set from the tick's `now` at spawn time — needed so
+  the ring's per-frame math is based on real elapsed time, independent of
+  when React happens to render it.
+- `src/components/ui/cobe-globe.tsx`: added `ringPointsOnSphere()` (the
+  standard spherical-cap parametrization — builds a tangent basis at the
+  pulse's marker via cross products, samples 40 points around a circle of
+  growing *angular radius* on the unit sphere, in the same xyz convention
+  `unitSphere()` already uses) and `buildRingPath()` (turns projected
+  points into an SVG path string, starting a new subpath whenever a point
+  crosses the occlusion boundary so the ring breaks apart correctly at
+  the horizon instead of drawing a garbled line across the back of the
+  globe). Replaced the old `updatePulses` (position-only) with
+  `updateRipples`, called every `animate()` frame — computes angular
+  radius via an ease-out curve (fast burst, decelerating) up to 1.1 rad
+  (~63°) and opacity via a separate `(1-p)^1.3` curve (stays strong
+  early, "fizzles" toward the end), reusing the existing `project()`
+  function so it's pixel-consistent with markers/labels. Replaced the
+  old CSS-scaled `Pulse` div + `pulse-ring` keyframe (deleted from
+  `index.css`) with an SVG `<path>` overlay per active pulse.
+  `getRefSetter` generalized from a hardcoded `HTMLDivElement` type to a
+  generic `<T extends Element>` so it still serves both the (unchanged)
+  label refs and the new `SVGPathElement` pulse refs.
+- `src/components/GlobeView.tsx`: pulse mapping now passes `spawnedAt`
+  through to `Globe`'s `pulses` prop.
+
+**Verified live at each step**: build intentionally failed after Task 2
+(missing `spawnedAt` on the object passed to `Globe`'s `pulses` prop) —
+confirmed the error named exactly that field before proceeding, proving
+each task's own change type-checked correctly in isolation. Final build
++ `oxlint src` clean. In-browser: waited ~50s on a fresh load and
+confirmed via DOM inspection that a real pulse spawned as an `<path
+stroke="#000000">` (a death pulse, correctly colored) inside the new
+`<svg>` overlay — proves the spawn → prop-threading pipeline works
+end-to-end with the new `spawnedAt` field. Its `d` attribute stayed
+`null` in this check only because `updateRipples` runs inside the
+`animate()` `requestAnimationFrame` loop, which still doesn't fire in
+this sandbox's browser pane (the same long-documented limitation
+affecting every animation-timing check this project has done). **User
+should confirm live** that the ring now visibly follows the globe's
+curvature (foreshortens, breaks apart at the horizon) rather than
+scaling as a flat on-screen circle.
+
+Status: done, pending the user's live visual confirmation (the one part
+genuinely untestable in this sandbox, same as the original shockwave
+feature). Committed and pushed (`08929e6`, `b4dec1c`, `167230c`).
