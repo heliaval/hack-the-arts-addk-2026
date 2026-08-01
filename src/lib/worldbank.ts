@@ -33,10 +33,26 @@ interface WbIndicatorEntry {
 
 const SECONDS_PER_YEAR = 365.25 * 24 * 3600
 
+// The World Bank API is a public third-party service with no SLA and no
+// retry logic of its own -- it occasionally blips (a single request taking
+// several seconds, or a transient network failure) even though it's up and
+// fast the rest of the time. Two retries with a short delay absorbs that
+// without masking a genuinely broken endpoint (persistent 4xx/5xx still
+// exhausts the retries and surfaces the real error).
+const FETCH_RETRIES = 2
+const RETRY_DELAY_MS = 500
+
 async function fetchJson<T>(url: string): Promise<T> {
-  const res = await fetch(url)
-  if (!res.ok) throw new Error(`World Bank API request failed: ${url}`)
-  return res.json()
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const res = await fetch(url)
+      if (!res.ok) throw new Error(`World Bank API request failed: ${url}`)
+      return (await res.json()) as T
+    } catch (err) {
+      if (attempt >= FETCH_RETRIES) throw err
+      await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS))
+    }
+  }
 }
 
 async function fetchCountryList(): Promise<Map<string, { iso2: string; name: string }>> {
