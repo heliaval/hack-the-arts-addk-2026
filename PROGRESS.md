@@ -1226,3 +1226,112 @@ second visit to 20 without a page reload.
 Status: done, pending the user's live confirmation of the untestable-here
 rAF-gated behavior. Committed and pushed (`e5fb9fc` globe size,
 `eba33b2` lag warning).
+
+## 2026-07-31 (continued) — Population shockwave feature + reveal-delay fix + label pill inversion + globe polish
+
+Started: user asked whether the population API data was connected to
+anything visible yet (it wasn't — loaded but dead-ended, see earlier
+entries), then requested a "shockwave" feature: every N real births/
+deaths for a city's country spawns an expanding ring from that marker,
+red for births, black for deaths.
+
+**Brainstormed first** (per CLAUDE.md): computed real per-second birth/
+death rates for all 20 cities' countries from the already-live World Bank
+data before picking a threshold — found national rates are all well under
+1/s even for the busiest countries (China ≈0.31 births/s, India ≈0.74
+combined), so hitting the user's "~7s cadence" target required a small
+threshold (~3-5), not the user's own suggested "100." Presented this
+finding plus a country-overlap question (SF/NYC both USA, Delhi/Mumbai
+both IND) via `AskUserQuestion`; user chose literal real-time pacing
+(not time-scaled) and splitting each shared country's rate across its
+cities. Landed on **threshold = 3** (both births and deaths), giving the
+busiest cities ~8-10s cadence. Design doc:
+`docs/superpowers/specs/2026-07-31-population-shockwave-design.md`. Plan:
+`docs/superpowers/plans/2026-07-31-population-shockwave.md`.
+
+**Implemented** across 3 commits:
+- `src/components/GlobeView.tsx`: added a `country` (ISO3) field to all 20
+  `CITIES` entries.
+- `src/lib/populationPulse.ts` (new): `usePopulationPulses` hook —
+  deliberately ticks on a plain `setInterval` (500ms) rather than
+  `requestAnimationFrame` like most of this app's per-frame work, since it
+  needs to keep accumulating in real wall-clock time regardless of
+  animation-frame availability (relevant given this project's recurring
+  rAF-pane sandbox limitation, but also just correct for a real-time
+  simulation). Per-city birth/death accumulators (refs, not state) add
+  `elapsed × (country rate / cities-sharing-that-country)` each tick;
+  crossing the threshold spawns a `PopulationPulse` event and keeps the
+  remainder rather than dropping it, so cadence doesn't drift over a long
+  session. Cities outside the current city-count slider slice don't
+  accumulate at all (held, not reset) — no burst of pulses when a city
+  reappears.
+- `src/components/ui/cobe-globe.tsv` — wait, `cobe-globe.tsx`: `Globe`
+  gained a `pulses` prop; a new `Pulse` component renders one ring per
+  active pulse. Position/occlusion-opacity are imperative, updated every
+  `animate()` frame exactly like existing labels (reusing `projectMarker`)
+  — deliberately split into an outer wrapper div (position/occlusion) and
+  an inner `<span>` (the ring's own CSS `pulse-ring` keyframe animation,
+  new in `src/index.css`: `scale` 0.2→1.6, `opacity` 0.9→0 over 1.1s) so
+  the two don't fight over the same `opacity` property.
+- `src/components/GlobeView.tsx`: `demographics` is no longer `void`'d —
+  it now feeds `usePopulationPulses`, whose output maps to `Globe`'s
+  `pulses` prop. This is the first real connection between the
+  long-loaded-but-unused World Bank data and anything visible on the
+  globe.
+
+**Verified live, and this one actually worked in this sandbox**: unlike
+most animation-timing checks this project, `setInterval` (unlike `rAF`)
+DOES fire in this environment's browser pane. Waited ~50s on a fresh page
+load (default 9-city view) and confirmed via direct DOM inspection that a
+real pulse spawned — correctly colored black (a death pulse), timed
+consistently with the computed ~50-60s cadence for the USA cities (split
+across SF+NYC) at their real World Bank death rate. This proves the full
+accumulation → threshold → spawn pipeline works against live data. The
+pulse's on-screen *position* stayed unset in this check only because that
+part (`updatePulses`) runs inside the `animate()` rAF loop, which still
+doesn't fire in this sandboxed pane (long-documented limitation) — that
+code path reuses the exact same projection math already proven correct
+for markers/labels in earlier sessions. **User should confirm live** that
+rings visibly appear and expand from markers (most reliably observable by
+dragging to max city count first, for Beijing/Delhi/Mumbai/Lagos's faster
+~8-10s cadence).
+
+**Separate small fix in the same stretch**: user reported new city
+markers popping in instantly when dragging the slider slowly (one city at
+a time), "not bad but I would prefer some kind of slight delay like
+previously." Root-caused via code read (not guessed): `computeSweepDelays`
+(`src/lib/sweep.ts`) always returns `0ms` for a batch of exactly one new
+item — the stagger math only kicks in when several items cross their
+reveal threshold in the same frame, which is the uncommon case for a slow
+drag. Fixed with a `MIN_REVEAL_DELAY_MS = 300` floor in `useSweepReveal`
+(`GlobeView.tsx`), applied via `Math.max(delay, MIN_REVEAL_DELAY_MS)` —
+lone reveals now always wait at least 300ms, giving the label's existing
+1.4s opacity fade room to actually read as an entrance.
+
+**Also this stretch, smaller iterative UI requests** (each verified via
+build/lint + DOM inspection, several via `AskUserQuestion` where genuinely
+ambiguous):
+- Globe enlarged from a flat `max-w-2xl` (672px) cap to
+  `aspect-square w-full max-w-[min(80vh,48rem)]` — first attempt broke the
+  square aspect ratio by setting both height and width classes at once
+  (caught via `getBoundingClientRect` showing a stretched 768×656 canvas),
+  fixed by constraining only one axis.
+- Added a one-time, 5s-countdown "Advisory: rendering performance may
+  degrade at 20 cities" message in the language-hint's bottom-right
+  corner, triggered once ever when the city slider first hits max —
+  iterated through several rounds of copy/color/fade feedback, and fixed
+  to actually hide (not just get visually covered by z-index, since the
+  two messages are different widths) when the language/theme hover hints
+  are active.
+- Flight-route label pills recolored to an inverted scheme (bordered
+  light fill, dark text) vs. city marker pills (solid dark fill, light
+  text) — after an initial wrong-target attempt at inverting the dot/arc
+  *line* colors instead, corrected per user clarification. Border opacity
+  tuned down twice (100% → 40% → 10%) per "a little thick" /
+  "almost borderless" feedback.
+
+Status: population shockwave feature done, pending the user's live
+confirmation of ring visibility/position (the one part genuinely
+untestable in this sandbox). All other items in this entry fully done
+and verified. Committed and pushed throughout (commits `e5fb9fc` through
+`8d69074`).
