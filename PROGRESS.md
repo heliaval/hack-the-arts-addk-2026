@@ -1265,7 +1265,7 @@ busiest cities ~8-10s cadence. Design doc:
   session. Cities outside the current city-count slider slice don't
   accumulate at all (held, not reset) — no burst of pulses when a city
   reappears.
-- `src/components/ui/cobe-globe.tsv` — wait, `cobe-globe.tsx`: `Globe`
+- `src/components/ui/cobe-globe.tsx`: `Globe`
   gained a `pulses` prop; a new `Pulse` component renders one ring per
   active pulse. Position/occlusion-opacity are imperative, updated every
   `animate()` frame exactly like existing labels (reusing `projectMarker`)
