@@ -183,7 +183,7 @@ const LagWarning = memo(function LagWarning({ remainingSeconds }: { remainingSec
         visible ? 'opacity-100' : 'opacity-0'
       }`}
     >
-      WebGL performance may degrade at 20 cities
+      advisory: rendering performance may degrade at 20 cities
       {visible && (
         <>
           {' · '}
