@@ -1086,3 +1086,34 @@ behavior, not a before/after frame-rate measurement.
 
 Status: done, pending user's live confirmation. Committed and pushed per
 standing instruction.
+
+## 2026-07-31 21:56 — Widen sweep window: 20-city translation still a bit slow
+
+User confirmed the layout-animation fix helped but translation at 20 cities
+still slows the globe a little; everything else is good.
+
+Remaining cause: even without layout FLIP cost, `computeSweepDelays`
+(`src/lib/sweep.ts`) capped its total spread window at 450ms regardless of
+item count. At 24 labels (20 markers + 4 arcs), that packs a new label's
+re-flip start into roughly every rendered frame (~19.5ms spacing) — so
+throughout that window and for a few hundred ms after, a large number of
+per-character spring animations are concurrently mid-flight. That's real
+animation work independent of layout cost, and scales with how many are
+simultaneously active, not just how many exist.
+
+Fix: widened the window formula (`MAX_SWEEP_MS` 450→900, `PER_ITEM_MS`
+35→45) so large batches spread out more — at n=24 spacing goes from ~19.5ms
+to ~39ms, roughly halving peak concurrent animations, at the cost of the
+full sweep taking longer to finish (max ~900ms vs ~450ms). Applies to all
+three sweep sites (marker reveal, arc stagger, language re-flip) since they
+share the one function; the smaller-n cases (typical city/arc reveals) get
+a proportionally smaller increase since the formula picks whichever of the
+two caps is smaller.
+
+Verified: `npm run build` + `oxlint src` clean. Live: max city count +
+language toggle produced zero console errors. Same disclosed limitation as
+prior entries — this session's Browser pane doesn't composite frames, so
+the actual smoothness/timing feel needs the user's own confirmation.
+
+Status: done, pending user's live confirmation. Committed and pushed per
+standing instruction.

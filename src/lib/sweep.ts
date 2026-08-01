@@ -3,8 +3,19 @@
 // sort items top-left-to-bottom-right by current screen position, then
 // spread their start delays evenly across a capped total window so the
 // sweep always finishes quickly regardless of how many items are involved.
-const MAX_SWEEP_MS = 450
-const PER_ITEM_MS = 35
+//
+// Widened from an earlier 450ms/35ms-per-item version: even with layout
+// FLIP animation disabled (see TextRotate's enableLayoutAnimation), a
+// 20-city language toggle still packs ~24 label re-flips into that window
+// — a new one starting almost every rendered frame — so at any instant a
+// large number of per-character spring animations are concurrently mid-
+// flight, which is real animation work regardless of layout cost. Spacing
+// items out more (longer window for large batches) reduces how many are
+// ever animating at once, at the cost of the full sweep taking a bit
+// longer to finish — worth it since a slightly longer but smooth sweep
+// reads better than a fast but janky one.
+const MAX_SWEEP_MS = 900
+const PER_ITEM_MS = 45
 
 export interface SweepItem<T> {
   id: T
