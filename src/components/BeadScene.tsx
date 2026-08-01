@@ -1,7 +1,8 @@
 import { Suspense, memo, useEffect, useMemo, useRef, useState } from 'react'
 import { Canvas, useThree } from '@react-three/fiber'
-import { CuboidCollider, Physics, RigidBody } from '@react-three/rapier'
+import { BallCollider, CuboidCollider, Physics, RigidBody } from '@react-three/rapier'
 import type { CountryDemographics } from '@/lib/worldbank'
+import type { GlobeCircle } from '@/components/ui/cobe-globe'
 import { spawnIntervalMs } from '@/lib/beadSpawnRate'
 
 // With <Canvas orthographic> and no manual frustum override, react-three-
@@ -11,14 +12,25 @@ import { spawnIntervalMs } from '@/lib/beadSpawnRate'
 // Rapier's default -9.81 gravity would therefore be 9.81 px/s^2 — beads
 // would float. -2000 px/s^2 reads as roughly earth-like at this scale.
 const GRAVITY_PX_PER_S2 = 2000
-const BEAD_RADIUS = 14
+const BEAD_RADIUS = 34
 const WALL_THICKNESS = 40
 // Half-width of the horizontal band beads spawn across. Without jitter
-// every bead would stack in one perfect column.
-export const SPAWN_JITTER_PX = 90
+// every bead would stack in one perfect column. Scaled with BEAD_RADIUS
+// (was 90 at r=14) so consecutive spawns are no more likely to overlap at
+// birth than before, and kept below the globe's typical on-screen radius
+// (a 1280x800 viewport gives a 640px globe canvas => a 256px sphere) so
+// most beads land ON the globe rather than falling past it.
+export const SPAWN_JITTER_PX = 200
 // Live bead cap. Past this, the oldest bead is dropped as each new one
 // spawns, so performance stays bounded however long the scene stays open.
-export const MAX_BEADS = 180
+// Bead area scales with the square of the radius, so 14 -> 34 makes each
+// bead 5.9x larger on screen; the old cap of 180 would bury the viewport.
+// The previous 180-at-r=14 pile covered ~12% of the screen — matching that
+// coverage would take only ~31 beads, which reads as a scatter, not a pile.
+// 70 covers roughly 28% of the area the (now permanently centered) globe
+// leaves free, filling the lanes either side of it without climbing back up
+// to the spawn point.
+export const MAX_BEADS = 70
 
 interface Bead {
   id: number
@@ -114,6 +126,45 @@ function Boundaries() {
   )
 }
 
+// An invisible static sphere standing in for the globe, so beads bounce off
+// it and pile up around it instead of passing through the image of it.
+//
+// The globe is a flat 2D <canvas> (cobe is a shader drawing a sphere
+// illusion — there is no 3D mesh to collide with), and it lives in a
+// completely separate DOM layer from this physics canvas. So its geometry
+// has to be measured on the DOM side and handed across: `circle` is in
+// viewport CSS pixels (origin top-left, +y down), which converts into this
+// canvas's world space (origin at the viewport's centre, +y up, 1 unit =
+// 1 CSS pixel) by the two lines below.
+//
+// A true BallCollider, not a flattened disc: Boundaries' front/back planes
+// already pin every bead's centre to exactly z = 0, and a sphere cut by the
+// z = 0 plane IS a circle of the same radius — so this gives exactly the
+// silhouette the user sees, with real curved contact normals that let beads
+// roll off the shoulders rather than skid down a facet.
+//
+// Lower friction than the beads' own 0.6 so they actually shed off the
+// crown instead of parking on top of it; low restitution so they roll away
+// rather than ping across the screen.
+function GlobeCollider({ circle }: { circle: GlobeCircle }) {
+  const { width, height } = useThree((state) => state.size)
+  const x = circle.centerX - width / 2
+  const y = height / 2 - circle.centerY
+  // Rapier reads position and collider args once, at creation. A window
+  // resize moves and resizes the globe, so key the body on those values to
+  // force a clean recreate rather than trusting an in-place shape diff.
+  return (
+    <RigidBody
+      key={`${Math.round(x)}:${Math.round(y)}:${Math.round(circle.radius)}`}
+      type="fixed"
+      colliders={false}
+      position={[x, y, 0]}
+    >
+      <BallCollider args={[circle.radius]} friction={0.3} restitution={0.2} />
+    </RigidBody>
+  )
+}
+
 // Phase 1 deliberately uses a plain opaque material — glass refraction
 // (drei's MeshTransmissionMaterial) is Phase 2, after the mechanics are
 // confirmed. RigidBody `position` is only read when the body is created, so
@@ -130,7 +181,7 @@ const BeadBody = memo(function BeadBody({ bead, colors }: { bead: Bead; colors: 
       linearDamping={0.1}
     >
       <mesh>
-        <sphereGeometry args={[BEAD_RADIUS, 20, 20]} />
+        <sphereGeometry args={[BEAD_RADIUS, 32, 32]} />
         <meshStandardMaterial
           color={bead.kind === 'birth' ? colors.birth : colors.death}
           roughness={0.35}
@@ -144,9 +195,13 @@ const BeadBody = memo(function BeadBody({ bead, colors }: { bead: Bead; colors: 
 interface BeadSceneProps {
   demographics: CountryDemographics
   theme: 'light' | 'dark'
+  /** The globe's on-screen circle, measured by GlobeView. Null until the
+   * globe canvas has been laid out — the scene simply runs without the
+   * globe obstacle until it arrives. */
+  globeCircle: GlobeCircle | null
 }
 
-export function BeadScene({ demographics, theme }: BeadSceneProps) {
+export function BeadScene({ demographics, theme, globeCircle }: BeadSceneProps) {
   // Re-resolved whenever the theme flips. Deliberately inside a rAF: the
   // `.dark` class is toggled by App's own useTheme effect, and child
   // effects run BEFORE parent effects in React — reading the computed
@@ -196,18 +251,19 @@ export function BeadScene({ demographics, theme }: BeadSceneProps) {
 
   return (
     // pointer-events-none so the sliders and toggles underneath stay fully
-    // usable — the shrunken globe's own handler, not this canvas, is the
-    // exit. z-0 keeps beads above the globe (earlier in the DOM) but below
-    // every z-10/z-20 panel.
+    // usable — and so clicks still reach the globe underneath, which is the
+    // scene's only exit (clicking the selected country's marker again).
+    // z-0 keeps beads above the globe (earlier in the DOM) but below every
+    // z-10/z-20 panel, so the beads read as falling in FRONT of the globe.
     //
     // R3F's <Canvas> unconditionally injects its own wrapper <div> with an
     // inline `pointer-events: auto` (react-three-fiber.esm.js's CanvasImpl,
     // to make sure its own pointer/orbit event handling works by default).
     // That inline style beats our ancestor's `pointer-events-none` class —
     // without overriding it here, this canvas would silently swallow every
-    // click over the full viewport, including the shrunken globe's own
-    // deselect click. Canvas spreads its `style` prop after its own
-    // defaults, so this override wins.
+    // click over the full viewport, including the globe's own deselect
+    // click. Canvas spreads its `style` prop after its own defaults, so this
+    // override wins.
     <div className="pointer-events-none fixed inset-0 z-0">
       <Canvas
         orthographic
@@ -220,6 +276,7 @@ export function BeadScene({ demographics, theme }: BeadSceneProps) {
         <Suspense fallback={null}>
           <Physics gravity={[0, -GRAVITY_PX_PER_S2, 0]}>
             <Boundaries />
+            {globeCircle && <GlobeCollider circle={globeCircle} />}
             {beads.map((bead) => (
               <BeadBody key={bead.id} bead={bead} colors={colors} />
             ))}
