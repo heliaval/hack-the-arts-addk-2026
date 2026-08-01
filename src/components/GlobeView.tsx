@@ -15,13 +15,13 @@ interface GlobeViewProps {
 
 // The globe sphere always stays white, like the original reference demo —
 // it does not follow the app's light/dark theme, only the surrounding page
-// chrome (pills, background, toggles) does. Dots are light red, arc lines
-// are dark red (inverted relative to each other); no green anywhere.
+// chrome (pills, background, toggles) does. Dots are dark red, arc lines
+// are light red; no green anywhere.
 const GLOBE_COLORS = {
   baseColor: [1, 1, 0.9803921568627451] as [number, number, number], // matches --background #fffffa
   glowColor: [1, 1, 0.9803921568627451] as [number, number, number],
-  markerColor: [0.87, 0.42, 0.44] as [number, number, number], // light red
-  arcColor: [0.44, 0.15, 0.2] as [number, number, number], // dark red
+  markerColor: [0.44, 0.15, 0.2] as [number, number, number], // dark red
+  arcColor: [0.87, 0.42, 0.44] as [number, number, number], // light red
   dark: 0,
   mapBrightness: 9,
 }

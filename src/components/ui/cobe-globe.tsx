@@ -501,6 +501,7 @@ export const Globe = forwardRef<GlobeRef, GlobeProps>(function Globe({
             activeIndex={activeLabelIndex}
             sweepDelayMs={labelDelays.get(a.id) ?? 0}
             setRef={getRefSetter(arcLabelRefSetters, arcLabelRefs, a.id)}
+            inverted
           />
         ))}
     </div>
@@ -519,11 +520,13 @@ const LabelPill = memo(function LabelPill({
   activeIndex,
   sweepDelayMs = 0,
   setRef,
+  inverted = false,
 }: {
   texts: string[]
   activeIndex: number
   sweepDelayMs?: number
   setRef: (el: HTMLDivElement | null) => void
+  inverted?: boolean
 }) {
   const rotateRef = useRef<TextRotateRef>(null)
 
@@ -552,10 +555,14 @@ const LabelPill = memo(function LabelPill({
         staggerDuration={0.015}
         animatePresenceMode="popLayout"
         transition={{ type: "spring", damping: 30, stiffness: 400 }}
-        mainClassName="rounded-[3px] bg-foreground px-1.5 py-0.5 font-mono text-[0.6rem] tracking-wider text-background uppercase whitespace-nowrap shadow-sm"
+        mainClassName={
+          inverted
+            ? "rounded-[3px] border border-foreground bg-background px-1.5 py-0.5 font-mono text-[0.6rem] tracking-wider text-foreground uppercase whitespace-nowrap shadow-sm"
+            : "rounded-[3px] bg-foreground px-1.5 py-0.5 font-mono text-[0.6rem] tracking-wider text-background uppercase whitespace-nowrap shadow-sm"
+        }
       />
       <span
-        className="bg-foreground"
+        className={inverted ? "border border-foreground bg-background" : "bg-foreground"}
         style={{
           position: "absolute",
           bottom: -3,
