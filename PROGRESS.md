@@ -1804,3 +1804,77 @@ needs a real focused browser to confirm before treating it as done.
 
 Status: done, pending live physical-collision confirmation in a real
 browser (rAF-dependent checks could not run in this sandbox).
+
+## Bead scene, phase 2 — glass
+
+Beads are refractive glass now: `MeshPhysicalMaterial` with transmission,
+a 1.52 IOR, dispersion, and Beer-Lambert attenuation carrying the
+birth/death tint, lit by a locally-baked environment map. Phase 1's flat
+`meshStandardMaterial` spheres are gone.
+
+Implemented from the Opus-drafted plan at
+docs/superpowers/plans/2026-08-02-bead-scene-phase-2.md, adapted in place
+for the centered-globe work that landed after the plan was written (the
+plan assumed the old 14px-radius, 180-cap, shrink-to-corner scene; this
+repo now has 34px beads, a 70 cap, and a `GlobeCollider`, none of which
+existed when Opus planned this). The plan's core technical decisions
+carried over unchanged.
+
+Rejected drei's `MeshTransmissionMaterial` on inspection, not taste: every
+instance allocates two viewport-sized render targets and runs a full
+`gl.render(scene, camera)` of its own inside `useFrame`, per instance, per
+frame — unworkable at any bead count worth looking at. three.js's own
+transmission path does the equivalent work once per frame for every
+transmissive object at once, and three 0.185's `MeshPhysicalMaterial`
+already has `transmission`/`ior`/`thickness`/`attenuationColor` plus
+`dispersion` (native chromatic aberration) — the one thing MTM used to be
+needed for. So beads share exactly two materials (`useBeadMaterials`) and
+one sphere geometry (`BEAD_GEOMETRY`, module-scope) instead of allocating
+per-bead, same move as the existing colour-resolution and boundary-collider
+code already makes elsewhere in this file.
+
+Lighting is a local `<Environment>` built from four `<Lightformer>` planes
+baked into a 64px cube map, not a `preset=` (which fetches a 1-2MB HDRI
+from raw.githack.com at runtime — a demo machine should not depend on the
+network to look right). Wrapped in its own `memo()` because drei re-bakes
+the cube map whenever its children's element identity changes, and
+`BeadScene` re-renders on every spawn.
+
+Performance: `Boundaries` (five static colliders, unaffected by anything
+in this phase) is now `memo()`'d so it does not re-render on every spawn
+tick either. `dpr` capped at `[1, 1.5]` and three's transmission render
+target downscaled to 0.5x via `gl.transmissionResolutionScale` — both scale
+with pixel count, and a demo laptop's real device pixel ratio (2-3x) would
+otherwise multiply the glass shader's fragment cost several times over.
+`MAX_BEADS` was NOT lowered further in this phase — the centered-globe work
+already brought it down to 70 (from Phase 1's 180) to suit the larger bead
+size, which is below even the plan's own Phase-2 target of 120.
+
+`npx tsc --noEmit` and `oxlint src` clean apart from the pre-existing
+`baseUrl` deprecation and `button.tsx` warnings (including `dispersion`,
+assigned post-construction rather than in the `MeshPhysicalMaterial`
+constructor object, since the installed `@types/three` may lag the runtime
+version's property list).
+
+Verified live: selecting and deselecting a country both work cleanly, with
+no console errors either time (a handful of stale HMR "Failed to reload"
+messages persisted in this pane's console buffer across reloads and never
+grew in count across select/theme-toggle/deselect — confirmed as historical
+noise, not a live failure, same pattern documented earlier in this file);
+zero network requests to `raw.githack.com` or any `.hdr` URL, confirming
+the environment map never touches the network; the bead canvas's WebGL
+context stayed alive and the control panel remained click-through under it;
+theme toggling produced no errors (exercises the material dispose/rebuild
+cycle). As with the centered-globe change above, the actual pixel
+appearance — does the glass read as glass, is dispersion visible, is the
+birth/death colour distinction still legible through a transmissive
+material — could NOT be confirmed in this sandbox: a temporary `onCreated`
+renderer-info probe (added, used, fully removed before this commit) never
+fired, for the same `requestAnimationFrame`-does-not-tick-while-unfocused
+reason already documented above. This needs a real focused browser to
+confirm before treating the visual result as final — the plan's own Task 3
+(human visual checkpoint) was written anticipating exactly this and was not
+run.
+
+Status: done, pending live visual confirmation in a real browser (same
+rAF limitation as the centered-globe change above).

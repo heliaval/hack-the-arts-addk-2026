@@ -1,5 +1,7 @@
 import { Suspense, memo, useEffect, useMemo, useRef, useState } from 'react'
+import * as THREE from 'three'
 import { Canvas, useThree } from '@react-three/fiber'
+import { Environment, Lightformer } from '@react-three/drei'
 import { BallCollider, CuboidCollider, Physics, RigidBody } from '@react-three/rapier'
 import type { CountryDemographics } from '@/lib/worldbank'
 import type { GlobeCircle } from '@/components/ui/cobe-globe'
@@ -31,6 +33,45 @@ export const SPAWN_JITTER_PX = 200
 // leaves free, filling the lanes either side of it without climbing back up
 // to the spawn point.
 export const MAX_BEADS = 70
+
+// Glass tuning. Every length here is in the scene's CSS-pixel world units
+// (see the orthographic-camera note above), which is why thickness and
+// attenuationDistance are bead-sized two-digit numbers rather than the
+// sub-1 values a metres-based three.js scene would use.
+//
+// BEAD_TRANSMISSION is deliberately not 1.0. three's transmission shader
+// ends with `totalDiffuse = mix(totalDiffuse, transmission.rgb,
+// material.transmission)`, so at 1.0 the bead's own colour is entirely
+// replaced by the refracted sample and only attenuationColor tints it —
+// which, against a near-white page in the light theme, loses the
+// birth/death colour distinction the whole feature is built on. Holding
+// back 10% of the diffuse term keeps a red bead legibly red without
+// making it look painted.
+const BEAD_TRANSMISSION = 0.9
+// Beer-Lambert attenuation: the shorter the distance, the more saturated
+// the glass. One bead radius means a bead is fully tinted by the time
+// light has crossed half of it.
+const BEAD_ATTENUATION_DISTANCE = BEAD_RADIUS
+const BEAD_THICKNESS = BEAD_RADIUS * 2
+// 1.52 is soda-lime glass. 1.0 would be air (no bending at all), 2.4
+// diamond (comically warped at this size).
+const BEAD_IOR = 1.52
+// Low but not zero: a perfectly smooth sphere reads as a flat disc, a
+// slightly rough one catches a readable highlight.
+const BEAD_ROUGHNESS = 0.08
+// three's native chromatic aberration (MeshPhysicalMaterial.dispersion,
+// requires transmission > 0). This is what drei's MeshTransmissionMaterial
+// used to be needed for.
+const BEAD_DISPERSION = 2.5
+
+// One geometry for every bead, built once at module scope. Phase 1 gave
+// each bead its own <sphereGeometry> element, i.e. up to MAX_BEADS
+// byte-identical vertex buffers uploaded to the GPU. App renders
+// <BeadScene key={selectedIso3} />, so the whole component remounts on
+// every country switch — module scope means this buffer survives those
+// remounts instead of being rebuilt each time. Never disposed: there is
+// exactly one, for the lifetime of the page.
+const BEAD_GEOMETRY = new THREE.SphereGeometry(BEAD_RADIUS, 32, 32)
 
 interface Bead {
   id: number
@@ -90,11 +131,90 @@ function resolveBeadColors(): BeadColors {
   }
 }
 
+// Two materials for the entire scene, not two per bead. Beyond the obvious
+// allocation saving, this is what makes glass affordable at all: three
+// runs its transmission pass once per camera per frame for every
+// transmissive object at once (renderTransmissionPass in WebGLRenderer),
+// so the marginal cost of the Nth glass bead is one more draw call, not
+// one more render target.
+//
+// Recreated only when the resolved colours change, i.e. on a theme flip.
+// The cleanup disposes the previous pair; by the time it runs, React has
+// already committed the render in which every mesh points at the new pair,
+// so nothing is disposed while still in use.
+function useBeadMaterials(colors: BeadColors) {
+  const materials = useMemo(() => {
+    function glass(tint: string) {
+      const color = new THREE.Color(tint)
+      return new THREE.MeshPhysicalMaterial({
+        color,
+        attenuationColor: color.clone(),
+        attenuationDistance: BEAD_ATTENUATION_DISTANCE,
+        transmission: BEAD_TRANSMISSION,
+        thickness: BEAD_THICKNESS,
+        ior: BEAD_IOR,
+        roughness: BEAD_ROUGHNESS,
+        metalness: 0,
+        envMapIntensity: 1.4,
+      })
+    }
+    const birth = glass(colors.birth)
+    const death = glass(colors.death)
+    // Assigned after construction rather than in the constructor object:
+    // the installed @types/three's MeshPhysicalMaterialParameters may lag
+    // behind the runtime three version and reject `dispersion` there even
+    // though the runtime property exists (three 0.185+).
+    birth.dispersion = BEAD_DISPERSION
+    death.dispersion = BEAD_DISPERSION
+    return { birth, death }
+  }, [colors])
+
+  useEffect(
+    () => () => {
+      materials.birth.dispose()
+      materials.death.dispose()
+    },
+    [materials],
+  )
+
+  return materials
+}
+
+// A lighting rig built from four emissive planes and baked locally into a
+// 64px cube map. Two reasons it is shaped this way rather than
+// <Environment preset="studio">: drei's presets fetch a 1-2MB HDRI from
+// raw.githack.com at runtime, which is an outbound network dependency on a
+// demo machine; and a cube map this small is free, blurs beautifully at
+// bead scale, and is deterministic.
+//
+// memo() is load-bearing, not hygiene. drei's <Environment> re-runs its
+// layout effect — and with frames={1} that effect re-renders the whole
+// cube map — whenever its `children` element identity changes. BeadScene
+// re-renders on every spawn (up to ~8/second), so without this memo the
+// cube map would be re-baked several times a second forever.
+//
+// Positions are CSS pixels from the viewport centre; drei's Lightformer
+// geometries are unit-sized, so `scale` is the light's size in pixels.
+const BeadEnvironment = memo(function BeadEnvironment({ intensity }: { intensity: number }) {
+  return (
+    <Environment resolution={64} frames={1} environmentIntensity={intensity}>
+      <Lightformer form="rect" intensity={5} color="#ffffff" position={[0, 320, 140]} scale={[700, 320, 1]} />
+      <Lightformer form="circle" intensity={3} color="#ffd9c4" position={[-360, 60, 220]} scale={[260, 260, 1]} />
+      <Lightformer form="circle" intensity={2.4} color="#c7ddff" position={[360, -40, 220]} scale={[260, 260, 1]} />
+      <Lightformer form="rect" intensity={1.4} color="#ffffff" position={[0, -320, 180]} scale={[700, 260, 1]} />
+    </Environment>
+  )
+})
+
 // Invisible static colliders sized to the current viewport: a floor, two
 // side walls, and a front/back pair that pins beads to the z=0 plane so the
 // pile stays readable from a flat orthographic camera. No ceiling — the
 // spawn point is above the top edge.
-function Boundaries() {
+// memo() with no props means this re-renders only when its own useThree
+// size subscription fires, not on every one of BeadScene's ~8/second spawn
+// re-renders. Five fixed RigidBodies is not much to reconcile, but it is
+// exactly zero work to avoid.
+const Boundaries = memo(function Boundaries() {
   const { width, height } = useThree((state) => state.size)
   const halfW = width / 2
   const halfH = height / 2
@@ -124,7 +244,7 @@ function Boundaries() {
       </RigidBody>
     </>
   )
-}
+})
 
 // An invisible static sphere standing in for the globe, so beads bounce off
 // it and pile up around it instead of passing through the image of it.
@@ -165,12 +285,17 @@ function GlobeCollider({ circle }: { circle: GlobeCircle }) {
   )
 }
 
-// Phase 1 deliberately uses a plain opaque material — glass refraction
-// (drei's MeshTransmissionMaterial) is Phase 2, after the mechanics are
-// confirmed. RigidBody `position` is only read when the body is created, so
-// stable React keys matter: a changing key would recreate the body and
-// teleport a settled bead back to the spawn point.
-const BeadBody = memo(function BeadBody({ bead, colors }: { bead: Bead; colors: BeadColors }) {
+// Beads share one geometry and one of two materials (see BEAD_GEOMETRY and
+// useBeadMaterials), passed in as a prop rather than declared as a child
+// element — declaring it as a child is what would give every bead its own
+// copy. `dispose={null}` tells react-three-fiber not to dispose these
+// shared objects when an individual bead is culled by the MAX_BEADS cap;
+// their lifetimes are owned by the module and by useBeadMaterials.
+//
+// RigidBody `position` is only read when the body is created, so stable
+// React keys matter: a changing key would recreate the body and teleport a
+// settled bead back to the spawn point.
+const BeadBody = memo(function BeadBody({ bead, material }: { bead: Bead; material: THREE.Material }) {
   const height = useThree((state) => state.size.height)
   return (
     <RigidBody
@@ -180,14 +305,7 @@ const BeadBody = memo(function BeadBody({ bead, colors }: { bead: Bead; colors: 
       friction={0.6}
       linearDamping={0.1}
     >
-      <mesh>
-        <sphereGeometry args={[BEAD_RADIUS, 32, 32]} />
-        <meshStandardMaterial
-          color={bead.kind === 'birth' ? colors.birth : colors.death}
-          roughness={0.35}
-          metalness={0.05}
-        />
-      </mesh>
+      <mesh geometry={BEAD_GEOMETRY} material={material} dispose={null} />
     </RigidBody>
   )
 })
@@ -212,6 +330,7 @@ export function BeadScene({ demographics, theme, globeCircle }: BeadSceneProps) 
     const id = requestAnimationFrame(() => setColors(resolveBeadColors()))
     return () => cancelAnimationFrame(id)
   }, [theme])
+  const materials = useBeadMaterials(colors)
 
   const [beads, setBeads] = useState<Bead[]>([])
   // Monotonic counter, not Math.random(): React keys must be stable and
@@ -268,17 +387,45 @@ export function BeadScene({ demographics, theme, globeCircle }: BeadSceneProps) 
       <Canvas
         orthographic
         camera={{ position: [0, 0, 600], zoom: 1, near: 0.1, far: 2000 }}
+        // The glass shader and three's transmission pass both scale with
+        // pixel count, and react-three-fiber otherwise renders at the full
+        // device pixel ratio — 2 or 3 on the kind of laptop a demo gets
+        // recorded on, i.e. 4-9x the fragments. Capping at 1.5 keeps bead
+        // silhouettes smooth while bounding the worst case.
+        dpr={[1, 1.5]}
         style={{ pointerEvents: 'none' }}
+        onCreated={({ gl }) => {
+          // three sizes its transmission render target to viewport *
+          // transmissionResolutionScale (WebGLRenderer's
+          // renderTransmissionPass). Nothing opaque is behind the beads
+          // except the globe collider (invisible) and the page itself, so
+          // downscaling this target is visually free while quartering the
+          // pass's fill cost and its mipmap chain.
+          gl.transmissionResolutionScale = 0.5
+        }}
       >
-        <ambientLight intensity={1.1} />
-        <directionalLight position={[200, 400, 300]} intensity={2.2} />
+        {/* Phase 1's ambientLight is deliberately gone: a transmissive
+            material mixes its diffuse term out, so flat ambient light only
+            washes out the highlights that make a bead read as glass. The
+            directional light stays — it supplies the one crisp specular
+            hot-spot per bead that separates "glass" from "fogged plastic" —
+            at a lower intensity now that the environment map handles the
+            rest. environmentIntensity is the only theme-dependent dial: the
+            dark theme needs less lift or the pile blows out against a
+            near-black page. */}
+        <BeadEnvironment intensity={theme === 'dark' ? 1 : 1.5} />
+        <directionalLight position={[200, 400, 300]} intensity={1.4} />
         {/* Rapier's WASM is loaded via suspend-react, so Physics suspends. */}
         <Suspense fallback={null}>
           <Physics gravity={[0, -GRAVITY_PX_PER_S2, 0]}>
             <Boundaries />
             {globeCircle && <GlobeCollider circle={globeCircle} />}
             {beads.map((bead) => (
-              <BeadBody key={bead.id} bead={bead} colors={colors} />
+              <BeadBody
+                key={bead.id}
+                bead={bead}
+                material={bead.kind === 'birth' ? materials.birth : materials.death}
+              />
             ))}
           </Physics>
         </Suspense>
