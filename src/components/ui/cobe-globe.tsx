@@ -108,52 +108,100 @@ function normalize(v: [number, number, number]): [number, number, number] {
   return [v[0] / len, v[1] / len, v[2] / len]
 }
 
-// Samples `segments` points evenly around a circle of angular radius
-// `angularRadius` (radians) centered at `center` on the unit sphere --
-// the standard spherical-cap parametrization. Used to draw a geodesic
-// ring that expands outward from a point, following the sphere's actual
-// curvature (as opposed to a flat screen-space circle).
-function ringPointsOnSphere(
-  center: [number, number, number],
-  angularRadius: number,
-  segments: number,
-): [number, number, number][] {
+// A pair of unit vectors perpendicular to `center` and to each other --
+// the local "east"/"north" basis used to parametrize a circle around
+// `center` on the sphere (the standard spherical-cap construction).
+function buildTangentBasis(center: [number, number, number]): {
+  t1: [number, number, number]
+  t2: [number, number, number]
+} {
   const ref: [number, number, number] = Math.abs(center[1]) > 0.9 ? [1, 0, 0] : [0, 1, 0]
   const t1 = normalize(cross(ref, center))
   const t2 = cross(center, t1)
-  const cosR = Math.cos(angularRadius)
-  const sinR = Math.sin(angularRadius)
-  const points: [number, number, number][] = []
-  for (let i = 0; i < segments; i++) {
-    const phi = (i / segments) * Math.PI * 2
-    const cosPhi = Math.cos(phi)
-    const sinPhi = Math.sin(phi)
-    points.push([
-      center[0] * cosR + (t1[0] * cosPhi + t2[0] * sinPhi) * sinR,
-      center[1] * cosR + (t1[1] * cosPhi + t2[1] * sinPhi) * sinR,
-      center[2] * cosR + (t1[2] * cosPhi + t2[2] * sinPhi) * sinR,
-    ])
-  }
-  return points
+  return { t1, t2 }
 }
 
-// Builds a closed SVG path `d` string from a sequence of projected ring
-// points. Deliberately ignores per-point occlusion (unlike labels/markers)
-// -- breaking the path at horizon crossings produced visible gaps even on
-// rings that stayed almost entirely on the front-facing side, since the
-// ring's own point density made small facing fluctuations near the limb
-// read as broken lines rather than a clean single split. A continuous
-// closed loop is simpler and reads correctly for the ring's actual max
-// angular radius (well under a full hemisphere), at the cost of a marker
-// very close to the true horizon occasionally showing part of its ring
-// slightly past the visible edge.
+// A single point at azimuth `angle` around a circle of angular radius
+// (encoded as cosR/sinR) centered at `center`, using the tangent basis
+// from buildTangentBasis().
+function ringPoint(
+  center: [number, number, number],
+  t1: [number, number, number],
+  t2: [number, number, number],
+  cosR: number,
+  sinR: number,
+  angle: number,
+): [number, number, number] {
+  const cosA = Math.cos(angle)
+  const sinA = Math.sin(angle)
+  return [
+    center[0] * cosR + (t1[0] * cosA + t2[0] * sinA) * sinR,
+    center[1] * cosR + (t1[1] * cosA + t2[1] * sinA) * sinR,
+    center[2] * cosR + (t1[2] * cosA + t2[2] * sinA) * sinR,
+  ]
+}
+
+// Analytically finds the sub-arc of the ring (by azimuth angle) that's
+// actually facing the camera, instead of sampling points and checking each
+// one's visibility individually (which, at this ring's point density, let
+// small facing fluctuations near the limb read as multiple scattered gaps
+// rather than one clean split). Works because `facing` -- the same
+// quantity project() uses -- is a LINEAR function of a 3D point, and a
+// ring point is an affine combination of cos(angle)/sin(angle), so
+// facing(angle) reduces to a plain sinusoid `C + A*cos(angle) +
+// B*sin(angle)`, solvable in closed form. Returns null if the entire ring
+// is on the far side, or the arc bounds (which may span the full circle)
+// otherwise.
+function computeVisibleArc(
+  center: [number, number, number],
+  t1: [number, number, number],
+  t2: [number, number, number],
+  cosR: number,
+  sinR: number,
+  r: number,
+  phi: number,
+  theta: number,
+): { start: number; end: number; full: boolean } | null {
+  const cosTheta = Math.cos(theta)
+  const sinTheta = Math.sin(theta)
+  const cosPhi = Math.cos(phi)
+  const sinPhi = Math.sin(phi)
+  // Coefficients of facing(point) = vx*px + vy*py + vz*pz (same formula as
+  // project()'s `facing`).
+  const vx = -sinPhi * cosTheta
+  const vy = sinTheta
+  const vz = cosPhi * cosTheta
+  const dot = (a: [number, number, number]) => vx * a[0] + vy * a[1] + vz * a[2]
+
+  const C = r * cosR * dot(center)
+  const A = r * sinR * dot(t1)
+  const B = r * sinR * dot(t2)
+  const amplitude = Math.sqrt(A * A + B * B)
+
+  if (amplitude < 1e-9 || Math.abs(C) >= amplitude) {
+    // facing never changes sign around the ring -- entirely visible or
+    // entirely hidden.
+    return C >= 0 ? { start: 0, end: Math.PI * 2, full: true } : null
+  }
+
+  // A*cos + B*sin = amplitude*cos(angle - gamma); solve for where that
+  // equals -C. The resulting short arc [gamma-delta, gamma+delta] is
+  // always the visible side (facing(gamma) = C + amplitude > 0, since
+  // |C| < amplitude).
+  const gamma = Math.atan2(B, A)
+  const delta = Math.acos(Math.max(-1, Math.min(1, -C / amplitude)))
+  return { start: gamma - delta, end: gamma + delta, full: false }
+}
+
+// Builds an open (or, for a full circle, self-closing) SVG path `d`
+// string from a sequence of already-projected points, in order.
 function buildRingPath(points: { x: number; y: number }[]): string {
   if (points.length === 0) return ""
   let d = ""
   points.forEach((p, i) => {
     d += `${i === 0 ? "M" : "L"}${(p.x * 100).toFixed(2)},${(p.y * 100).toFixed(2)} `
   })
-  return d + "Z"
+  return d
 }
 
 // Kept as a local constant rather than imported from populationPulse.ts --
@@ -414,9 +462,27 @@ export const Globe = forwardRef<GlobeRef, GlobeProps>(function Globe({
           const opacity = (1 - p) ** 1.3
           const r = 0.8 + markerElevation
           const center = unitSphere(marker.location)
-          const projected = ringPointsOnSphere(center, angularRadius, PULSE_RING_SEGMENTS).map((pt) =>
-            project([pt[0] * r, pt[1] * r, pt[2] * r], currentPhi, currentTheta),
-          )
+          const { t1, t2 } = buildTangentBasis(center)
+          const cosR = Math.cos(angularRadius)
+          const sinR = Math.sin(angularRadius)
+
+          const arc = computeVisibleArc(center, t1, t2, cosR, sinR, r, currentPhi, currentTheta)
+          if (!arc) {
+            el.setAttribute("d", "")
+            el.style.opacity = "0"
+            continue
+          }
+
+          const span = arc.end - arc.start
+          const segments = arc.full
+            ? PULSE_RING_SEGMENTS
+            : Math.max(2, Math.round((PULSE_RING_SEGMENTS * span) / (Math.PI * 2)))
+          const projected: { x: number; y: number }[] = []
+          for (let i = 0; i <= segments; i++) {
+            const angle = arc.start + (i / segments) * span
+            const pt = ringPoint(center, t1, t2, cosR, sinR, angle)
+            projected.push(project([pt[0] * r, pt[1] * r, pt[2] * r], currentPhi, currentTheta))
+          }
           el.setAttribute("d", buildRingPath(projected))
           el.style.opacity = String(opacity)
         }
