@@ -183,8 +183,7 @@ const LagWarning = memo(function LagWarning({ remainingSeconds }: { remainingSec
         visible ? 'opacity-100' : 'opacity-0'
       }`}
     >
-      please be advised that WebGL performance may degrade at{' '}
-      <span className="text-amber-500 dark:text-amber-400">20</span> cities
+      WebGL performance may degrade at 20 cities
       {visible && (
         <>
           {' · '}
