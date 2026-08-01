@@ -553,6 +553,7 @@ const LabelPill = memo(function LabelPill({
         animatePresenceMode="popLayout"
         transition={{ type: "spring", damping: 30, stiffness: 400 }}
         mainClassName="rounded-[3px] bg-foreground px-1.5 py-0.5 font-mono text-[0.6rem] tracking-wider text-background uppercase whitespace-nowrap shadow-sm"
+        enableLayoutAnimation={false}
       />
       <span
         className="bg-foreground"

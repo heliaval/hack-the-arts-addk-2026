@@ -1048,3 +1048,41 @@ expensive part — the label re-render fan-out was.
 
 Status: done, pending user's live confirmation of animation feel. Committed
 and pushed per user's standing instruction to commit+push without asking.
+
+## 2026-07-31 21:37 — Fix remaining lag: translation at 20 cities
+
+User confirmed the earlier fixes resolved the general lag, but reported it
+still lags specifically when toggling language with all 20 cities visible
+(24 labels total: 20 markers + 4 arcs).
+
+Root cause: `TextRotate` (`text-rotate.tsx`), used by every label pill,
+hardcoded Framer Motion's `layout` prop on its two wrapper elements. `layout`
+animations use FLIP (measure old position/size, then animate to the new
+one), and Framer Motion batches that measure-then-mutate pass across every
+currently-registered `layout`-tracked component in the document together —
+so its cost scales with the TOTAL count of such components, not just the
+ones actually changing. A language toggle at max city count triggers up to
+24 of these simultaneously (double that counting both wrapper elements per
+pill = ~48), against only ~11×2 at the default 9-city view — matching
+exactly why the lag only showed up at 20 cities. The `layout` prop's only
+purpose here was cosmetically smoothing the pill's width when swapping to a
+longer/shorter translated word — label *position* is already handled
+imperatively via direct style writes in `updateLabels` (cobe-globe.tsx),
+so it wasn't load-bearing for correctness.
+
+Fix: added an `enableLayoutAnimation` prop to `TextRotate` (default `true`,
+preserving behavior for any other future consumer) and set it `false` for
+the globe's `LabelPill` usage specifically — trades the smooth pill-resize
+for no forced-synchronous-layout cost, which matters exactly in the
+many-concurrent-labels case this was actually slow in.
+
+Verified: `tsc -b` + `npm run build` + `oxlint src` clean. Live: cycled the
+language toggle 3x at max city count (20/24 labels) via the dev server —
+zero console errors. Per the same verification-limitation note as the
+previous entry, this session's Browser pane doesn't composite frames, so
+the actual smoothness improvement couldn't be watched directly — reasoning
+is grounded in Framer Motion's documented layout-animation batching
+behavior, not a before/after frame-rate measurement.
+
+Status: done, pending user's live confirmation. Committed and pushed per
+standing instruction.

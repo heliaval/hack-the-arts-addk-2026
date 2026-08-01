@@ -29,6 +29,13 @@ interface TextRotateProps {
   mainClassName?: string
   splitLevelClassName?: string
   elementLevelClassName?: string
+  /** Framer Motion's `layout` FLIP animation (smooth pill-resize when text
+   * length changes). Its measure/mutate pass cost scales with how many
+   * other `layout`-tracked components exist in the document at once —
+   * disable when many instances animate simultaneously (e.g. a language
+   * toggle flipping 20+ labels at once) and the resize snap is an
+   * acceptable trade for not dropping frames. Defaults to on. */
+  enableLayoutAnimation?: boolean
 }
 
 export interface TextRotateRef {
@@ -63,6 +70,7 @@ const TextRotate = forwardRef<TextRotateRef, TextRotateProps>(
       mainClassName,
       splitLevelClassName,
       elementLevelClassName,
+      enableLayoutAnimation = true,
       ...props
     },
     ref
@@ -171,7 +179,7 @@ const TextRotate = forwardRef<TextRotateRef, TextRotateProps>(
       <motion.span
         className={cn("flex flex-wrap whitespace-pre-wrap", mainClassName)}
         {...props}
-        layout
+        layout={enableLayoutAnimation}
         transition={transition}
       >
         <span className="sr-only">{texts[currentTextIndex]}</span>
@@ -186,7 +194,7 @@ const TextRotate = forwardRef<TextRotateRef, TextRotateProps>(
               "flex flex-wrap",
               splitBy === "lines" && "flex-col w-full"
             )}
-            layout
+            layout={enableLayoutAnimation}
             aria-hidden="true"
           >
             {(splitBy === "characters"
