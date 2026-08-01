@@ -1086,3 +1086,13 @@ behavior, not a before/after frame-rate measurement.
 
 Status: done, pending user's live confirmation. Committed and pushed per
 standing instruction.
+
+## 2026-07-31 22:01 — Revert sweep window widening
+
+User tried the wider window and it felt less snappy overall, preferred the
+previous feel. Reverted via `git revert` (commit d0aae6b), restoring
+`src/lib/sweep.ts`'s `MAX_SWEEP_MS`/`PER_ITEM_MS` to 450/35. The
+layout-FLIP fix (`enableLayoutAnimation`) from the prior entry is
+unaffected and stays in place. Build/lint verified clean post-revert.
+
+Status: done. Committed and pushed per standing instruction.
