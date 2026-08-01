@@ -99,6 +99,36 @@ function project(
   }
 }
 
+// Same projection math as project(), but with a strict facing>=0
+// visibility test instead of project()'s near-limb OR-fallback (which
+// exists to stop a single point marker from flickering when it sits
+// exactly on the edge). Applied to a dense ring of many points sweeping
+// through the horizon, that fallback could mark several scattered points
+// near the limb "visible" out of true facing order, breaking the ring
+// into extra gaps instead of one clean split. A ring has enough points
+// that a plain facing test alone still reads as a smooth, single break.
+function projectRingPoint(
+  point: [number, number, number],
+  phi: number,
+  theta: number,
+): { x: number; y: number; visible: boolean } {
+  const cosTheta = Math.cos(theta)
+  const sinTheta = Math.sin(theta)
+  const cosPhi = Math.cos(phi)
+  const sinPhi = Math.sin(phi)
+  const [px, py, pz] = point
+
+  const c = cosPhi * px + sinPhi * pz
+  const s = sinPhi * sinTheta * px + cosTheta * py - cosPhi * sinTheta * pz
+  const facing = -sinPhi * cosTheta * px + sinTheta * py + cosPhi * cosTheta * pz
+
+  return {
+    x: (c + 1) / 2,
+    y: (-s + 1) / 2,
+    visible: facing >= 0,
+  }
+}
+
 function cross(a: [number, number, number], b: [number, number, number]): [number, number, number] {
   return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
 }
@@ -142,9 +172,27 @@ function ringPointsOnSphere(
 // horizon) so the ring breaks apart correctly instead of drawing a
 // garbled line across the back of the globe.
 function buildRingPath(points: { x: number; y: number; visible: boolean }[]): string {
+  const n = points.length
+  if (n === 0) return ""
+  // The ring is circular, but `points` is a flat array -- walking it
+  // start-to-end only would leave a permanent gap between the last and
+  // first sampled point (index n-1 -> 0) even when every point is
+  // visible, since that wraparound segment is never visited. Rotate the
+  // starting index to right after a genuine invisible->visible transition
+  // (or leave it at 0 if the whole ring is visible) so the loop below can
+  // walk one full lap, closing that seam, and still only leaves real gaps
+  // at actual horizon crossings.
+  let start = 0
+  for (let i = 0; i < n; i++) {
+    if (!points[i].visible && points[(i + 1) % n].visible) {
+      start = (i + 1) % n
+      break
+    }
+  }
   let d = ""
   let open = false
-  for (const p of points) {
+  for (let k = 0; k <= n; k++) {
+    const p = points[(start + k) % n]
     if (!p.visible) {
       open = false
       continue
@@ -414,7 +462,7 @@ export const Globe = forwardRef<GlobeRef, GlobeProps>(function Globe({
           const r = 0.8 + markerElevation
           const center = unitSphere(marker.location)
           const projected = ringPointsOnSphere(center, angularRadius, PULSE_RING_SEGMENTS).map((pt) =>
-            project([pt[0] * r, pt[1] * r, pt[2] * r], currentPhi, currentTheta),
+            projectRingPoint([pt[0] * r, pt[1] * r, pt[2] * r], currentPhi, currentTheta),
           )
           el.setAttribute("d", buildRingPath(projected))
           el.style.opacity = String(opacity)

@@ -2,12 +2,12 @@ import { useEffect, useRef, useState } from 'react'
 import type { CountryDemographics } from '@/lib/worldbank'
 
 // Real per-second birth/death rates are all well under 1/s even for the
-// most populous countries. A threshold of 1 puts the busiest cities
+// most populous countries. A threshold of 0.5 puts the busiest cities
 // (India's births, China's deaths, both ~0.33-0.37/s after country-sharing
-// splits) at roughly a 3s pulse cadence; quiet countries will rarely pulse
-// in a short session -- expected, this is literal real-time pacing, not
-// artificially sped up.
-export const PULSE_THRESHOLD = 1
+// splits) at roughly a 1.5s pulse cadence; quiet countries will rarely
+// pulse in a short session -- expected, this is literal real-time pacing,
+// not artificially sped up.
+export const PULSE_THRESHOLD = 0.5
 const TICK_MS = 500
 export const PULSE_DURATION_MS = 1800
 
