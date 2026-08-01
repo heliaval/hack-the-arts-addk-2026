@@ -167,12 +167,16 @@ body {
 }
 
 @keyframes pulse-ring {
-  from {
-    transform: scale(0.2);
-    opacity: 0.9;
+  0% {
+    transform: scale(0.15);
+    opacity: 1;
   }
-  to {
-    transform: scale(1.6);
+  15% {
+    transform: scale(2.4);
+    opacity: 0.85;
+  }
+  100% {
+    transform: scale(9);
     opacity: 0;
   }
 }

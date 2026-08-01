@@ -8,7 +8,7 @@ import type { CountryDemographics } from '@/lib/worldbank'
 // artificially sped up.
 export const PULSE_THRESHOLD = 3
 const TICK_MS = 500
-export const PULSE_DURATION_MS = 1100
+export const PULSE_DURATION_MS = 1800
 
 export interface PulseCity {
   id: string

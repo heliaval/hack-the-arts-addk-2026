@@ -631,7 +631,7 @@ const Pulse = memo(function Pulse({
       }}
     >
       <span
-        className="block size-8 rounded-full border-2 [animation:pulse-ring_1.1s_ease-out_forwards]"
+        className="block size-8 rounded-full border-2 [animation:pulse-ring_1.8s_ease-out_forwards]"
         style={{ borderColor: kind === "birth" ? "var(--accent)" : "#000000" }}
       />
     </div>
