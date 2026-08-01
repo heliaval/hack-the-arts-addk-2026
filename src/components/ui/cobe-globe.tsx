@@ -25,7 +25,7 @@ interface Arc {
 interface GlobeProps {
   markers?: Marker[]
   arcs?: Arc[]
-  pulses?: { id: string; markerId: string; kind: "birth" | "death" }[]
+  pulses?: { id: string; markerId: string; kind: "birth" | "death"; spawnedAt: number }[]
   className?: string
   markerColor?: [number, number, number]
   baseColor?: [number, number, number]
@@ -99,6 +99,71 @@ function project(
   }
 }
 
+function cross(a: [number, number, number], b: [number, number, number]): [number, number, number] {
+  return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+}
+
+function normalize(v: [number, number, number]): [number, number, number] {
+  const len = Math.sqrt(v[0] ** 2 + v[1] ** 2 + v[2] ** 2)
+  return [v[0] / len, v[1] / len, v[2] / len]
+}
+
+// Samples `segments` points evenly around a circle of angular radius
+// `angularRadius` (radians) centered at `center` on the unit sphere --
+// the standard spherical-cap parametrization. Used to draw a geodesic
+// ring that expands outward from a point, following the sphere's actual
+// curvature (as opposed to a flat screen-space circle).
+function ringPointsOnSphere(
+  center: [number, number, number],
+  angularRadius: number,
+  segments: number,
+): [number, number, number][] {
+  const ref: [number, number, number] = Math.abs(center[1]) > 0.9 ? [1, 0, 0] : [0, 1, 0]
+  const t1 = normalize(cross(ref, center))
+  const t2 = cross(center, t1)
+  const cosR = Math.cos(angularRadius)
+  const sinR = Math.sin(angularRadius)
+  const points: [number, number, number][] = []
+  for (let i = 0; i < segments; i++) {
+    const phi = (i / segments) * Math.PI * 2
+    const cosPhi = Math.cos(phi)
+    const sinPhi = Math.sin(phi)
+    points.push([
+      center[0] * cosR + (t1[0] * cosPhi + t2[0] * sinPhi) * sinR,
+      center[1] * cosR + (t1[1] * cosPhi + t2[1] * sinPhi) * sinR,
+      center[2] * cosR + (t1[2] * cosPhi + t2[2] * sinPhi) * sinR,
+    ])
+  }
+  return points
+}
+
+// Builds an SVG path `d` string from a sequence of projected ring points,
+// starting a new subpath whenever a point is occluded (crosses the
+// horizon) so the ring breaks apart correctly instead of drawing a
+// garbled line across the back of the globe.
+function buildRingPath(points: { x: number; y: number; visible: boolean }[]): string {
+  let d = ""
+  let open = false
+  for (const p of points) {
+    if (!p.visible) {
+      open = false
+      continue
+    }
+    d += `${open ? "L" : "M"}${(p.x * 100).toFixed(2)},${(p.y * 100).toFixed(2)} `
+    open = true
+  }
+  return d
+}
+
+// Kept as a local constant rather than imported from populationPulse.ts --
+// cobe-globe.tsx is a generic UI primitive and shouldn't depend on an
+// app-specific data-layer file. If this ever drifts from that file's
+// PULSE_DURATION_MS, the ring's fade timing and the pulse's
+// removal-from-state timing would desync.
+const PULSE_MAX_ANGULAR_RADIUS = 1.1
+const PULSE_RING_SEGMENTS = 40
+const PULSE_DURATION_MS = 1800
+
 // Mirrors cobe's arc-midpoint projection (function X in its source) for
 // placing arc labels at the peak of the arc's bulge.
 function projectArcMidpoint(
@@ -150,11 +215,11 @@ export const Globe = forwardRef<GlobeRef, GlobeProps>(function Globe({
   // label on every frame, even ones whose actual content hasn't changed.
   const labelRefSetters = useRef<Map<string, (el: HTMLDivElement | null) => void>>(new Map())
   const arcLabelRefSetters = useRef<Map<string, (el: HTMLDivElement | null) => void>>(new Map())
-  const pulseRefs = useRef<Map<string, HTMLDivElement>>(new Map())
-  const pulseRefSetters = useRef<Map<string, (el: HTMLDivElement | null) => void>>(new Map())
-  function getRefSetter(
-    cache: MutableRefObject<Map<string, (el: HTMLDivElement | null) => void>>,
-    target: MutableRefObject<Map<string, HTMLDivElement>>,
+  const pulseRefs = useRef<Map<string, SVGPathElement>>(new Map())
+  const pulseRefSetters = useRef<Map<string, (el: SVGPathElement | null) => void>>(new Map())
+  function getRefSetter<T extends Element>(
+    cache: MutableRefObject<Map<string, (el: T | null) => void>>,
+    target: MutableRefObject<Map<string, T>>,
     id: string,
   ) {
     let setter = cache.current.get(id)
@@ -332,19 +397,27 @@ export const Globe = forwardRef<GlobeRef, GlobeProps>(function Globe({
         }
       }
 
-      function updatePulses(currentPhi: number, currentTheta: number, markerElevation: number) {
+      function updateRipples(currentPhi: number, currentTheta: number, markerElevation: number) {
+        const now = Date.now()
         for (const pulse of liveProps.current.pulses) {
           const el = pulseRefs.current.get(pulse.id)
           if (!el) continue
           const marker = liveProps.current.markers.find((m) => m.id === pulse.markerId)
           if (!marker) {
-            el.style.opacity = "0"
+            el.setAttribute("d", "")
             continue
           }
-          const { x, y, visible } = projectMarker(marker.location, currentPhi, currentTheta, markerElevation)
-          el.style.left = `${x * 100}%`
-          el.style.top = `${y * 100}%`
-          el.style.opacity = visible ? "1" : "0"
+          const p = Math.min(1, Math.max(0, (now - pulse.spawnedAt) / PULSE_DURATION_MS))
+          const eased = 1 - (1 - p) ** 2
+          const angularRadius = eased * PULSE_MAX_ANGULAR_RADIUS
+          const opacity = (1 - p) ** 1.3
+          const r = 0.8 + markerElevation
+          const center = unitSphere(marker.location)
+          const projected = ringPointsOnSphere(center, angularRadius, PULSE_RING_SEGMENTS).map((pt) =>
+            project([pt[0] * r, pt[1] * r, pt[2] * r], currentPhi, currentTheta),
+          )
+          el.setAttribute("d", buildRingPath(projected))
+          el.style.opacity = String(opacity)
         }
       }
 
@@ -408,7 +481,7 @@ export const Globe = forwardRef<GlobeRef, GlobeProps>(function Globe({
         }
         globe!.update(updatePayload)
         updateLabels(currentPhi, currentTheta, p.markerElevation, p.arcHeight)
-        updatePulses(currentPhi, currentTheta, p.markerElevation)
+        updateRipples(currentPhi, currentTheta, p.markerElevation)
         currentPhiRef.current = currentPhi
         currentThetaRef.current = currentTheta
         animationId = requestAnimationFrame(animate)
@@ -527,13 +600,22 @@ export const Globe = forwardRef<GlobeRef, GlobeProps>(function Globe({
             inverted
           />
         ))}
-      {pulses.map((pulse) => (
-        <Pulse
-          key={pulse.id}
-          kind={pulse.kind}
-          setRef={getRefSetter(pulseRefSetters, pulseRefs, pulse.id)}
-        />
-      ))}
+      <svg
+        viewBox="0 0 100 100"
+        preserveAspectRatio="none"
+        style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }}
+      >
+        {pulses.map((pulse) => (
+          <path
+            key={pulse.id}
+            ref={getRefSetter(pulseRefSetters, pulseRefs, pulse.id)}
+            fill="none"
+            stroke={pulse.kind === "birth" ? "var(--accent)" : "#000000"}
+            strokeWidth={0.5}
+            opacity={0}
+          />
+        ))}
+      </svg>
     </div>
   )
 })
@@ -606,35 +688,3 @@ const LabelPill = memo(function LabelPill({
   )
 })
 LabelPill.displayName = "LabelPill"
-
-// One-shot expanding ring, spawned by usePopulationPulses (GlobeView.tsx)
-// for a single birth/death threshold crossing. Position (left/top) and
-// occlusion opacity are imperative, updated every animate() frame like
-// labels -- but the ring's own scale/fade is a plain CSS keyframe
-// (`pulse-ring` in index.css) on the inner span, so the two don't fight
-// over the same `opacity` property.
-const Pulse = memo(function Pulse({
-  kind,
-  setRef,
-}: {
-  kind: "birth" | "death"
-  setRef: (el: HTMLDivElement | null) => void
-}) {
-  return (
-    <div
-      ref={setRef}
-      style={{
-        position: "absolute",
-        transform: "translate(-50%, -50%)",
-        pointerEvents: "none",
-        opacity: 0,
-      }}
-    >
-      <span
-        className="block size-8 rounded-full border-2 [animation:pulse-ring_1.8s_ease-out_forwards]"
-        style={{ borderColor: kind === "birth" ? "var(--accent)" : "#000000" }}
-      />
-    </div>
-  )
-})
-Pulse.displayName = "Pulse"
