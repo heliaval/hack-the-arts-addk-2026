@@ -1,4 +1,4 @@
-import { Suspense, useEffect, useMemo, useRef, useState } from 'react'
+import { Suspense, memo, useEffect, useMemo, useRef, useState } from 'react'
 import { Canvas, useThree } from '@react-three/fiber'
 import { CuboidCollider, Physics, RigidBody } from '@react-three/rapier'
 import type { CountryDemographics } from '@/lib/worldbank'
@@ -88,6 +88,11 @@ function Boundaries() {
   const halfH = height / 2
   const half = WALL_THICKNESS / 2
   // CuboidCollider args are HALF-extents.
+  // Side walls use halfH * 2 (i.e. extend to 2x the viewport height, not
+  // just to its edges): beads spawn ABOVE the visible viewport (see
+  // BeadBody's spawn position, height/2 + BEAD_RADIUS * 2), so the walls
+  // must reach up past that spawn point too, or a bead could fall past the
+  // wall's top edge before ever entering the visible region.
   return (
     <>
       <RigidBody type="fixed" colliders={false} position={[0, -halfH - half, 0]}>
@@ -114,7 +119,7 @@ function Boundaries() {
 // confirmed. RigidBody `position` is only read when the body is created, so
 // stable React keys matter: a changing key would recreate the body and
 // teleport a settled bead back to the spawn point.
-function BeadBody({ bead, colors }: { bead: Bead; colors: BeadColors }) {
+const BeadBody = memo(function BeadBody({ bead, colors }: { bead: Bead; colors: BeadColors }) {
   const height = useThree((state) => state.size.height)
   return (
     <RigidBody
@@ -134,7 +139,7 @@ function BeadBody({ bead, colors }: { bead: Bead; colors: BeadColors }) {
       </mesh>
     </RigidBody>
   )
-}
+})
 
 interface BeadSceneProps {
   demographics: CountryDemographics

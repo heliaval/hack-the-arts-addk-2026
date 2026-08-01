@@ -1692,9 +1692,12 @@ Two things worth knowing for whoever picks this up. The orthographic camera
 means 1 world unit = 1 CSS pixel, so Rapier's default gravity had to be
 rescaled to -2000 px/s^2. And `THREE.Color` can't parse `oklch()` (how
 `--foreground` is declared) or a `var(--…)` reference, so colours are read
-off a probe element's computed style and normalised through a 2D canvas
-`fillStyle` round-trip, re-resolved one animation frame after each theme
-toggle (child effects run before the parent effect that toggles `.dark`).
+off a probe element's computed style and normalised by painting it onto a
+1x1 2D canvas and reading back the rasterised pixel via `getImageData`
+(a `fillStyle` string round-trip alone doesn't work — Chrome echoes
+`oklch(...)` back verbatim instead of resolving it to `rgb()`), re-resolved
+one animation frame after each theme toggle (child effects run before the
+parent effect that toggles `.dark`).
 
 `npx tsc --noEmit` and `oxlint src` clean apart from the pre-existing
 `baseUrl` deprecation and `button.tsx` warnings. Verified live: no console
@@ -1708,3 +1711,23 @@ Phase 2 (drei `MeshTransmissionMaterial` glass refraction plus scene
 lighting) and bead-vs-UI collision are deliberately still open.
 
 Status: done.
+
+## 2026-08-01: Final whole-branch review fixes (bead scene)
+
+Starting: fixing 4 issues from the final whole-branch review of the merged
+bead-scene feature — missing `key={selectedIso3}` on `<BeadScene>` in
+`src/App.tsx` (stale bead pile mixing across country switches), memoizing
+`BeadBody` in `src/components/BeadScene.tsx`, correcting this file's stale
+"fillStyle round-trip" description above to match the actual shipped
+`getImageData` rasterization approach, and commenting the wall colliders'
+`halfH * 2` sizing.
+
+Done: all four fixes applied. `key={selectedIso3}` added so switching
+countries fully remounts `BeadScene` (fresh physics world, empty bead
+array). `BeadBody` wrapped in `memo`. The phase-1 summary paragraph above
+now correctly describes the rasterized-pixel-read approach instead of a
+plain `fillStyle` string round-trip. Added an inline comment on the side
+wall colliders in `Boundaries()` explaining why they use `halfH * 2` (beads
+spawn above the visible viewport, so walls must extend above it too).
+`npx tsc --noEmit` and `npx oxlint src` clean apart from the two known
+pre-existing warnings. Status: done.
