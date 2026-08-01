@@ -1,6 +1,8 @@
-import { Suspense, useEffect, useState } from 'react'
+import { Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { Canvas, useThree } from '@react-three/fiber'
 import { CuboidCollider, Physics, RigidBody } from '@react-three/rapier'
+import type { CountryDemographics } from '@/lib/worldbank'
+import { spawnIntervalMs } from '@/lib/beadSpawnRate'
 
 // With <Canvas orthographic> and no manual frustum override, react-three-
 // fiber sizes the camera frustum to the canvas's CSS pixel dimensions on
@@ -12,14 +14,10 @@ const GRAVITY_PX_PER_S2 = 2000
 const BEAD_RADIUS = 14
 const WALL_THICKNESS = 40
 // Half-width of the horizontal band beads spawn across. Without jitter
-// every bead would stack in one perfect column. Unused in this task (three
-// beads are seeded at fixed x positions below); exported so Task 4's
-// spawn-rate-driven loop can consume it without redeclaring the constant,
-// and so noUnusedLocals doesn't flag it as dead code in the meantime.
+// every bead would stack in one perfect column.
 export const SPAWN_JITTER_PX = 90
 // Live bead cap. Past this, the oldest bead is dropped as each new one
 // spawns, so performance stays bounded however long the scene stays open.
-// Unused in this task for the same reason as SPAWN_JITTER_PX above.
 export const MAX_BEADS = 180
 
 interface Bead {
@@ -139,10 +137,11 @@ function BeadBody({ bead, colors }: { bead: Bead; colors: BeadColors }) {
 }
 
 interface BeadSceneProps {
+  demographics: CountryDemographics
   theme: 'light' | 'dark'
 }
 
-export function BeadScene({ theme }: BeadSceneProps) {
+export function BeadScene({ demographics, theme }: BeadSceneProps) {
   // Re-resolved whenever the theme flips. Deliberately inside a rAF: the
   // `.dark` class is toggled by App's own useTheme effect, and child
   // effects run BEFORE parent effects in React — reading the computed
@@ -154,15 +153,41 @@ export function BeadScene({ theme }: BeadSceneProps) {
     return () => cancelAnimationFrame(id)
   }, [theme])
 
-  // Seeded with three static beads so this task is verifiable on its own:
-  // it proves the R3F + Rapier pipeline boots, the pixel-unit camera is
-  // right, the floor catches things, and both colours resolve. Task 4
-  // replaces this initial value with [] and drives spawning from data.
-  const [beads] = useState<Bead[]>(() => [
-    { id: -1, kind: 'birth', x: -60 },
-    { id: -2, kind: 'death', x: 0 },
-    { id: -3, kind: 'birth', x: 60 },
-  ])
+  const [beads, setBeads] = useState<Bead[]>([])
+  // Monotonic counter, not Math.random(): React keys must be stable and
+  // never collide, or Rapier bodies get torn down and recreated mid-fall.
+  const nextIdRef = useRef(0)
+
+  const birthIntervalMs = useMemo(
+    () => spawnIntervalMs(demographics.birthsPerSecond),
+    [demographics.birthsPerSecond],
+  )
+  const deathIntervalMs = useMemo(
+    () => spawnIntervalMs(demographics.deathsPerSecond),
+    [demographics.deathsPerSecond],
+  )
+
+  useEffect(() => {
+    function spawn(kind: 'birth' | 'death') {
+      setBeads((prev) => {
+        // Trim from the front (oldest) so the array never exceeds the cap
+        // once the new bead is appended.
+        const kept = prev.length >= MAX_BEADS ? prev.slice(prev.length - MAX_BEADS + 1) : prev.slice()
+        kept.push({
+          id: nextIdRef.current++,
+          kind,
+          x: (Math.random() - 0.5) * 2 * SPAWN_JITTER_PX,
+        })
+        return kept
+      })
+    }
+    const birthTimer = window.setInterval(() => spawn('birth'), birthIntervalMs)
+    const deathTimer = window.setInterval(() => spawn('death'), deathIntervalMs)
+    return () => {
+      window.clearInterval(birthTimer)
+      window.clearInterval(deathTimer)
+    }
+  }, [birthIntervalMs, deathIntervalMs])
 
   return (
     // pointer-events-none so the sliders and toggles underneath stay fully

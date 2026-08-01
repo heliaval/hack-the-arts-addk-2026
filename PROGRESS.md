@@ -1663,3 +1663,48 @@ exported, same as before.
 Status: done. `git add src/components/BeadScene.tsx src/App.tsx` (launch.json
 fix and this log entry committed separately/alongside per the task's own
 instructions).
+
+## Bead scene, phase 1
+
+Replaced the never-built literal 3D hourglass with a bead scene: clicking a
+city marker on the globe selects its country, shrinks the globe into the
+top-right corner via a `duration-700` CSS transform, and mounts `BeadScene`
+— a fixed, transparent, `pointer-events-none` react-three-fiber canvas
+running Rapier physics over the whole viewport. Beads drop from top-centre
+with horizontal jitter and pile up against invisible floor/side colliders
+sized to the viewport; birth beads take the `--accent` red, death beads the
+`--foreground` colour, so both themes read correctly.
+
+Click-to-select didn't exist before this (the cobe globe is drag-to-rotate
+only and `onSelectCountry` was a `void` stub). `GlobeRef` now exposes
+`getElement()` and a `visible` flag on `project()`, so `GlobeView` can
+distinguish a click from a drag (6px / 400ms thresholds) and hit-test the
+click's canvas-relative fraction against near-side markers only. Clicking
+the same country again deselects, which is the scene's only exit.
+
+Spawn cadence comes from `src/lib/beadSpawnRate.ts`, which log-rescales the
+real `birthsPerSecond`/`deathsPerSecond` figures (spanning ~5 orders of
+magnitude) into a 1400ms-120ms interval, the same "keep the real figure as
+input, map it onto a readable scale" move `globeSpeed.ts` already makes for
+rotation. Live bead count is capped at 180, oldest dropped first.
+
+Two things worth knowing for whoever picks this up. The orthographic camera
+means 1 world unit = 1 CSS pixel, so Rapier's default gravity had to be
+rescaled to -2000 px/s^2. And `THREE.Color` can't parse `oklch()` (how
+`--foreground` is declared) or a `var(--…)` reference, so colours are read
+off a probe element's computed style and normalised through a 2D canvas
+`fillStyle` round-trip, re-resolved one animation frame after each theme
+toggle (child effects run before the parent effect that toggles `.dark`).
+
+`npx tsc --noEmit` and `oxlint src` clean apart from the pre-existing
+`baseUrl` deprecation and `button.tsx` warnings. Verified live: no console
+errors on select, during a 60s run, or on deselect; the bead canvas covers
+the viewport and is `pointer-events: none` (the control panel is still
+hit-testable through it); the globe's computed transform scales to 0.3 on
+select and returns to identity on deselect; both bead colours normalise to
+real hex and flip correctly on theme toggle.
+
+Phase 2 (drei `MeshTransmissionMaterial` glass refraction plus scene
+lighting) and bead-vs-UI collision are deliberately still open.
+
+Status: done.

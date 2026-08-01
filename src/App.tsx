@@ -362,7 +362,7 @@ function App() {
           rotationSpeedKmS={rotationSpeedKmS}
         />
       </div>
-      {selected && <BeadScene theme={theme} />}
+      {selected && <BeadScene demographics={selected} theme={theme} />}
       <div className="absolute right-4 top-4 z-10 flex gap-2">
         <LanguageToggle lang={lang} onToggle={handleLanguageToggle} onHoverChange={setLangHintVisible} />
         <ThemeToggle theme={theme} toggleTheme={toggleTheme} onHoverChange={setThemeHintVisible} />
