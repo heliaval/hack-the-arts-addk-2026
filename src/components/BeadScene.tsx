@@ -79,7 +79,7 @@ export const MARBLE_VARIANTS = MARBLE_SWIRL_VARIANTS + MARBLE_CATSEYE_VARIANTS
 // birth/death colour distinction the whole feature is built on. Holding
 // back 10% of the diffuse term keeps a red bead legibly red without
 // making it look painted.
-const BEAD_TRANSMISSION = 0.9
+const BEAD_TRANSMISSION = 0.98
 // Beer-Lambert attenuation. Deliberately weak now: it multiplies the same
 // transmitted term the marble texture does (see the shader trace on
 // useBeadMaterials), so the tight one-radius distance this used to have
@@ -88,7 +88,7 @@ const BEAD_TRANSMISSION = 0.9
 // Three radii leaves a residual body tint, which is what still separates a
 // red pile from a grey one at a glance, and lets the texture be the thing
 // you actually look at.
-const BEAD_ATTENUATION_DISTANCE = BEAD_RADIUS * 3
+const BEAD_ATTENUATION_DISTANCE = BEAD_RADIUS * 6
 const BEAD_THICKNESS = BEAD_RADIUS * 2
 // 1.52 is soda-lime glass. 1.0 would be air (no bending at all), 2.4
 // diamond (comically warped at this size).
@@ -112,7 +112,7 @@ const BEAD_DISPERSION = 2.5
 // available. What it costs is one more cube-map sample plus a GGX term per
 // fragment; there is no clearcoatNormalMap, so three uses the geometry
 // normal for free.
-const BEAD_CLEARCOAT = 1
+const BEAD_CLEARCOAT = 0.05
 // Lower than BEAD_ROUGHNESS on purpose: the whole point of the layer is
 // that it is sharper than the surface underneath it.
 const BEAD_CLEARCOAT_ROUGHNESS = 0.04
@@ -132,7 +132,7 @@ const BEAD_ENV_RESOLUTION = 256
 // Lowered from 1.4 with the move to a 256px map and a clearcoat layer:
 // both add specular energy, and the previous value blows the highlights
 // out into white discs.
-const BEAD_ENV_INTENSITY = 1.15
+const BEAD_ENV_INTENSITY = 0.15
 
 // One geometry for every bead, built once at module scope. Phase 1 gave
 // each bead its own <sphereGeometry> element, i.e. up to MAX_BEADS
@@ -263,7 +263,7 @@ function marblePalette(tint: string): MarblePalette {
   // punched in the bead.
   const l = Math.max(hsl.l, 0.16)
   return {
-    base: shade(0, hsl.s * 0.25, Math.min(0.92, l + (1 - l) * 0.82)),
+    base: shade(0, hsl.s * 0.1, Math.min(0.85, l + (1 - l) * 0.75)),
     ribbons: [
       shade(0, hsl.s, l),
       shade(0.055, hsl.s * 0.85, Math.min(0.85, l + 0.22)),
@@ -437,7 +437,7 @@ function useBeadMaterials(colors: BeadColors) {
         // tint applied twice. Without a texture the tint is the only colour
         // the bead has, so it stays at full strength there.
         attenuationColor: map
-          ? new THREE.Color(tint).lerp(new THREE.Color(0xffffff), 0.6)
+          ? new THREE.Color(tint).lerp(new THREE.Color(0xffffff), 0.92)
           : new THREE.Color(tint),
         attenuationDistance: BEAD_ATTENUATION_DISTANCE,
         transmission: BEAD_TRANSMISSION,
@@ -515,13 +515,13 @@ const BeadEnvironment = memo(function BeadEnvironment({
 }) {
   return (
     <Environment resolution={resolution} frames={1} environmentIntensity={intensity}>
-      <Lightformer form="rect" intensity={5} color="#ffffff" position={[0, 320, 140]} scale={[700, 320, 1]} />
-      <Lightformer form="circle" intensity={3} color="#ffd9c4" position={[-360, 60, 220]} scale={[260, 260, 1]} />
-      <Lightformer form="circle" intensity={2.4} color="#c7ddff" position={[360, -40, 220]} scale={[260, 260, 1]} />
-      <Lightformer form="rect" intensity={1.4} color="#ffffff" position={[0, -320, 180]} scale={[700, 260, 1]} />
+      <Lightformer form="rect" intensity={0.25} color="#ffffff" position={[0, 320, 140]} scale={[700, 320, 1]} />
+      <Lightformer form="circle" intensity={0.15} color="#ffd9c4" position={[-360, 60, 220]} scale={[260, 260, 1]} />
+      <Lightformer form="circle" intensity={0.12} color="#c7ddff" position={[360, -40, 220]} scale={[260, 260, 1]} />
+      <Lightformer form="rect" intensity={0.08} color="#ffffff" position={[0, -320, 180]} scale={[700, 260, 1]} />
       <Lightformer
         form="rect"
-        intensity={9}
+        intensity={3}
         color="#ffffff"
         position={[-150, 190, 300]}
         rotation={[0, 0.45, 0]}
@@ -840,8 +840,8 @@ export function BeadScene({ demographics, theme, globeCircle }: BeadSceneProps) 
             rest. environmentIntensity is the only theme-dependent dial: the
             dark theme needs less lift or the pile blows out against a
             near-black page. */}
-        <BeadEnvironment intensity={theme === 'dark' ? 1 : 1.5} resolution={BEAD_ENV_RESOLUTION} />
-        <directionalLight position={[200, 400, 300]} intensity={1.4} />
+        <BeadEnvironment intensity={theme === 'dark' ? 0.15 : 0.25} resolution={BEAD_ENV_RESOLUTION} />
+        <directionalLight position={[200, 400, 300]} intensity={0.35} />
         {/* Rapier's WASM is loaded via suspend-react, so Physics suspends. */}
         <Suspense fallback={null}>
           <Physics gravity={[0, -GRAVITY_PX_PER_S2, 0]}>

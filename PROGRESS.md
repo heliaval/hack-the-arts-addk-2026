@@ -1971,3 +1971,76 @@ run yet — needed before this is final.
 
 Status: done, pending the plan's Task 4 human checkpoint (visual quality +
 frame rate, same rAF/compositing limitation as every prior phase).
+
+## Bead scene, phase 3 — Task 4 checkpoint and post-checkpoint art direction
+
+FPS meter in a real, focused Chrome window: steady 60fps at a full 70-bead
+pile with dying beads riding along, GPU raster on, ~5MB GPU memory used
+against a 537MB budget. No degrade ladder needed.
+
+The six visual questions turned into an extended live tuning pass rather
+than a one-shot pass/fail, because the shipped defaults did not read as
+glass in practice — the sandbox's documented rAF/compositing limitation
+means none of this could be previewed here, so every round below was
+tuned blind against the user's screenshots.
+
+First finding: the shipped defaults (`BEAD_TRANSMISSION = 0.9`,
+`BEAD_ATTENUATION_DISTANCE = BEAD_RADIUS * 3`, marble `base` lightness
+capped at 0.92) read as flat frosted pearls, not glass. Raising
+transmission and whitening the attenuation colour and base texture helped
+but also removed the one thing holding the birth/death read together —
+each round traded some legibility for some transparency.
+
+Second finding, and the one that cost the most iterations: `clearcoat` at
+its shipped value of 1 plus the four "even sheen" lightformers (their own
+comment says exactly that) does not read as a highlight on glass, it reads
+as a chrome ball, because a low-roughness sphere integrates a bright
+studio rig across most of its visible surface, not just a grazing rim.
+Cutting those down almost to zero produced flat, wooden opaque beads that
+did not fix it either — the marble `base` texture had been pushed to
+lightness 0.99 specifically to look "clear," but a near-white diffuse
+surface reads as bright under almost any light level, so dimming the rig
+alone plateaued rather than converging. The base's own lightness had to
+come down too, from 0.99 to 0.85, before the beads stopped reading as
+lit and started reading as pigmented glass with a subtle highlight.
+
+Third finding, which was reverted: added an opaque gradient backdrop
+plane inside the beads' own Three.js scene so `renderTransmissionPass`
+would have something real to refract (the reasoning — no opaque geometry
+existed behind the beads, since the cobe globe is a separate canvas
+composited via CSS and invisible to this scene's own transmission pass —
+was correct, and the beads did refract it). But at full-viewport size it
+also occluded the CSS-composited globe underneath for the entire time a
+country was selected, which breaks the "globe is the obstacle beads fall
+onto" design this scene is built around. Reverted; genuinely refracting
+the actual globe would require rendering it inside this same scene rather
+than as a separate canvas, which is out of scope here.
+
+The user picked, by direct comparison across several screenshots, the
+configuration this settles on: `BEAD_CLEARCOAT` at 0.05 (present but
+barely), `BEAD_ENV_INTENSITY` at 0.15, the environment rig at
+intensity 0.15/0.25 (dark/light) with its four ambient lightformers cut to
+roughly a third of their shipped values and the one small "hotspot"
+lightformer kept comparatively bright (3, down from 9) for a single
+recognisable glint, `directionalLight` at 0.35, `BEAD_TRANSMISSION` at
+0.98, `BEAD_ATTENUATION_DISTANCE` at `BEAD_RADIUS * 6`, attenuation colour
+lerped 92% toward white, and the marble `base` palette at lightness 0.85
+with a touch more saturation (0.1) than shipped. Net effect: beads read
+as pigmented glass whose appearance comes mostly from the swirl texture
+itself, with only a small, deliberately subdued highlight — "barely
+affected by light" in the user's own words — rather than from the
+lighting rig.
+
+`npx tsc --noEmit` and `oxlint src` clean apart from the two pre-existing
+warnings after every round of this tuning, including the final one.
+Verified in the sandbox after each edit: no console errors on select, on
+the ~60s soak, or on theme toggle; the backdrop experiment's revert left
+no dead code or unused imports. The pixel judgements — whether this
+specific balance reads as glass, whether both themes hold up, whether the
+globe stays visible — were made by the user directly from screenshots,
+per the same sandbox-cannot-verify-pixels limitation as every prior phase
+in this file.
+
+Status: done. Tuned constants only, no architectural or physics changes;
+the degrade ladder in the plan was not needed since frame rate cleared
+30fps with no adjustment.
