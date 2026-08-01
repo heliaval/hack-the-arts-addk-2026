@@ -171,11 +171,18 @@ const LanguageHint = memo(function LanguageHint({
 
 // Shares the language/theme hints' bottom-right corner and fade pattern,
 // but unlike those it isn't hover-driven — it's shown once, automatically,
-// the first time the city count hits its max. Sits at a lower z-index than
-// the hover hints so hovering the language/theme toggle visually covers it
-// without needing to coordinate visibility state between the three.
-const LagWarning = memo(function LagWarning({ remainingSeconds }: { remainingSeconds: number | null }) {
-  const visible = remainingSeconds !== null
+// the first time the city count hits its max. `suppressed` (driven by the
+// language/theme hints' own hover state) hides it outright rather than
+// just relying on z-index, since the two messages are different widths and
+// a shorter hint wouldn't fully cover a longer warning underneath it.
+const LagWarning = memo(function LagWarning({
+  remainingSeconds,
+  suppressed,
+}: {
+  remainingSeconds: number | null
+  suppressed: boolean
+}) {
+  const visible = remainingSeconds !== null && !suppressed
   return (
     <span
       aria-hidden="true"
@@ -336,7 +343,7 @@ function App() {
       </div>
       <LanguageHint lang={lang} visible={langHintVisible} />
       <ThemeHint theme={theme} visible={themeHintVisible} />
-      <LagWarning remainingSeconds={lagWarningRemaining} />
+      <LagWarning remainingSeconds={lagWarningRemaining} suppressed={langHintVisible || themeHintVisible} />
       <ControlPanel
         cityCountRaw={cityCountRaw}
         onCityCountRawChange={setCityCountRaw}
