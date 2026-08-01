@@ -1399,3 +1399,36 @@ scaling as a flat on-screen circle.
 Status: done, pending the user's live visual confirmation (the one part
 genuinely untestable in this sandbox, same as the original shockwave
 feature). Committed and pushed (`08929e6`, `b4dec1c`, `167230c`).
+
+## 2026-08-01 (continued) — Shockwave frequency tuning + ring continuity fix (screenshot-driven)
+
+User first asked for 2x frequency (threshold 1 -> 0.5), then supplied a
+screenshot showing multiple overlapping rings (too frequent) and visibly
+broken/gapped ring outlines even after the earlier seam-closing fix.
+
+- Reverted `PULSE_THRESHOLD` back to 1 (busiest cities ~3s cadence) per
+  "that may be way too often, revert it to the last time used."
+- Root-caused the continuity complaint from the screenshot: the
+  occlusion-based path-breaking in `buildRingPath` (added in the previous
+  entry to split rings at genuine horizon crossings) was still producing
+  visible gaps even on rings that stayed mostly front-facing — the ring's
+  point density meant small facing fluctuations near the limb read as
+  several scattered gaps rather than one clean split, exactly the
+  "shockwaves are cut in the middle" symptom the screenshot showed.
+  Simplified `buildRingPath` to always draw a full closed loop
+  (`M...L...L...Z`), ignoring per-point occlusion entirely — the ring's
+  max angular radius (63°) stays well under a full hemisphere, so this
+  trades strict 3D horizon-correctness (a marker very close to the true
+  limb might show part of its ring slightly past the edge) for guaranteed
+  visual continuity, which is what was actually requested. Removed the
+  now-unused `projectRingPoint` helper (added in the same earlier attempt)
+  since nothing consumes ring-point visibility anymore — reverted ring
+  projection to the plain, already-existing `project()`.
+
+Verified: build + `oxlint src` clean. Sanity-tested the closed-loop path
+logic standalone (all-visible-equivalent case now closes with a trailing
+`Z`, matching the fix's intent) — full live confirmation still pending
+the user's own browser per this project's standing rAF-pane limitation.
+
+Status: done, pending live confirmation. Committed and pushed
+(`b0592be`).
