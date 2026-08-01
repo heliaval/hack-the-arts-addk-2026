@@ -1170,3 +1170,59 @@ non-compositing pane — needs the user's live confirmation.
 
 Status: done, pending user's live confirmation. Committed and pushed per
 standing instruction.
+
+## 2026-07-31 (continued) — Globe size bump + one-time lag warning
+
+Started: user asked (1) whether the globe should be bigger since it's the
+primary interactive element, (2) after agreeing, a one-time 5s countdown
+warning in the language-hint's bottom-right corner the first time the
+city-count slider hits its max (20), warning about possible WebGL lag.
+
+**Globe size**: `src/components/GlobeView.tsx`'s `<Globe>` wrapper was
+capped at `max-w-2xl` (672px) inside a full-viewport flex container — a
+lot of dead space on any real screen. First attempt (`h-full max-h-[48rem]
+w-full max-w-[48rem]`) broke the wrapper's `aspect-square` class since
+setting both axes explicitly overrides `aspect-ratio` — confirmed via
+`getBoundingClientRect()` showing a stretched 768×656 non-square canvas.
+Fixed by constraining only one axis and letting `aspect-square` derive the
+other: `aspect-square w-full max-w-[min(80vh,48rem)]` — confirmed square
+576×576 at the 1280×720 dev viewport (80% of 720 height, well under the
+48rem ceiling).
+
+**Lag warning**: went through the brainstorming skill (two rounds of
+`AskUserQuestion`) before implementing, per CLAUDE.md. Design: new
+`LagWarning` component in `src/App.tsx`, same bottom-right corner/fade
+pattern as `LanguageHint`/`ThemeHint` but not hover-driven — triggered
+once, ever, by a `useEffect` keyed on `cityCount === MAX_CITY_COUNT` (a
+`hasShownLagWarningRef` prevents retriggering if the user drags away and
+back). Text: "please be advised that WebGL performance may degrade at 20
+cities", amber/yellow (`text-amber-500`/`dark:text-amber-400`), with a
+` · Ns` countdown suffix ticking 5→1 via a chained `setTimeout` effect,
+then unmounting. `LanguageHint`/`ThemeHint` bumped from `z-10` to `z-20`
+so hovering either visually covers the lag message rather than needing
+shared visibility-coordination state (per user's explicit "overrideable
+by any other message" answer).
+
+Plan written to
+`docs/superpowers/plans/2026-07-31-lag-warning-message.md` and executed
+inline (single small task, no subagent dispatch needed).
+
+**Verification**: `npm run build` and `oxlint src` both clean (only the
+pre-existing unrelated `button.tsx` warning). Could NOT verify the
+trigger end-to-end live in this session — re-confirmed the same
+rAF-pane limitation noted throughout this project: a fresh
+`requestAnimationFrame` probe scheduled in the live tab never fired even
+after 2s, so `cityCount` (which is rAF-throttled, see the "Fix
+city-count slider lag" entry above) never advances in this sandbox even
+though the slider's raw `aria-valuenow` reached 20 via a simulated `End`
+keypress. Confirmed instead via direct DOM inspection: the `LagWarning`
+span renders in the correct corner with the correct text/classes,
+currently at `opacity-0` (correctly not yet triggered, since `cityCount`
+never moved). **User should verify live**: drag the city slider to 20 in
+a real browser and confirm the amber countdown message appears bottom-
+right, ticks down, and disappears after 5s, and does not reappear on a
+second visit to 20 without a page reload.
+
+Status: done, pending the user's live confirmation of the untestable-here
+rAF-gated behavior. Committed and pushed (`e5fb9fc` globe size,
+`eba33b2` lag warning).
