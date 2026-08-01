@@ -1566,3 +1566,100 @@ the title element confirms `font-family: "Cormorant Garamond Variable",
 serif` is actually applied (not silently falling back).
 
 Status: done. Committed and pushed.
+
+## 2026-08-01 — Task 3: BeadScene physics container + globe shrink
+
+Started: Task 3 of a 4-task bead-scene plan (`.superpowers/sdd/2026-08-01-bead-scene/`).
+Creating `src/components/BeadScene.tsx` (react-three-fiber + @react-three/rapier,
+first use of either in this repo) with 3 hardcoded seed beads, and wiring
+into `App.tsx` with a CSS-transform globe shrink on country selection.
+Following the task-3-brief.md verbatim for file content and verification steps.
+
+Built `src/components/BeadScene.tsx` and wired it into `App.tsx` per the
+brief. Confirmed R3F + Rapier + WASM genuinely boots (no prior code in this
+repo had ever imported either package). `npx tsc --noEmit -p tsconfig.app.json`
+and `npx oxlint src` both clean (only the pre-existing unrelated
+`button.tsx` warning and the pre-existing root-`tsconfig.json` `baseUrl`
+deprecation, neither touched by this change).
+
+**Two real bugs found and fixed via live verification, both invisible to
+static checks:**
+1. **Silent color-parse failure.** The brief's `normalizeCssColor` round-trips
+   a color string through a 2D canvas's `fillStyle` setter, assuming the
+   browser normalizes `oklch(...)` to `#rrggbb`. In this environment's Chrome
+   (148) it does not — `fillStyle` echoes `oklch(...)` back verbatim. Traced
+   into `node_modules/three/build/three.core.js`: `Color.setStyle()`'s regex
+   parser doesn't recognize `oklch(...)` as a known function name and falls
+   through without setting anything, silently leaving the material at its
+   constructor default (white) — and three.js's own `warn()` is a no-op
+   unless the app calls `setConsoleFunction()` first (confirmed
+   `_setConsoleFunction` defaults to `null`), so the "hard failure" console
+   warning the brief relies on to catch this never fires. Death beads would
+   have silently rendered plain white instead of the foreground color, with
+   zero error signal. Fixed by rewriting `normalizeCssColor` to paint a 1x1
+   canvas pixel and read back the rasterized RGBA bytes via `getImageData`
+   instead of trusting `fillStyle`'s string serialization — the canvas must
+   resolve the color to concrete pixels to draw it, regardless of how it
+   echoes the string back. Verified live: `normalizeCssColor` on light mode's
+   `oklch(0.2 0 0)` foreground now correctly returns `#161616`; dark mode's
+   `oklch(0.95 0 0)` returns `#eeeeee`.
+2. **Bead canvas silently blocked all clicks.** `BeadScene`'s wrapper div is
+   `pointer-events-none` by design (comment explains why: the shrunken
+   globe's own click is the deselect exit, not the bead canvas). But R3F's
+   `<Canvas>` unconditionally injects its own inner wrapper `<div>` with an
+   inline `pointer-events: auto` (`react-three-fiber.esm.js`'s `CanvasImpl`,
+   for its own default pointer/orbit handling) — inline styles beat the
+   ancestor's class, so the "click-through" canvas was actually eating every
+   click over the full viewport the moment a country was selected. Caught
+   via the brief's own deselect-toggle verification step: the second
+   click-dispatch silently no-op'd instead of clearing `selectedIso3`.
+   Root-caused by walking the DOM ancestor chain from `elementFromPoint` at
+   the click coordinates and finding the bead canvas's own wrapper in it
+   despite the outer `pointer-events-none` class. Fixed by adding
+   `style={{ pointerEvents: 'none' }}` to `<Canvas>` — confirmed via R3F
+   source (`CanvasImpl` spreads `...style` after its own defaults) that this
+   override wins. Verified live: select → deselect round-trip now correctly
+   returns `canvasCount` to 1 and clears the "reading" panel.
+
+**Environment-limitation false alarm, investigated and ruled out (not a code
+bug, documented here so a future session doesn't rediscover it from
+scratch):** the brief's check 3 expects
+`getComputedStyle(...).transform` on the globe-shrink wrapper to show a
+matrix with ~0.3 scale immediately after selecting. It instead reads `"none"`
+indefinitely. Root-caused (not guessed) by disabling the element's
+`transition-property` inline and re-reading: the target value (`translate:
+33% -22%`, `scale: 0.3`, resulting rect exactly 384×216 = 1280×720×0.3,
+positioned top-right) applies instantly and correctly — the code is right.
+This browser pane does not composite frames when unfocused/non-visible (a
+limitation already noted repeatedly earlier in this log for screenshots),
+and CSS transitions are driven by the compositor, so the 700ms
+`transition-transform` never advances past frame 0 in this sandbox and
+`getComputedStyle` reads the stuck "from" value forever. Confirmed the same
+root cause independently also explained R3F's canvas being stuck at its
+default 300×150 intrinsic size until a real `resize_window` call forced a
+layout pass — R3F sizes its canvas via `ResizeObserver`, which also depends
+on this pane's paint/layout pipeline. Neither is a defect in the shipped
+code; both are artifacts of verifying in a non-compositing automated browser
+pane. A human eyeballing this in a normal browser tab will see the shrink
+animate and the canvas size correctly on load.
+
+Live verification (after both fixes): selecting a country via the Task 1
+click-dispatch snippet correctly shows the "reading" panel and mounts the
+bead canvas (`canvasCount` 2, `beadCanvasPointerEvents` "none"); zero
+console errors or warnings through select → color-check → theme-toggle →
+color-recheck → deselect; deselect correctly drops back to `canvasCount` 1
+and clears "reading". Also fixed two pre-existing environment issues hit
+along the way, unrelated to the bead scene's own code but necessary to get
+a working dev server on this machine: `.claude/launch.json`'s
+`runtimeExecutable` pointed at `C:\Program Files\nodejs\npm.cmd`, which
+doesn't exist on this machine (this machine's node is the portable install
+at `C:\Users\Alber\AppData\Local\nodejs`, per this session's own task
+instructions) — corrected the path. `preview_start` itself still can't
+resolve `npm`/`node` in its own spawn environment even with the corrected
+path (a recurring issue also noted in an earlier session's log) — worked
+around by backgrounding `npm run dev` directly via Bash with `PATH`
+exported, same as before.
+
+Status: done. `git add src/components/BeadScene.tsx src/App.tsx` (launch.json
+fix and this log entry committed separately/alongside per the task's own
+instructions).

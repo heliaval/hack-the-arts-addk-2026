@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import NumberFlow from '@number-flow/react'
 import { Globe as GlobeIcon, Moon, Sun } from 'lucide-react'
 import { GlobeView } from '@/components/GlobeView'
+import { BeadScene } from '@/components/BeadScene'
 import { useDemographics } from '@/lib/useDemographics'
 import { useTheme } from '@/lib/useTheme'
 import { CubeFlipToggle } from '@/components/ui/cube-flip-toggle'
@@ -343,13 +344,25 @@ function App() {
 
   return (
     <div className="relative h-full w-full">
-      <GlobeView
-        demographics={demographics.data}
-        lang={lang}
-        onSelectCountry={handleSelectCountry}
-        cityCount={cityCount}
-        rotationSpeedKmS={rotationSpeedKmS}
-      />
+      {/* Selecting a country shrinks the globe into the top-right corner —
+          clear of the toggles above it, the control panel bottom-left and
+          the title/reading panel top-left — and hands the viewport to the
+          bead scene. Clicking the shrunken globe again deselects (see
+          handleSelectCountry), which reverses both. */}
+      <div
+        className={`absolute inset-0 transition-transform duration-700 ease-in-out ${
+          selected ? 'translate-x-[33%] -translate-y-[22%] scale-[0.3]' : ''
+        }`}
+      >
+        <GlobeView
+          demographics={demographics.data}
+          lang={lang}
+          onSelectCountry={handleSelectCountry}
+          cityCount={cityCount}
+          rotationSpeedKmS={rotationSpeedKmS}
+        />
+      </div>
+      {selected && <BeadScene theme={theme} />}
       <div className="absolute right-4 top-4 z-10 flex gap-2">
         <LanguageToggle lang={lang} onToggle={handleLanguageToggle} onHoverChange={setLangHintVisible} />
         <ThemeToggle theme={theme} toggleTheme={toggleTheme} onHoverChange={setThemeHintVisible} />
