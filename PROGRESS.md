@@ -1516,3 +1516,53 @@ remaining step.
 
 Status: done, pending live visual confirmation. Committed and pushed
 (`a6aca32`).
+
+## App naming: "Red Thread"
+
+Named the app for the first time -- prior placeholder "Hourglass Earth"
+was a mechanic description, not a name. Brainstormed with the user
+(superpowers:brainstorming), landed on "Red Thread" with subtitle "We
+Are All Bound By Fate." Rationale documented in
+docs/superpowers/specs/2026-08-01-app-title-branding-design.md: ties to
+the Moirai (Fates spinning/cutting each life's thread at birth/death,
+mapping onto the birth/death-rate hourglass mechanic) rather than the
+romantic "red string of fate" reading, and to the app's literal red
+flight-arc lines connecting cities on the globe.
+
+Had an Opus subagent independently review the spec before implementing
+(user's request: review with Opus, implement with Sonnet, matching this
+project's planning/execution model tiering). Opus's feedback, both
+applied: (1) sharpen the rationale toward the Moirai reading rather than
+the romantic one, (2) the spec's original card/border treatment for the
+title would collide with the existing "reading" panel that occupies the
+same top-left corner on country selection -- resolved by wrapping both
+in one `flex flex-col gap-2` container instead of separate absolute
+positioning.
+
+User then flagged the card/border/backdrop-blur container on the title
+itself as reading like an AI-slop pattern -- removed entirely; the title
+now sits bare over the globe like ControlPanel and the corner hints
+already do, no box around it.
+
+Typography: added Cormorant Garamond (self-hosted via
+`@fontsource-variable/cormorant-garamond`, matching how Geist is already
+loaded) as `--font-serif`, used only for the "Red Thread" name --
+picked for its thin, high-contrast strokes rhyming visually with "thread"
+imagery, and because a serif accent needed explicit justification per
+this project's design-taste-frontend skill (which discourages serif as a
+default and bans Fraunces/Instrument Serif specifically). Title case,
+mixed case (not caps) for the name -- caps would flatten Cormorant's
+delicate strokes. Subtitle in the app's existing small-caps tracked-out
+instrument-label style (matching `cities`, `reading`, `click to toggle`)
+rather than the name's serif, so it reads as part of the UI's existing
+voice rather than marketing copy.
+
+`npx tsc --noEmit` (pre-existing unrelated baseUrl deprecation warning
+only) and `oxlint src` (pre-existing unrelated button.tsx warning only)
+both clean. Verified live: dev server hot-reloaded cleanly, tab title
+updated to "Red Thread", no console errors, `document.fonts` confirms
+Cormorant Garamond Variable loaded (status "loaded"), computed style on
+the title element confirms `font-family: "Cormorant Garamond Variable",
+serif` is actually applied (not silently falling back).
+
+Status: done. Committed and pushed.

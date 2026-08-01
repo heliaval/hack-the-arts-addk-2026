@@ -260,6 +260,20 @@ const ControlPanel = memo(function ControlPanel({
   )
 })
 
+// Static title/subtitle card, always present at the top-left corner. Reuses
+// the "reading" panel's card treatment (border/backdrop-blur) for legibility
+// over the rotating globe.
+const AppTitle = memo(function AppTitle() {
+  return (
+    <div className="pointer-events-none">
+      <div className="font-serif text-2xl font-medium text-foreground">Red Thread</div>
+      <div className="text-[0.65rem] uppercase tracking-widest text-muted-foreground">
+        We Are All Bound By Fate.
+      </div>
+    </div>
+  )
+})
+
 function App() {
   const demographics = useDemographics()
   const [selectedIso3, setSelectedIso3] = useState<string | null>(null)
@@ -350,15 +364,18 @@ function App() {
         rotationSpeedRaw={rotationSpeedRaw}
         onRotationSpeedRawChange={setRotationSpeedRaw}
       />
-      {selected && (
-        <div className="pointer-events-none absolute left-4 top-4 rounded-[var(--radius)] border bg-card/90 px-3 py-2 text-card-foreground shadow-sm backdrop-blur-sm">
-          <div className="flex items-center gap-1.5 text-[0.65rem] uppercase tracking-widest text-muted-foreground">
-            <span className="inline-block size-1.5 rounded-full bg-accent" />
-            reading
+      <div className="absolute left-4 top-4 flex flex-col gap-2">
+        <AppTitle />
+        {selected && (
+          <div className="pointer-events-none rounded-[var(--radius)] border bg-card/90 px-3 py-2 text-card-foreground shadow-sm backdrop-blur-sm">
+            <div className="flex items-center gap-1.5 text-[0.65rem] uppercase tracking-widest text-muted-foreground">
+              <span className="inline-block size-1.5 rounded-full bg-accent" />
+              reading
+            </div>
+            <div className="font-mono text-sm font-medium">{selected.name}</div>
           </div>
-          <div className="font-mono text-sm font-medium">{selected.name}</div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   )
 }
