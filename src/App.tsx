@@ -3,6 +3,7 @@ import NumberFlow from '@number-flow/react'
 import { Globe as GlobeIcon, Moon, Sun } from 'lucide-react'
 import { GlobeView } from '@/components/GlobeView'
 import { BeadScene } from '@/components/BeadScene'
+import type { GlobeCircle } from '@/components/ui/cobe-globe'
 import { useDemographics } from '@/lib/useDemographics'
 import { useTheme } from '@/lib/useTheme'
 import { CubeFlipToggle } from '@/components/ui/cube-flip-toggle'
@@ -278,6 +279,7 @@ const AppTitle = memo(function AppTitle() {
 function App() {
   const demographics = useDemographics()
   const [selectedIso3, setSelectedIso3] = useState<string | null>(null)
+  const [globeCircle, setGlobeCircle] = useState<GlobeCircle | null>(null)
   const [lang, setLang] = useState<Lang>('en')
   const [langHintVisible, setLangHintVisible] = useState(false)
   const [themeHintVisible, setThemeHintVisible] = useState(false)
@@ -344,20 +346,16 @@ function App() {
 
   return (
     <div className="relative h-full w-full">
-      {/* Selecting a country shrinks the globe into the top-right corner —
-          clear of the toggles above it, the control panel bottom-left and
-          the title/reading panel top-left — and hands the viewport to the
-          bead scene. Clicking the shrunken globe again deselects (see
-          handleSelectCountry), which reverses both. */}
-      <div
-        className={`absolute inset-0 transition-transform duration-700 ease-in-out ${
-          selected ? 'translate-x-[33%] -translate-y-[22%] scale-[0.3]' : ''
-        }`}
-      >
+      {/* The globe stays centered and full-size while a country is selected
+          — it IS the obstacle the beads fall onto (see BeadScene's
+          GlobeCollider), so it must never move or shrink out from under the
+          physics collider that mirrors it. */}
+      <div className="absolute inset-0">
         <GlobeView
           demographics={demographics.data}
           lang={lang}
           onSelectCountry={handleSelectCountry}
+          onCircleChange={setGlobeCircle}
           cityCount={cityCount}
           rotationSpeedKmS={rotationSpeedKmS}
         />

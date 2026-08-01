@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Globe, type GlobeRef } from '@/components/ui/cobe-globe'
+import { Globe, type GlobeCircle, type GlobeRef } from '@/components/ui/cobe-globe'
 import type { CountryDemographics } from '@/lib/worldbank'
 import { LANGUAGES, type Lang } from '@/lib/lang'
 import { kmPerSecToPhiSpeed } from '@/lib/globeSpeed'
@@ -10,6 +10,11 @@ interface GlobeViewProps {
   demographics: Map<string, CountryDemographics>
   lang: Lang
   onSelectCountry: (iso3: string) => void
+  /** Called whenever the globe's on-screen circle changes (mount, resize).
+   * BeadScene needs it to place a physics collider over the globe. Pass a
+   * stable reference — a plain useState setter is ideal — or this
+   * component's React.memo stops working. */
+  onCircleChange: (circle: GlobeCircle | null) => void
   cityCount: number
   rotationSpeedKmS: number
 }
@@ -500,6 +505,7 @@ export const GlobeView = memo(function GlobeView({
   demographics,
   lang,
   onSelectCountry,
+  onCircleChange,
   cityCount,
   rotationSpeedKmS,
 }: GlobeViewProps) {
@@ -589,9 +595,9 @@ export const GlobeView = memo(function GlobeView({
     const rect = canvas.getBoundingClientRect()
     if (rect.width === 0 || rect.height === 0) return
     // Same 0-1 canvas-box fraction space that GlobeRef.project() returns.
-    // getBoundingClientRect already accounts for any CSS transform on an
-    // ancestor (App shrinks the globe into a corner once a country is
-    // selected), so this stays correct in both the full and shrunken states.
+    // getBoundingClientRect is used (rather than the canvas's intrinsic
+    // size) so this stays correct under device pixel ratio and any future
+    // CSS sizing of the globe wrapper.
     const fx = (e.clientX - rect.left) / rect.width
     const fy = (e.clientY - rect.top) / rect.height
 
@@ -610,6 +616,37 @@ export const GlobeView = memo(function GlobeView({
     }
     if (bestCountry) onSelectCountry(bestCountry)
   }
+
+  // The globe canvas is responsive (aspect-square, w-full, capped at
+  // min(80vh, 48rem)), so its on-screen circle changes with the viewport.
+  // A resize-triggered recalculation is enough — page layout is otherwise
+  // static, so the circle does not move between resizes, and re-measuring
+  // per frame would force a layout flush every frame for a value that never
+  // changes. ResizeObserver alone would do it in a normal browser; the
+  // window listener is a cheap belt-and-braces fallback for environments
+  // where the observer is throttled or suppressed (headless/unfocused
+  // panes). Both funnel through the same dedupe so App only re-renders on
+  // an actual change.
+  useEffect(() => {
+    const canvas = globeRef.current?.getElement()
+    if (!canvas) return
+    let last = ''
+    function report() {
+      const circle = globeRef.current?.getCircle() ?? null
+      const key = circle ? `${circle.centerX}|${circle.centerY}|${circle.radius}` : 'null'
+      if (key === last) return
+      last = key
+      onCircleChange(circle)
+    }
+    report()
+    const observer = new ResizeObserver(report)
+    observer.observe(canvas)
+    window.addEventListener('resize', report)
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', report)
+    }
+  }, [onCircleChange])
 
   return (
     <div

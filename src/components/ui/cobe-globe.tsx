@@ -56,6 +56,30 @@ export interface GlobeRef {
    * to convert clientX/clientY into the same 0-1 fraction space `project()`
    * returns (via getBoundingClientRect). */
   getElement(): HTMLCanvasElement | null
+  /** The globe's rendered circle in viewport CSS pixels. Null before the
+   * canvas has been laid out (zero-sized). The radius is derived from
+   * GLOBE_SURFACE_RADIUS_FRACTION, not from half the canvas box — the
+   * sphere does not fill its canvas. */
+  getCircle(): GlobeCircle | null
+}
+
+// cobe draws the globe's surface at radius 0.8 in the same projection space
+// project() below maps onto the canvas box's 0-1 range via (c + 1) / 2 — so
+// the rendered sphere's silhouette radius is 0.8 / 2 = 0.4 of the canvas
+// box, NOT 0.5. There is a ~10% margin on every side. Anything outside this
+// file that needs to know where the globe physically is on screen (the bead
+// scene's collider, for one) must use GLOBE_SURFACE_RADIUS_FRACTION rather
+// than assuming the sphere fills its square canvas.
+const GLOBE_BASE_RADIUS = 0.8
+export const GLOBE_SURFACE_RADIUS_FRACTION = GLOBE_BASE_RADIUS / 2
+
+/** The globe's rendered circle in viewport CSS pixels — the same coordinate
+ * space getBoundingClientRect() reports in, with the origin at the viewport's
+ * top-left. */
+export interface GlobeCircle {
+  centerX: number
+  centerY: number
+  radius: number
 }
 
 // Mirrors cobe's own marker projection (node_modules/cobe/dist/index.esm.js,
@@ -70,7 +94,7 @@ function projectMarker(
   theta: number,
   elevation: number,
 ): { x: number; y: number; visible: boolean } {
-  const r = 0.8 + elevation
+  const r = GLOBE_BASE_RADIUS + elevation
   const u = unitSphere(location)
   return project([u[0] * r, u[1] * r, u[2] * r], phi, theta)
 }
@@ -229,7 +253,7 @@ function projectArcMidpoint(
   elevation: number,
   arcHeight: number,
 ): { x: number; y: number; visible: boolean } | null {
-  const base = 0.8 + elevation
+  const base = GLOBE_BASE_RADIUS + elevation
   const uFrom = unitSphere(from)
   const uTo = unitSphere(to)
   const sum: [number, number, number] = [uFrom[0] + uTo[0], uFrom[1] + uTo[1], uFrom[2] + uTo[2]]
@@ -466,7 +490,7 @@ export const Globe = forwardRef<GlobeRef, GlobeProps>(function Globe({
           const eased = 1 - (1 - p) ** 2
           const angularRadius = eased * PULSE_MAX_ANGULAR_RADIUS
           const opacity = (1 - p) ** 1.3
-          const r = 0.8 + markerElevation
+          const r = GLOBE_BASE_RADIUS + markerElevation
           const center = unitSphere(marker.location)
           const { t1, t2 } = buildTangentBasis(center)
           const cosR = Math.cos(angularRadius)
@@ -598,6 +622,19 @@ export const Globe = forwardRef<GlobeRef, GlobeProps>(function Globe({
       },
       getElement() {
         return canvasRef.current
+      },
+      getCircle() {
+        const canvas = canvasRef.current
+        if (!canvas) return null
+        const rect = canvas.getBoundingClientRect()
+        if (rect.width === 0 || rect.height === 0) return null
+        // The canvas box is aspect-square, so width and height agree; min()
+        // is just insurance against a transient non-square layout pass.
+        return {
+          centerX: rect.left + rect.width / 2,
+          centerY: rect.top + rect.height / 2,
+          radius: Math.min(rect.width, rect.height) * GLOBE_SURFACE_RADIUS_FRACTION,
+        }
       },
     }),
     [],
