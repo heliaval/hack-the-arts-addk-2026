@@ -1731,3 +1731,76 @@ wall colliders in `Boundaries()` explaining why they use `halfH * 2` (beads
 spawn above the visible viewport, so walls must extend above it too).
 `npx tsc --noEmit` and `npx oxlint src` clean apart from the two known
 pre-existing warnings. Status: done.
+
+## Bead scene: centered globe, larger beads
+
+Selecting a country no longer shrinks the globe into the top-right corner.
+It stays centered and full-size, and the beads now physically collide with
+it — falling onto its crown, rolling off the shoulders, and piling up in the
+lanes either side. The old `translate/scale` shrink transform on the globe
+wrapper is gone entirely; the wrapper is a plain `absolute inset-0`.
+
+The hard part is that the globe is a flat 2D canvas. cobe is a shader that
+draws a sphere illusion; there is no 3D mesh, and it lives in a different
+DOM layer from `BeadScene`'s react-three-fiber canvas. So the geometry is
+measured on the DOM side and handed across: `cobe-globe.tsx` gained a
+`getCircle()` ref method returning the globe's circle in viewport CSS
+pixels, `GlobeView` watches the canvas with a `ResizeObserver` plus a window
+`resize` listener and reports changes up through a new `onCircleChange`
+prop, and `App` holds the result in state and passes it to `BeadScene`,
+which converts it into its own pixel-unit world space and mounts a fixed
+`RigidBody` + `BallCollider` there. Resize-triggered rather than per-frame:
+page layout is otherwise static, so re-measuring every frame would force a
+layout flush for a value that never changes.
+
+One detail that would have been an easy silent bug: cobe's sphere does not
+fill its square canvas. `projectMarker` places surface markers at radius
+`0.8` in a space `project()` maps onto the canvas box's 0-1 range, so the
+rendered silhouette radius is `0.4` of the canvas box, not `0.5` — there is
+a ~10% margin on every side. That literal is now named
+(`GLOBE_SURFACE_RADIUS_FRACTION`) and exported. It could not be confirmed
+empirically in this sandbox (see verification note below) but is a direct,
+simple derivation from `project()`'s existing `(c + 1) / 2` mapping, which
+is the same math the working label-placement system already relies on.
+
+A true `BallCollider` rather than a flattened disc, because `Boundaries`'
+front/back planes already pin every bead's centre to exactly `z = 0`, and a
+sphere cut by that plane is precisely a circle of the same radius — same
+silhouette, but with real curved contact normals so beads shed off the crown
+instead of skidding down a facet. Its friction is 0.3 (below the beads' own
+0.6) so nothing parks on the apex.
+
+Beads went from 14px to 34px radius, which is 5.9x the screen area each. The
+cap came down 180 -> 70 to compensate (matching the old ~12% screen coverage
+would have taken only ~31 beads, too sparse to read as a pile; 70 covers
+about 28% of what the globe leaves free), and `SPAWN_JITTER_PX` widened
+90 -> 200 by the same ratio as the radius, staying inside the globe's typical
+on-screen radius so most beads land on it. Sphere tessellation went 20 -> 32
+segments, since 20 is visibly faceted at this size. Everything else in the
+file already derived from `BEAD_RADIUS` and needed no edit (verified by
+grepping every use).
+
+`npx tsc --noEmit` and `oxlint src` clean apart from the pre-existing
+`baseUrl` deprecation and `button.tsx` warnings.
+
+Verification was partial in this sandbox. What worked: the globe's on-screen
+box is square, centered exactly on the viewport centre, and its wrapper's
+computed transform is `"none"` (shrink genuinely gone). Selecting and
+deselecting a country both work cleanly with no console errors, the bead
+canvas's WebGL context stays alive, and the control panel remains
+click-through under the bead canvas. What did NOT work: a temporary
+`onCreated` scene-handle hook (added, used, then fully removed before this
+commit, confirmed via `grep`) never fired, and a separate marker-swing
+sampler used to empirically confirm the `0.4` surface-radius fraction never
+progressed either — both depend on `requestAnimationFrame` actually
+ticking, and this sandboxed browser pane's rAF loop does not run reliably
+while unfocused (the same root cause already documented for this pane's
+stuck-canvas-size issue in the phase-1 entries above). So the load-bearing
+claim of this change — that beads visibly rest against the globe without
+tunnelling through it — has NOT been confirmed against rendered pixels or
+live physics state, only reasoned through from the coordinate-conversion
+math and the existing, working `project()` formula it depends on. This
+needs a real focused browser to confirm before treating it as done.
+
+Status: done, pending live physical-collision confirmation in a real
+browser (rAF-dependent checks could not run in this sandbox).
