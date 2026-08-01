@@ -46,10 +46,16 @@ interface GlobeProps {
 }
 
 export interface GlobeRef {
-  /** Projects a lat/lng to current screen-space fraction (0-1), using the
-   * globe's live rotation — for callers that need to know where something
-   * is on screen right now (e.g. to order a sweep animation). */
-  project(location: [number, number]): { x: number; y: number }
+  /** Projects a lat/lng to current screen-space fraction (0-1) of the
+   * canvas box, using the globe's live rotation — for callers that need to
+   * know where something is on screen right now (e.g. to order a sweep
+   * animation, or to hit-test a click). `visible` is false when the point
+   * is on the far side of the globe. */
+  project(location: [number, number]): { x: number; y: number; visible: boolean }
+  /** The live <canvas> element. Callers hit-testing pointer events need it
+   * to convert clientX/clientY into the same 0-1 fraction space `project()`
+   * returns (via getBoundingClientRect). */
+  getElement(): HTMLCanvasElement | null
 }
 
 // Mirrors cobe's own marker projection (node_modules/cobe/dist/index.esm.js,
@@ -583,13 +589,15 @@ export const Globe = forwardRef<GlobeRef, GlobeProps>(function Globe({
     ref,
     () => ({
       project(location) {
-        const { x, y } = projectMarker(
+        return projectMarker(
           location,
           currentPhiRef.current,
           currentThetaRef.current,
           liveProps.current.markerElevation,
         )
-        return { x, y }
+      },
+      getElement() {
+        return canvasRef.current
       },
     }),
     [],

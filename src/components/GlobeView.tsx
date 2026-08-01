@@ -480,6 +480,17 @@ function useSweepReveal(
   return revealed
 }
 
+// cobe-globe's canvas handles drag-to-rotate on the same pointer stream and
+// doesn't distinguish a click from a drag, so GlobeView does: a pointerup
+// only counts as a "click" if the pointer barely moved and the press was
+// short. Everything else is a rotation gesture and must not select a
+// country. The hit radius is a fraction of the canvas box (the same 0-1
+// space GlobeRef.project returns) — ~4.5%, comfortably larger than a
+// marker's 0.025 dot but small enough that adjacent cities don't overlap.
+const CLICK_MAX_MOVE_PX = 6
+const CLICK_MAX_DURATION_MS = 400
+const CLICK_HIT_RADIUS_FRACTION = 0.045
+
 // Memoized — wraps the WebGL globe, by far the most expensive component in
 // the tree, so it shouldn't re-render on unrelated App state changes (hover
 // hints, theme toggle hover, etc.) as long as its own props are unchanged.
@@ -492,18 +503,13 @@ export const GlobeView = memo(function GlobeView({
   cityCount,
   rotationSpeedKmS,
 }: GlobeViewProps) {
-  // onSelectCountry isn't wired into the globe yet -- no click-to-select
-  // exists on the cobe-based globe (drag-to-rotate only). demographics IS
-  // now used, by usePopulationPulses below.
-  void onSelectCountry
-
   // Globe exposes live screen-space projection (see cobe-globe.tsx) so the
   // reveal/draw-in stagger below can order itself top-left to bottom-right
   // by each item's *current* on-screen position rather than fixed geography
   // — stays correct regardless of how the globe is currently rotated.
   const globeRef = useRef<GlobeRef>(null)
   const project = useCallback(
-    (location: [number, number]) => globeRef.current?.project(location) ?? { x: 0, y: 0 },
+    (location: [number, number]) => globeRef.current?.project(location) ?? { x: 0, y: 0, visible: false },
     [],
   )
 
@@ -514,10 +520,11 @@ export const GlobeView = memo(function GlobeView({
     project,
   )
 
-  const visibleCityIds = useMemo(
-    () => new Set(CITIES.slice(0, cityCount).filter((c) => revealedIds.has(c.id)).map((c) => c.id)),
+  const visibleCities = useMemo(
+    () => CITIES.slice(0, cityCount).filter((city) => revealedIds.has(city.id)),
     [cityCount, revealedIds],
   )
+  const visibleCityIds = useMemo(() => new Set(visibleCities.map((c) => c.id)), [visibleCities])
   const populationPulses = usePopulationPulses(CITIES, visibleCityIds, demographics)
   const pulses = useMemo(
     () => populationPulses.map((p) => ({ id: p.id, markerId: p.cityId, kind: p.kind, spawnedAt: p.spawnedAt })),
@@ -529,15 +536,13 @@ export const GlobeView = memo(function GlobeView({
   // marker buffers when the reference changes (see its `lastMarkers` check).
   const markers = useMemo(
     () =>
-      CITIES.slice(0, cityCount)
-        .filter((city) => revealedIds.has(city.id))
-        .map((city) => ({
-          id: city.id,
-          location: city.location,
-          label: CITY_LABELS.get(city.id)!,
-          size: CITY_MARKER_SIZE,
-        })),
-    [cityCount, revealedIds],
+      visibleCities.map((city) => ({
+        id: city.id,
+        location: city.location,
+        label: CITY_LABELS.get(city.id)!,
+        size: CITY_MARKER_SIZE,
+      })),
+    [visibleCities],
   )
 
   const visibleRoutes = useMemo(
@@ -566,8 +571,52 @@ export const GlobeView = memo(function GlobeView({
     [visibleRoutes, drawProgress],
   )
 
+  const pointerDownRef = useRef<{ x: number; y: number; t: number } | null>(null)
+
+  function handlePointerDown(e: React.PointerEvent) {
+    pointerDownRef.current = { x: e.clientX, y: e.clientY, t: performance.now() }
+  }
+
+  function handlePointerUp(e: React.PointerEvent) {
+    const down = pointerDownRef.current
+    pointerDownRef.current = null
+    if (!down) return
+    if (Math.hypot(e.clientX - down.x, e.clientY - down.y) > CLICK_MAX_MOVE_PX) return
+    if (performance.now() - down.t > CLICK_MAX_DURATION_MS) return
+
+    const canvas = globeRef.current?.getElement()
+    if (!canvas) return
+    const rect = canvas.getBoundingClientRect()
+    if (rect.width === 0 || rect.height === 0) return
+    // Same 0-1 canvas-box fraction space that GlobeRef.project() returns.
+    // getBoundingClientRect already accounts for any CSS transform on an
+    // ancestor (App shrinks the globe into a corner once a country is
+    // selected), so this stays correct in both the full and shrunken states.
+    const fx = (e.clientX - rect.left) / rect.width
+    const fy = (e.clientY - rect.top) / rect.height
+
+    let bestCountry: string | null = null
+    let bestDistance = CLICK_HIT_RADIUS_FRACTION
+    for (const city of visibleCities) {
+      const p = project(city.location)
+      // Far-side markers project onto the same 2D disc as near-side ones;
+      // without this they'd be selectable "through" the globe.
+      if (!p.visible) continue
+      const d = Math.hypot(fx - p.x, fy - p.y)
+      if (d <= bestDistance) {
+        bestDistance = d
+        bestCountry = city.country
+      }
+    }
+    if (bestCountry) onSelectCountry(bestCountry)
+  }
+
   return (
-    <div className="flex h-full w-full items-center justify-center p-8">
+    <div
+      className="flex h-full w-full items-center justify-center p-8"
+      onPointerDown={handlePointerDown}
+      onPointerUp={handlePointerUp}
+    >
       <Globe
         ref={globeRef}
         className="aspect-square w-full max-w-[min(80vh,48rem)]"

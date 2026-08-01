@@ -313,14 +313,13 @@ function App() {
   // Stable references (required for GlobeView's React.memo to actually skip
   // re-renders on unrelated App state changes) — must be declared before
   // the early returns below, since hooks can't run conditionally.
+  // Clicking the already-selected country deselects it — that's the only
+  // exit from the bead scene (clicking the shrunken globe again), per the
+  // design: symmetric in/out, no separate close control. No `demographics`
+  // dependency, so this reference is stable for GlobeView's React.memo.
   const handleSelectCountry = useCallback(
-    (iso3: string) => {
-      setSelectedIso3(iso3)
-      if (demographics.status === 'ready') {
-        console.log('selected', iso3, demographics.data.get(iso3))
-      }
-    },
-    [demographics],
+    (iso3: string) => setSelectedIso3((prev) => (prev === iso3 ? null : iso3)),
+    [],
   )
   const handleLanguageToggle = useCallback(() => setLang(nextLang), [])
 
