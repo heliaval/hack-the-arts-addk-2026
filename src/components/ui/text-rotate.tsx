@@ -29,12 +29,17 @@ interface TextRotateProps {
   mainClassName?: string
   splitLevelClassName?: string
   elementLevelClassName?: string
-  /** Framer Motion's `layout` FLIP animation (smooth pill-resize when text
-   * length changes). Its measure/mutate pass cost scales with how many
-   * other `layout`-tracked components exist in the document at once —
-   * disable when many instances animate simultaneously (e.g. a language
-   * toggle flipping 20+ labels at once) and the resize snap is an
-   * acceptable trade for not dropping frames. Defaults to on. */
+  /** Framer Motion's `layout` FLIP animation on the outer wrapper only
+   * (smooth pill-resize when text length changes) — the exit/enter child's
+   * own `layout` stays on unconditionally, since AnimatePresence's
+   * `popLayout` mode needs it to actually remove the exiting text from
+   * flow; without it, old and new text render simultaneously instead of
+   * crossfading. The outer wrapper's `layout` is purely cosmetic (pill
+   * width), and its measure/mutate cost scales with how many other
+   * `layout`-tracked components exist in the document at once — disable it
+   * when many instances animate simultaneously (e.g. a language toggle
+   * flipping 20+ labels at once) and the resize snap is an acceptable
+   * trade for not dropping frames. Defaults to on. */
   enableLayoutAnimation?: boolean
 }
 
@@ -194,7 +199,7 @@ const TextRotate = forwardRef<TextRotateRef, TextRotateProps>(
               "flex flex-wrap",
               splitBy === "lines" && "flex-col w-full"
             )}
-            layout={enableLayoutAnimation}
+            layout
             aria-hidden="true"
           >
             {(splitBy === "characters"

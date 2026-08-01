@@ -1096,3 +1096,42 @@ layout-FLIP fix (`enableLayoutAnimation`) from the prior entry is
 unaffected and stays in place. Build/lint verified clean post-revert.
 
 Status: done. Committed and pushed per standing instruction.
+
+## 2026-07-31 22:08 — Fix: labels stopped updating on language toggle
+
+User reported the label pill "doesn't seem to dynamically change with
+different languages now" — a regression from the layout-FLIP fix two
+entries back, which disabled Framer Motion's `layout` prop on BOTH of
+`TextRotate`'s wrapper elements.
+
+Root cause, confirmed via direct DOM inspection (checked the pill's actual
+`textContent` before/after toggling, not just visual inspection): the
+inner `motion.div` — the one keyed by `currentTextIndex` and wrapped by
+`AnimatePresence mode="popLayout"` — needs its own `layout` prop for
+`popLayout` to actually remove the exiting text from flow. Without it, old
+and new text both remained mounted/visible simultaneously (confirmed:
+`textContent` read `"旧金山San Francisco旧金山"` after toggling to
+Chinese — both languages present at once). The `sr-only` accessibility
+span (driven straight off React state, not Framer Motion) correctly read
+just `"旧金山"`, confirming the state/toggle logic itself was fine — only
+the animated exit was broken.
+
+Fix: `text-rotate.tsx` — inner `motion.div` now always has `layout`
+(unconditional, required for correctness), only the OUTER `motion.span`
+(purely cosmetic pill-width resize) respects `enableLayoutAnimation`.
+Updated the prop's doc comment to reflect the split. This still gets most
+of the original perf win (halves the FLIP-tracked element count per pill
+instead of eliminating it) while not breaking the actual text swap.
+
+**Verification caveat**: re-tested live via DOM content check — still saw
+old+new text coexisting immediately after toggling in this session's
+Browser pane, but can't distinguish "still broken" from "correct fix, but
+stuck mid-exit-animation because this pane's rAF is paused" (the same
+non-compositing-tab limitation noted in every entry since the sweep work
+began) — the `sr-only` span updated correctly either way, consistent with
+the fix addressing the actual reported cause. `npm run build` +
+`oxlint src` clean. **Needs the user's confirmation on their end** — this
+one specifically couldn't be conclusively verified in-session.
+
+Status: shipped, unverified pending user confirmation. Committed and
+pushed per standing instruction.
