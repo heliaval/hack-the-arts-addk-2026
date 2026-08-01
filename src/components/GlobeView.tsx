@@ -532,7 +532,7 @@ export const GlobeView = memo(function GlobeView({
     <div className="flex h-full w-full items-center justify-center p-8">
       <Globe
         ref={globeRef}
-        className="w-full max-w-2xl"
+        className="aspect-square w-full max-w-[min(80vh,48rem)]"
         markers={markers}
         arcs={arcs}
         activeLabelIndex={LANGUAGES.indexOf(lang)}
