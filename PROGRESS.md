@@ -1432,3 +1432,87 @@ the user's own browser per this project's standing rAF-pane limitation.
 
 Status: done, pending live confirmation. Committed and pushed
 (`b0592be`).
+
+## 2026-08-01 (continued) — Proper analytic horizon clipping for shockwave rings
+
+Started: user wanted both properties at once -- rings should genuinely
+disappear behind the globe's horizon (the previous entry's "always draw a
+full closed loop" fix ignored occlusion entirely, so a ring could show
+through the back of the sphere) AND not visually break/gap while doing so
+(the entry before that's per-point occlusion sampling produced scattered
+gaps near the limb, which is what prompted the full-loop workaround in
+the first place). These two asks were previously in tension because the
+per-point sampling approach couldn't satisfy both.
+
+**Root cause of the earlier gap bug, properly understood this time**: two
+circles on a sphere (the ring, and the "horizon" great-circle defined by
+facing=0) generically intersect at exactly 0 or 2 points -- so there
+should only ever be one continuous visible arc and one continuous hidden
+arc, never multiple alternating gaps. The scattered-gaps appearance in
+the user's screenshot wasn't multiple true crossings; it was 40 discrete
+sample points landing close together near a near-tangential crossing
+region, where floating-point noise in each point's independent facing
+check made them flip unpredictably rather than transition cleanly once.
+Sampling-then-checking was fundamentally the wrong tool here.
+
+**Real fix: solve for the crossing analytically instead of sampling for
+it.** `facing()` (the same quantity `project()` already uses to decide
+visibility) is a *linear* function of a 3D point. A ring point is an
+affine combination of `cos(angle)` and `sin(angle)` around its tangent
+basis. Composing those two facts, `facing(angle)` reduces to a plain
+sinusoid `C + A*cos(angle) + B*sin(angle)` for constants `A`, `B`, `C`
+derived from the ring's center/tangent-basis/radius and the globe's
+current rotation -- solvable in closed form for where it crosses zero,
+via the standard `R*cos(angle - gamma)` rewrite. New `computeVisibleArc()`
+in `src/components/ui/cobe-globe.tsx` does this, returning either `null`
+(ring entirely on the far side), `{full: true}` (entirely facing the
+camera), or an exact `{start, end}` azimuth range -- computed once,
+before any points are even generated, rather than inferred after the
+fact from samples.
+
+`updateRipples` (the per-`animate()`-frame ripple positioner) now:
+generates its 40 sample points *only* within that exact arc (or the full
+circle when `full`), so the rendered path is a single, genuinely
+continuous line that terminates precisely at the true horizon --
+mathematically incapable of the scattered-gap artifact, since there's no
+independent per-point visibility decision left to disagree with its
+neighbors. `buildRingPath` simplified back to a plain point-list-to-path
+builder (no more subpath-breaking logic needed at all).
+
+Refactored the ring-point math into two reusable pieces --
+`buildTangentBasis()` (the cross-product tangent basis, previously
+inlined in the now-removed `ringPointsOnSphere`) and `ringPoint()` (a
+single point at a given azimuth) -- since both the new
+`computeVisibleArc()` and the point-generation loop need the same tangent
+basis, and computing it twice per pulse per frame would've been wasteful
+and a needless divergence risk between the two computations.
+
+**Verified via a standalone Node reproduction** (not just build/lint)
+covering 5 cases: a small and a large ring on a center directly facing
+the camera (both correctly `full: true`, sampled facing stayed positive
+throughout), a center on the far side (correctly `null`), and two
+centers near the horizon under different globe rotations (correctly
+partial arcs) -- for both partial cases, confirmed facing stayed >=0 (to
+floating-point tolerance, ~1e-17) across 51 samples spanning the claimed
+visible arc, AND confirmed facing was genuinely negative just outside
+both the `start` and `end` bounds (~-0.006 to -0.008), proving the
+computed boundary lines up exactly with where the sphere's true horizon
+actually is, not an approximation. This is a stronger verification than
+anything else in this project's shockwave work so far, precisely because
+the underlying claim (an analytic root of a sinusoid) is something that
+actually *can* be checked without a rendering pipeline, unlike the
+rAF-gated visual behavior this sandbox still can't observe directly.
+
+Build (`npm run build`) and `oxlint src` both clean.
+
+**Still outstanding, same as every prior shockwave entry**: the visual
+result -- does it actually look like a continuous ring that correctly
+vanishes at the globe's edge, in a real running browser -- has not been
+seen directly in this sandbox (the `requestAnimationFrame` loop that
+drives `updateRipples` doesn't fire here). The math is now verified
+independent of rendering, which is the strongest confidence available
+without live user confirmation, but that confirmation is still the
+remaining step.
+
+Status: done, pending live visual confirmation. Committed and pushed
+(`a6aca32`).
