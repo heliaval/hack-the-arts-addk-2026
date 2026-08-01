@@ -34,6 +34,7 @@ const CITIES = [
   {
     id: 'city-sf',
     location: [37.7595, -122.4367] as [number, number],
+    country: 'USA',
     en: 'San Francisco',
     zh: '旧金山',
     ja: 'サンフランシスコ',
@@ -45,6 +46,7 @@ const CITIES = [
   {
     id: 'city-nyc',
     location: [40.7128, -74.006] as [number, number],
+    country: 'USA',
     en: 'New York',
     zh: '纽约',
     ja: 'ニューヨーク',
@@ -56,6 +58,7 @@ const CITIES = [
   {
     id: 'city-tokyo',
     location: [35.6762, 139.6503] as [number, number],
+    country: 'JPN',
     en: 'Tokyo',
     zh: '东京',
     ja: '東京',
@@ -67,6 +70,7 @@ const CITIES = [
   {
     id: 'city-london',
     location: [51.5074, -0.1278] as [number, number],
+    country: 'GBR',
     en: 'London',
     zh: '伦敦',
     ja: 'ロンドン',
@@ -78,6 +82,7 @@ const CITIES = [
   {
     id: 'city-sydney',
     location: [-33.8688, 151.2093] as [number, number],
+    country: 'AUS',
     en: 'Sydney',
     zh: '悉尼',
     ja: 'シドニー',
@@ -89,6 +94,7 @@ const CITIES = [
   {
     id: 'city-capetown',
     location: [-33.9249, 18.4241] as [number, number],
+    country: 'ZAF',
     en: 'Cape Town',
     zh: '开普敦',
     ja: 'ケープタウン',
@@ -100,6 +106,7 @@ const CITIES = [
   {
     id: 'city-dubai',
     location: [25.2048, 55.2708] as [number, number],
+    country: 'ARE',
     en: 'Dubai',
     zh: '迪拜',
     ja: 'ドバイ',
@@ -111,6 +118,7 @@ const CITIES = [
   {
     id: 'city-paris',
     location: [48.8566, 2.3522] as [number, number],
+    country: 'FRA',
     en: 'Paris',
     zh: '巴黎',
     ja: 'パリ',
@@ -122,6 +130,7 @@ const CITIES = [
   {
     id: 'city-saopaulo',
     location: [-23.5505, -46.6333] as [number, number],
+    country: 'BRA',
     en: 'São Paulo',
     zh: '圣保罗',
     ja: 'サンパウロ',
@@ -136,6 +145,7 @@ const CITIES = [
   {
     id: 'city-moscow',
     location: [55.7558, 37.6173] as [number, number],
+    country: 'RUS',
     en: 'Moscow',
     zh: '莫斯科',
     ja: 'モスクワ',
@@ -147,6 +157,7 @@ const CITIES = [
   {
     id: 'city-beijing',
     location: [39.9042, 116.4074] as [number, number],
+    country: 'CHN',
     en: 'Beijing',
     zh: '北京',
     ja: '北京',
@@ -158,6 +169,7 @@ const CITIES = [
   {
     id: 'city-delhi',
     location: [28.6139, 77.209] as [number, number],
+    country: 'IND',
     en: 'Delhi',
     zh: '德里',
     ja: 'デリー',
@@ -169,6 +181,7 @@ const CITIES = [
   {
     id: 'city-cairo',
     location: [30.0444, 31.2357] as [number, number],
+    country: 'EGY',
     en: 'Cairo',
     zh: '开罗',
     ja: 'カイロ',
@@ -180,6 +193,7 @@ const CITIES = [
   {
     id: 'city-mexicocity',
     location: [19.4326, -99.1332] as [number, number],
+    country: 'MEX',
     en: 'Mexico City',
     zh: '墨西哥城',
     ja: 'メキシコシティ',
@@ -191,6 +205,7 @@ const CITIES = [
   {
     id: 'city-toronto',
     location: [43.6532, -79.3832] as [number, number],
+    country: 'CAN',
     en: 'Toronto',
     zh: '多伦多',
     ja: 'トロント',
@@ -202,6 +217,7 @@ const CITIES = [
   {
     id: 'city-seoul',
     location: [37.5665, 126.978] as [number, number],
+    country: 'KOR',
     en: 'Seoul',
     zh: '首尔',
     ja: 'ソウル',
@@ -213,6 +229,7 @@ const CITIES = [
   {
     id: 'city-mumbai',
     location: [19.076, 72.8777] as [number, number],
+    country: 'IND',
     en: 'Mumbai',
     zh: '孟买',
     ja: 'ムンバイ',
@@ -224,6 +241,7 @@ const CITIES = [
   {
     id: 'city-istanbul',
     location: [41.0082, 28.9784] as [number, number],
+    country: 'TUR',
     en: 'Istanbul',
     zh: '伊斯坦布尔',
     ja: 'イスタンブール',
@@ -239,6 +257,7 @@ const CITIES = [
   {
     id: 'city-lagos',
     location: [6.5244, 3.3792] as [number, number],
+    country: 'NGA',
     en: 'Lagos',
     zh: '拉各斯',
     ja: 'ラゴス',
@@ -250,6 +269,7 @@ const CITIES = [
   {
     id: 'city-singapore',
     location: [1.3521, 103.8198] as [number, number],
+    country: 'SGP',
     en: 'Singapore',
     zh: '新加坡',
     ja: 'シンガポール',
