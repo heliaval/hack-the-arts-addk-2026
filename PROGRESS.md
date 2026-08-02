@@ -2282,3 +2282,76 @@ no live FPS number was ever obtained (sandbox network/browser limitations
 throughout). Current state (BEAD_EXIT_MS=180, MAX_CAPACITY=55, dispersion=0,
 dpr=1, rAF-paced burst, permanent eviction) is unverified pending the
 user's next local test.
+
+## 2026-08-01 (continued) — Year-select marble batches implemented
+
+Started: user asked to implement
+`docs/superpowers/specs/2026-08-01-year-select-marble-batches-design.md`,
+a design spec committed by another (parallel) session earlier this same
+day. Followed CLAUDE.md's workflow: wrote
+`docs/superpowers/plans/2026-08-01-year-select-marble-batches.md`
+(`superpowers:writing-plans`), then executed it inline
+(`superpowers:executing-plans` — no subagent-capable platform noted).
+
+Implemented:
+- `src/lib/historicalDemographics.ts` (new): lazy per-country fetch of
+  World Bank `SP.DYN.CBRT.IN`/`SP.DYN.CDRT.IN`/`SP.POP.TOTL` for
+  2000-2022, derives real annual birth/death totals per year, cached per
+  iso3. `useHistoricalDemographics(iso3)` hook mirrors
+  `useDemographics.ts`'s status shape.
+- `src/lib/marbleCount.ts` (new): log-scale `marbleCountFor(realAnnualTotal)`
+  mapping into `[5, 25]` per stream. **Deliberate deviation from the
+  spec's** literal `[5, 35]`/combined-70: this repo's live bead-capacity
+  backstop (`BeadScene.tsx` `MAX_CAPACITY`) was cut to 55 by the perf
+  pass logged just above this entry, which postdates the spec (the spec
+  still cites the old 70) — combined max kept at 50 to stay under the
+  value actually live today.
+- `src/components/BeadScene.tsx`: removed the entire
+  viewport-computed-capacity/eviction/burst-fill machinery
+  (`computeBeadCapacity`, `MIN_CAPACITY`/`MAX_CAPACITY`,
+  `BURST_SPAWN_INTERVAL_MS`, `BEAD_EXIT_MS`, `BeadFadeOut`, `Bead.dying`,
+  `useViewportSize`) — replaced with a finite two-queue drain: spawns
+  exactly `birthMarbleCount`/`deathMarbleCount` marbles per stream at a
+  fixed 120ms cadence (`BATCH_SPAWN_INTERVAL_MS`), then stops, reporting
+  cumulative real-total progress upward via a new `onProgress` prop as
+  each marble lands.
+- `src/App.tsx`: selecting a country now also fetches its historical
+  data; `selectedYear` defaults to the latest available year once
+  loaded. A year `<select>` added under the country name in the
+  top-left panel (existing instrument-panel styling). `BeadScene` now
+  keyed on `` `${selectedIso3}-${selectedYear}` `` so changing either
+  clears the pile and drops a fresh batch. New `YearCounters` component
+  renders two `NumberFlow` readouts (births upper, deaths lower) over
+  the globe's open space, driven by `BeadScene`'s `onProgress`.
+
+**Also handled, not part of this feature**: the working tree already had
+an uncommitted WIP diff to `BeadScene.tsx` (eviction-based capacity,
+conflicting with the last committed state) when this session started,
+apparently left mid-edit by another/parallel session — stashed it aside
+before merging in `origin/main`'s design-doc commit; it was then
+auto-committed by that other session mid-task (`bdcf58a`) before any
+further action was needed here, so no work was lost. Also noted
+mid-task: another live session was concurrently editing `src/App.tsx`
+and `src/components/BeadScene.tsx` to add a marble-departure "leaf"
+effect (`LeafOverlay.tsx`), building additively on top of this feature's
+`BeadScene` rewrite (correctly consumes `bead.kind`/`colors.birth`/
+`colors.death`/the new prop shape). That session's in-progress
+uncommitted work was left untouched.
+
+Verification: `npx tsc -b` clean and `npx oxlint src` clean (only the
+pre-existing unrelated `button.tsx` warning) both on this feature's own
+commit (`94034a0`) and again after the parallel leaf-effect edits landed
+on top, uncommitted. **Not visually verified in-browser**: this
+session's Browser-pane preview could not reach either dev server it
+started — bound to the wrong internal port both times (`preview_start`
+reported one port, Vite actually listened on a different one), likely
+port contention with the other live session's own dev server in the
+same working directory — console/DOM tools all returned
+`chrome-error://`/empty-page. Live browser check (select a country,
+confirm the year `<select>` populates, batch drops and settles instead
+of trickling forever, counters count up to real totals, changing
+year/country clears and redrops) is still outstanding.
+
+Status: done (code), **not yet visually verified** — next session or
+the user should open the app locally and run through the manual check
+in the plan's Task 4 Step 9.
