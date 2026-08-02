@@ -222,7 +222,21 @@ const float SWELL_AMP = 0.007;
 // than as an artefact, and it is a transient shader-side effect on an
 // UNCHANGED bake -- BACKDROP_DOT_OPACITY stays 0.32, so TileTransition's
 // dot-for-dot parity at the moment of reveal is untouched.
-const float TEX_REVEAL_GAIN = 4.6;
+// 4.6 -> 10.0 per explicit request ("make the 2nd texture A LOT clearer").
+// At BACKDROP_TEXTURE_OPACITY = 0.06 and the raised BACKDROP_TEXTURE_FILTER
+// contrast (1.6), the cursor-position grain strength becomes roughly
+// 0.06 * (1 + 10) * 1.23 = 0.81 -- close to full black/white swing on the
+// brick's own deviation from u_pivot, i.e. genuinely legible detail rather
+// than a hinted texture.
+//
+// The dot-lattice clipping this comment already documented gets worse, not
+// better, and that trade is now the dominant one: bottoms out once
+// 0.293 * (1 + 10*sheenFall) >= 0.994, i.e. sheenFall >= 0.2417, i.e.
+// within r = 340*(1-sqrt(0.2417)) = 172px of the cursor (up from 153px).
+// Still accepted for the same reason as before -- it is the ~1px dot in
+// each 24px cell, reads as the lattice sharpening under the light, and
+// BACKDROP_DOT_OPACITY itself (the actual bake) is untouched.
+const float TEX_REVEAL_GAIN = 10.0;
 
 // --- Non-linear crest response --------------------------------------------
 // Ripples already sum LINEARLY into the gradient above, which is correct

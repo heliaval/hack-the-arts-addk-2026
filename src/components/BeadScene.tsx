@@ -797,17 +797,22 @@ const BACKDROP_COLORS = {
 // still giving TEX_REVEAL_GAIN = 4.6 something to multiply back up to the
 // same grain strength today's 0.2 bake reached at the cursor.
 //
-// Contrast 1.3 -> 1.6, and this is not the same knob as opacity even though
-// both "make the brick stronger". contrast() pivots the grayscale image
-// about 0.5, so it widens the per-pixel DEVIATION the soft-light blend
-// writes into u_base -- which is precisely the term TEX_REVEAL_GAIN
+// Contrast 1.3 -> 1.6 -> 2.0, and this is not the same knob as opacity even
+// though both "make the brick stronger". contrast() pivots the grayscale
+// image about 0.5, so it widens the per-pixel DEVIATION the soft-light
+// blend writes into u_base -- which is precisely the term TEX_REVEAL_GAIN
 // multiplies -- while barely moving the flat-field average, which is the
 // term that has to vanish. It buys legibility at the cursor almost for free
-// in the away-from-cursor budget. Now above the DOM layer's own 1.5, which
-// is fine and no longer contradicts the reasoning above: that reasoning was
-// about a permanently-visible plane, and this one no longer is.
+// in the away-from-cursor budget, and the 2.0 bump (alongside
+// TEX_REVEAL_GAIN 4.6 -> 10.0, "make the 2nd texture A LOT clearer") is
+// what makes the revealed brick read as resolved detail rather than just a
+// brighter blur -- more contrast in the SOURCE deviation, not just more
+// gain multiplying a soft one. Opacity stays at 0.06: raising it would
+// start showing brick away from the cursor too, which is the opposite of
+// what this constant's own history exists to prevent -- all the extra
+// clarity comes from TEX_REVEAL_GAIN and this contrast bump instead.
 const BACKDROP_TEXTURE_URL = '/textures/brick.jpg'
-const BACKDROP_TEXTURE_FILTER = 'grayscale(1) contrast(1.6) brightness(1.05)'
+const BACKDROP_TEXTURE_FILTER = 'grayscale(1) contrast(2.0) brightness(1.05)'
 const BACKDROP_TEXTURE_OPACITY = 0.06
 
 // Module-level singleton, not per-component-instance: the image only

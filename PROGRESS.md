@@ -4924,3 +4924,9 @@ Explicitly NOT touched, per the plan's own reasoning: `patchWarmRefraction` (0.4
 Verification: `npm run build` clean, `npx oxlint src` clean (same pre-existing warning class). Live-verified: bead scene mounted (2 canvases, synthetic click on Cape Town), no Shader/GLSL/WebGL/texture console errors -- confirming the riskiest change (direct `<canvas>`-to-`THREE.Texture` upload, replacing the old CanvasTexture path) works without falling back to the plan's documented black-texture failure mode. Actual measured frame-rate improvement is the user's own call to make -- this sandbox has no profiler access, only compile/mount verification.
 
 Status: done.
+
+**2026-08-07 (continued)**: Started/Done -- user asked to make the brick backdrop texture (the cursor-gated "2nd texture" from the earlier effects round) A LOT clearer. Direct tuning, no Opus dispatch needed. Raised `WaterSurface.tsx`'s `TEX_REVEAL_GAIN` 4.6 -> 10.0 (cursor-position grain strength ~0.06 * 11 * 1.23 = 0.81, near full swing) and `BeadScene.tsx`'s `BACKDROP_TEXTURE_FILTER` contrast 1.6 -> 2.0 (widens the source deviation the gain multiplies, so the reveal reads as resolved detail rather than a brighter blur). `BACKDROP_TEXTURE_OPACITY` stays at 0.06 deliberately -- raising it would make brick visible away from the cursor too, which the whole cursor-gating mechanism exists to prevent. Dot-lattice clipping radius grows from ~153px to ~172px as an accepted side effect (documented in the constant's own comment, same reasoning as before).
+
+Verification: `npm run build` clean, `npx oxlint src` clean (same pre-existing warning class). Live-verified: bead scene mounted (2 canvases, synthetic click on São Paulo), no Shader/GLSL console entries.
+
+Status: done.
