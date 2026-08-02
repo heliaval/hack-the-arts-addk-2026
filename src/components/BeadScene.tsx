@@ -946,7 +946,7 @@ export function BeadScene({ demographics, theme, globeCircle, globeElement }: Be
       })
     }
 
-    let burstTimer: number | null = null
+    let burstRafId: number | null = null
     let birthTimer: number | null = null
     let deathTimer: number | null = null
 
@@ -963,25 +963,47 @@ export function BeadScene({ demographics, theme, globeCircle, globeElement }: Be
     // `live >= capacity`, which by construction can't happen while
     // liveEstimate is still below capacity — so no bead this loop spawns can
     // trigger an eviction.
+    //
+    // Paced with requestAnimationFrame, not setInterval: a wall-clock timer
+    // keeps firing on schedule even if a frame takes far longer than
+    // BURST_SPAWN_INTERVAL_MS to actually render (each new bead adds a
+    // Rapier body plus a transmissive glass draw call, so this scene's frame
+    // cost rises with live count). A wall-clock burst would then spawn (and,
+    // once at capacity, evict) beads faster than they could ever be
+    // rendered — beads marked dying before they had a single visible frame
+    // in the pile, which is what "disappears too soon" and "never looks
+    // full" actually were: not a logic bug in the eviction above, but the
+    // burst rate having no feedback from what the browser could keep up
+    // with. rAF only calls back once a frame has actually been delivered, so
+    // under load the burst automatically slows to match — it can slow down,
+    // but it can never outrun the renderer the way a timer could.
     let liveEstimate = countLive(beadsRef.current)
     let burstKind: 'birth' | 'death' = 'birth'
-    if (liveEstimate < capacity) {
-      burstTimer = window.setInterval(() => {
+    let lastBurstSpawnAt = 0
+
+    function burstTick(now: number) {
+      if (now - lastBurstSpawnAt >= BURST_SPAWN_INTERVAL_MS) {
         spawn(burstKind)
         burstKind = burstKind === 'birth' ? 'death' : 'birth'
         liveEstimate += 1
-        if (liveEstimate >= capacity && burstTimer !== null) {
-          window.clearInterval(burstTimer)
-          burstTimer = null
-          startNormalTimers()
-        }
-      }, BURST_SPAWN_INTERVAL_MS)
+        lastBurstSpawnAt = now
+      }
+      if (liveEstimate < capacity) {
+        burstRafId = requestAnimationFrame(burstTick)
+      } else {
+        burstRafId = null
+        startNormalTimers()
+      }
+    }
+
+    if (liveEstimate < capacity) {
+      burstRafId = requestAnimationFrame(burstTick)
     } else {
       startNormalTimers()
     }
 
     return () => {
-      if (burstTimer) window.clearInterval(burstTimer)
+      if (burstRafId !== null) cancelAnimationFrame(burstRafId)
       if (birthTimer) window.clearInterval(birthTimer)
       if (deathTimer) window.clearInterval(deathTimer)
     }
