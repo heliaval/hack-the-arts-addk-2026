@@ -5,20 +5,21 @@
 // Log-scale mapping, same shape as src/lib/beadSpawnRate.ts's rate-to-
 // interval curve: each 10x in real total is an equal step in marble count.
 //
-// [10, 80] per stream, up from [5, 25]. BeadScene.tsx's live-bead ceiling
-// is now viewport-derived (capacityFor(), ~110 beads at a 1280x800
-// viewport, hard-capped at 160) rather than a flat 40, and the invariant
+// [30, 150] per stream, up from [10, 80]. BeadScene.tsx's live-bead
+// ceiling is viewport-derived (capacityFor(), ~110 beads at a 1280x800
+// viewport, hard-capped at MAX_CAPACITY_CEILING = 110), and the invariant
 // that made the old numbers work is unchanged and still deliberate: the
 // combined per-stream max must sit ABOVE the ceiling, or eviction -- and
-// the leaf-departure effect it drives -- silently never fires. 80 + 80 =
-// 160 clears a ~110 ceiling by a comfortable margin, while a micro-state's
-// 10 + 10 = 20 still never reaches it, which is fine: there is nothing to
-// evict yet. MIN went 5 -> 10 so even the smallest country reads as a
-// pile rather than a handful, per the "dramatically more beads" ask.
+// the leaf-departure effect it drives -- silently never fires. 150 + 150
+// = 300 clears a ~110 ceiling by a wide margin, and MIN went 10 -> 30 so
+// even a micro-state's 30 + 30 = 60 sits close enough to the 60-110
+// viewport-clamped range that mid-size countries now cross the ceiling
+// too, not just large ones -- "hits the limit a lot more often", per the
+// ask, rather than only on the biggest countries.
 const MIN_TOTAL = 1
 const MAX_TOTAL = 5e7
-const MIN_MARBLES = 10
-const MAX_MARBLES = 80
+const MIN_MARBLES = 30
+const MAX_MARBLES = 150
 
 const LOG_MIN = Math.log10(MIN_TOTAL)
 const LOG_RANGE = Math.log10(MAX_TOTAL) - LOG_MIN

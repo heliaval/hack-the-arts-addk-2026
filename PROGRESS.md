@@ -4939,3 +4939,12 @@ Status: done.
 Verification: `npm run build` clean, `npx oxlint src` clean (same pre-existing warning class). Live-verified: bead scene mounted immediately on selection (2 canvases, YearCounters panel visible right away, confirming the mount-immediately/spawn-gated split), no console errors, latest server HMR logs clean. Could not directly verify the ~2s spawn delay or the eased cadence's actual feel from this sandbox -- that's the user's own call on this round.
 
 Status: done.
+
+**2026-08-08 (continued)**: Started/Done -- two small direct-tuning changes, no Opus dispatch (straightforward parameter/copy edits, not novel design questions):
+
+1. **Dramatically raise per-stream marble spawn counts** so the live-bead eviction/leaf-departure effect fires more often, not just for the largest countries. `src/lib/marbleCount.ts`: `MIN_MARBLES` 10 -> 30, `MAX_MARBLES` 80 -> 150. The load-bearing invariant from the last few rounds still holds and is now much easier to trip: `BeadScene.tsx`'s viewport-derived `MAX_CAPACITY_CEILING` is a fixed 110 (a deliberate perf cap, left untouched -- more live beads was never the ask, more *eviction* was), and the combined per-stream max (150+150=300) clears it by a wide margin. Raising the floor (not just the ceiling of `marbleCountFor`'s range) is what makes mid-size countries cross 110 too, not just the biggest ones.
+2. **Tagline copy**: `src/App.tsx`'s `AppTitle` subtitle changed from declarative "We Are All Bound By Fate." to the question "Are We All Bound By Fate?" Source stays Title Case (the `uppercase` Tailwind class on the wrapping `div` is what renders it all-caps on screen -- verified unchanged and still doing the work) per the "keep all caps" instruction.
+
+Verification: `npm run build` clean, `npx oxlint src` clean (same pre-existing warning class). Live-verified: page text shows "ARE WE ALL BOUND BY FATE?"; synthetic click on San Francisco mounted the bead scene (2 canvases), no console/shader errors. Whether the eviction effect now visibly fires "a lot more often" across a range of real country sizes is the user's own call from actual play -- this sandbox can confirm the numeric invariant (150+150 vs. a 110 ceiling, floor raised to 30+30=60) but not the felt frequency across the full country dataset.
+
+Status: done.

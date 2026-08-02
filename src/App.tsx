@@ -343,7 +343,7 @@ const AppTitle = memo(function AppTitle() {
     <div className="pointer-events-none">
       <div className="font-serif text-2xl font-medium text-accent">Red Thread</div>
       <div className="text-[0.65rem] uppercase tracking-widest text-foreground">
-        We Are All Bound By Fate.
+        Are We All Bound By Fate?
       </div>
     </div>
   )
