@@ -1,5 +1,6 @@
 import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { computeSweepDelays } from '@/lib/sweep'
+import type { GlobeCircle } from '@/components/ui/cobe-globe'
 
 // See docs/superpowers/specs/2026-08-05-tile-flip-transition-design.md.
 //
@@ -105,11 +106,17 @@ interface TileTransitionProps {
    * change of this value, either direction, plays one full cover->reveal
    * cycle. */
   active: boolean
+  /** The globe's live on-screen circle (viewport CSS px), or null before
+   * it's laid out. Used to punch a transparent hole in the grid's mask so
+   * the sphere is never visually crossed by a tile -- see the mask-image
+   * comment on the grid container below for why this exists instead of a
+   * stacking-order trick. */
+  circle: GlobeCircle | null
 }
 
 type Phase = 'idle' | 'covering' | 'revealing' | 'fadingOut'
 
-export function TileTransition({ active }: TileTransitionProps) {
+export function TileTransition({ active, circle }: TileTransitionProps) {
   const tiles = useMemo(buildTiles, [])
   const maxDelayMs = useMemo(() => Math.max(...tiles.map((t) => t.delayMs)), [tiles])
 
@@ -166,33 +173,47 @@ export function TileTransition({ active }: TileTransitionProps) {
   const reduced =
     typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
 
+  // Punches a transparent hole in the grid exactly where the globe's sphere
+  // renders, so the grid can stay the TOPMOST layer (z-40, covering both
+  // GlobeView and BeadScene -- both are needed: BeadScene's opaque backdrop
+  // must stay covered until the reveal, see the lead-in comment above) while
+  // never visually crossing the visible sphere. A prior version tried to
+  // achieve "never crosses the sphere" via stacking order instead (sitting
+  // BELOW GlobeView) -- diagnosed by Opus 2026-08-06 as the cause of a
+  // regression where the entire flip became invisible: BeadScene's `z-0`
+  // `fixed inset-0` backdrop (BeadScene.tsx) is later in the DOM than
+  // GlobeView and was never accounted for, so it silently painted over the
+  // whole grid the instant its first WebGL frame landed. Masking a hole
+  // avoids the stacking conflict entirely -- the grid can be simultaneously
+  // "above everything" (so nothing occludes the animation) and "never over
+  // the sphere" (so the globe reads as uninterrupted) because those are
+  // orthogonal properties once expressed as a hole instead of a z-order.
+  // `#000`/transparent stops (not percentages) so the hole's exact pixel
+  // radius matches `circle.radius` regardless of viewport size; a 1px hard
+  // edge, not a soft fade, since a blurred edge would show a visible seam
+  // where the grid's own border-radius-less square tiles meet a round cut.
+  const maskImage = circle
+    ? `radial-gradient(circle at ${circle.centerX}px ${circle.centerY}px, transparent ${circle.radius}px, black ${circle.radius + 1}px)`
+    : undefined
+
   return (
-    // z-0, NOT a positive z-index: `z-index: 0` and `z-index: auto`
-    // positioned elements paint in the SAME pass, in tree order, while any
-    // positive value paints in a strictly later pass above all of them.
-    // GlobeView's wrapper in App.tsx is `absolute inset-0` with z-index
-    // auto, so anything above z-0 here would hoist this grid straight back
-    // on top of the globe and undo the whole point of sitting behind it.
-    // Ordering within that shared paint pass is by DOM position, which is
-    // why the render call in App.tsx must stay immediately before the
-    // GlobeView wrapper -- see the comment there.
-    //
-    // No pointer-events-none, but that no longer means much: since
-    // 2026-08-06 this grid sits BELOW GlobeView's full-viewport
-    // pointer-handling wrapper, so clicks during the transition reach the
-    // globe rather than being swallowed here. That's deliberate -- the
-    // mid-flight retrigger path (`retriggered` / `isCoveringBack` below)
-    // is what handles a second selection change mid-cycle, and it
-    // predates this change. See
-    // docs/superpowers/specs/2026-08-06-tile-transition-behind-globe-design.md.
+    // No pointer-events-none: the overlay intentionally swallows clicks for
+    // its ~1.1s lifetime -- the entire answer to "user clicks a different
+    // city while the transition is still mid-flight" is this one CSS
+    // property (plus the mid-flight retrigger path below for when it
+    // happens anyway via a non-pointer trigger). Restored 2026-08-06 along
+    // with z-40 -- see the maskImage comment above for why topmost is
+    // correct again.
     <div
       aria-hidden="true"
-      className="fixed inset-0 z-0 grid border-l border-t border-border transition-opacity ease-out"
+      className="fixed inset-0 z-40 grid border-l border-t border-border transition-opacity ease-out"
       style={{
         gridTemplateColumns: `repeat(${COLUMNS}, 1fr)`,
         gridTemplateRows: `repeat(${ROWS}, 1fr)`,
         opacity: phase === 'fadingOut' ? 0 : 1,
         transitionDuration: `${FADE_OUT_MS}ms`,
+        maskImage,
+        WebkitMaskImage: maskImage,
       }}
     >
       {tiles.map((tile) => {

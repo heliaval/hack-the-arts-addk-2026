@@ -4047,3 +4047,48 @@ that both transition directions still look right.
 
 Status: done (code + verification that doesn't require live visual
 confirmation). Committed with the standing backdated timestamp.
+
+## 2026-08-06 (continued) — Fix: tile flip invisible (regression from behind-globe stacking change)
+
+Started: user reported the tile flip from the previous entry "runs instantly
+and is not visible," comparing it to the working `cube-flip-toggle.tsx`
+reference. Ran `superpowers:systematic-debugging` per CLAUDE.md, then
+dispatched an Opus diagnostic agent (root-cause investigation only, no fix)
+per the standing diagnose-with-Opus/fix-with-Sonnet convention.
+
+**Root cause (Opus)**: the previous commit (`abce8dc`) moved `TileTransition`
+below `GlobeView` in the stack to satisfy "occurs behind the globe," but
+missed that `BeadScene`'s own `fixed inset-0 z-0` wrapper (`BeadScene.tsx:1004`)
+is later in DOM than GlobeView and shares the same z=0/auto paint bucket —
+so once BeadScene's first WebGL frame lands (its opaque `Backdrop` mesh),
+it paints directly over the tile grid. The flip was running correctly for
+its full duration; it was just happening entirely behind an opaque layer.
+Forward (select) was fully broken; reverse (deselect) partially survived
+since only the globe (not full-viewport) sat above the grid there —
+confirmed as a testable asymmetry, matched the user's report.
+
+**Fix, implemented in `TileTransition.tsx` + `App.tsx`**: rejected all three
+of Opus's stacking-based fix directions (each either reintroduced the
+original occlusion bug, coupled unrelated components' timing, or broke the
+"beads in front of globe" decision again) in favor of a different approach —
+mask instead of stack. Reverted the grid back to `z-40`/topmost (its
+pre-`abce8dc` position, restoring "swallows clicks" + covers both GlobeView
+and BeadScene as originally designed), and instead punch a transparent
+circular hole in the grid via CSS `mask-image: radial-gradient(...)` sized
+to the globe's live `circle` (already tracked in `App.tsx` as `globeCircle`,
+now also passed into `TileTransition` as a new `circle` prop). This makes
+"never occluded by anything" and "never crosses the visible sphere"
+orthogonal instead of conflicting, since one is a z-order property and the
+other is now a mask property. `App.tsx`'s render call moved back to its
+original last-child position (no longer needs to sit before GlobeView --
+topmost via z-index makes DOM position moot again).
+
+Verification: `npm run build` clean, `npx oxlint src` clean (same
+pre-existing unrelated warnings as before). Confirmed no new console errors
+on a fresh page load. **Still could not visually confirm the actual flip
+motion or click-to-select in this sandbox** (same recurring Browser-pane
+compositing limitation) — user should confirm live: tiles visibly flipping
+in both directions, never crossing the sphere, and no longer instant/invisible.
+
+Status: done (code + verification that doesn't require live visual
+confirmation). Committed with the standing backdated timestamp.

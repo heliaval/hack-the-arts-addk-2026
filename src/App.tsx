@@ -542,16 +542,6 @@ function App() {
   return (
     <div className="relative h-full w-full">
       <DotMatrixBackground />
-      {/* Tile transition sits here, immediately below the globe: the globe
-          canvas is transparent outside the sphere's silhouette (it's even
-          border-radius:50% clipped, see cobe-globe.tsx), so painting the
-          grid underneath makes the sphere mask it for free — no
-          clip-path, no canvas readback. Ordering is by DOM position, not
-          z-index: this component uses z-0 and the wrapper below is
-          z-index auto, which puts them in the same paint pass. Keep this
-          call immediately before that wrapper. See
-          docs/superpowers/specs/2026-08-06-tile-transition-behind-globe-design.md. */}
-      <TileTransition active={beadSceneVisible} />
       {/* The globe stays centered and full-size while a country is selected
           — it IS the obstacle the beads fall onto (see BeadScene's
           GlobeCollider), so it must never move or shrink out from under the
@@ -631,6 +621,7 @@ function App() {
           </div>
         )}
       </div>
+      <TileTransition active={beadSceneVisible} circle={globeCircle} />
     </div>
   )
 }
