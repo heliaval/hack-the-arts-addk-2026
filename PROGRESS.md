@@ -4475,3 +4475,67 @@ fallback if so: swap `--background` for `--muted`, i.e. `#fffffa` ->
 `#f2f2f2`, not a reintroduced gradient).
 
 Status: done. Committed with the standing backdated timestamp.
+
+## 2026-08-06 (continued) — Atmosphere over the bead scene + staggered border seal
+
+User approved the dot-matrix backdrop and asked for two more things:
+(1) "the exact same atmospheric effect too, say, minus the rain" -- the
+cursor sheen glow + glass-texture layers from DotMatrixBackground should
+also apply over the bead scene (GlobeRain confirmed already gated off
+once a country is selected, nothing to change there); (2) the tile
+grid's border lines should "seal" from top-right to bottom-left instead
+of popping in/out as a flat wireframe, and the transition can be
+slightly slower still. Dispatched an Opus planning agent for both.
+
+**Atmosphere (Ask 1)**: confirmed via the actual DOM tree that
+BeadScene's backdrop is a `fixed inset-0 z-0` OPAQUE plane, later in
+`App.tsx`'s tree than `DotMatrixBackground` (also `z-0`) -- same paint
+bucket, later wins, so it fully occludes the sheen/glass layers whenever
+a country is selected. Baking an equivalent effect into the backdrop
+CANVAS was ruled out early: that texture is deliberately drawn once per
+theme/resize (a full-viewport WebGL texture upload), and redrawing it on
+every mousemove would reintroduce exactly the per-frame cost this file's
+own comments have repeatedly guarded against. Instead:
+- Refactored `dot-matrix-background.tsx`: extracted `useCursorVars` and
+  `useSheenFlicker` hooks (previously inlined in `DotMatrixBackground`)
+  and an `AtmosphereLayers` fragment (sheen + glass-texture divs) so a
+  second export, `DotMatrixAtmosphere`, can share them verbatim --
+  `DotMatrixBackground`'s own rendered output is unchanged.
+  `DotMatrixAtmosphere` renders only the sheen + glass layers (no dot
+  grid -- that one stays hidden behind BeadScene's own dot backdrop,
+  which already carries the dots).
+- `App.tsx`: mounts `{beadSceneVisible && <DotMatrixAtmosphere />}`
+  immediately after `<BeadScene />`, deliberately carrying NO z-index
+  class -- later tree order than BeadScene's `z-0` puts it above the
+  canvas, and `z-index: auto` means it doesn't create a new stacking
+  context, which matters because the glass layer's `mix-blend-mode:
+  soft-light` needs to actually see the beads/refracted globe underneath
+  to blend correctly rather than compositing against an isolated empty
+  group.
+
+**Border seal (Ask 2)**: the grid's seams (`border-r border-b` per tile
+face, `border-l border-t` on the container) were static `border-border`
+-- the whole wireframe appeared in one frame via the container's opacity
+fade, disconnected from the tiles' own staggered flip. Reused each
+tile's existing `delayMs` (already driving the flip's
+`transitionDelay`) to also drive a `border-color` transition
+(`transparent` -> `var(--border)`) on that tile's front/back faces, so
+the seams close on the same top-right-to-bottom-left wavefront the
+tiles themselves open on. New `BORDER_SEAL_MS` (220ms per tile) and
+`BORDER_UNSEAL_DELAY_SCALE` (0.4, compressing the unseal to fit inside
+the now-longer `FADE_OUT_MS`). The container's own outer border-l/
+border-t (one element, can't be staggered) ramps across the full
+`maxDelayMs + BORDER_SEAL_MS` window instead. All six duration
+constants bumped a further ~20% per "slightly slower" (`FADE_OUT_MS`
+more, to fit the unseal's worst case exactly).
+
+Verification: `npm run build` clean, `npx oxlint src` clean (same
+pre-existing unrelated warnings). No new console errors on a fresh load.
+Both changes are only observable during/after selecting a country
+(atmosphere) or during the transition itself (seal), neither of which
+this sandbox can reliably trigger via synthetic canvas clicks --
+user should confirm live: cursor sheen/glass visible and correctly
+blended over the falling beads in both themes, and the grid's seam
+lines visibly drawing in/out along the diagonal rather than popping.
+
+Status: done. Committed with the standing backdated timestamp.

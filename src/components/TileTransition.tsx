@@ -35,11 +35,13 @@ const reducedMotionQuery =
 // pixel size on both axes.
 const COLUMNS = 6
 // All timing below bumped slower per explicit request ("could be
-// slower") in the same pass that added the fade-in/out below -- values
-// are eyeball-tuned, not measured, same as before.
-const LEAD_IN_FORWARD_MS = 280
-const LEAD_IN_REVERSE_MS = 240
-const TILE_FLIP_MS = 600
+// slower") in the same pass that added the fade-in/out below, then
+// nudged up a further ~20% ("the transition can be slightly slower too")
+// in the pass that added the staggered border seal below -- values are
+// eyeball-tuned, not measured, same as before.
+const LEAD_IN_FORWARD_MS = 340
+const LEAD_IN_REVERSE_MS = 290
+const TILE_FLIP_MS = 720
 const TILE_PERSPECTIVE_PX = 900
 // How long the grid takes to fade in from nothing at the very start of a
 // fresh cycle (idle -> covering), mirroring FADE_OUT_MS below. Added per
@@ -51,23 +53,50 @@ const TILE_PERSPECTIVE_PX = 900
 // triggered (mounting at opacity 0 isn't enough by itself -- the browser
 // needs a painted frame at 0 before the flip to 1 is a transition rather
 // than the initial value).
-const FADE_IN_MS = 260
+const FADE_IN_MS = 320
 // How long the grid takes to fade to nothing once every tile has finished
 // flipping. Without this the last frame is a fully-opaque grid removed in
 // a single commit -- fine with today's translucent placeholder tint, but
 // once real (opaque) artwork replaces it that pop reintroduces the exact
 // hard cut this component exists to soften.
-const FADE_OUT_MS = 260
+//
+// Bumped past the others' ~20% (260 -> 400) because it now also has to
+// house the border UNSEAL: worst-case that is
+// maxDelayMs * BORDER_UNSEAL_DELAY_SCALE + BORDER_SEAL_MS
+// = 450 * 0.4 + 220 = 400ms exactly. Shortening this below that value
+// clips the tail of the unseal sweep (the grid is already gone before the
+// bottom-left seams have finished vanishing) -- keep the two in step.
+const FADE_OUT_MS = 400
 // The last tile to flip (delayMs === maxDelayMs) only finishes its own
 // CSS transition TILE_FLIP_MS after `revealing` actually commits+paints,
 // not at the nominal schedule instant -- this slack absorbs that so the
 // fade-out doesn't start while the slowest tile is still mid-turn.
-const TRAILING_SLACK_MS = 100
+const TRAILING_SLACK_MS = 120
 // A quicker, non-staggered return when the transition is re-triggered
 // mid-flight (e.g. beadSceneVisible flips again before a cycle finished)
 // -- snapping every tile back to flat uniformly reads better than
 // continuing to honor the forward sweep's per-tile delays in reverse.
-const RETRIGGER_COVER_MS = 260
+const RETRIGGER_COVER_MS = 310
+// How long ONE tile's seam lines take to fade from transparent to
+// var(--border) ("sealing") -- per tile, not for the whole grid; the grid
+// as a whole takes maxDelayMs + this, because each tile's seal is delayed
+// by its own tile.delayMs (see the face style below).
+//
+// MUST stay below both LEAD_IN_* values. Each tile seals at
+// (delayMs + BORDER_SEAL_MS) and starts flipping at (leadIn + delayMs) --
+// the same delayMs on both sides, so the invariant "a tile's seams are
+// fully drawn before that tile turns" reduces to exactly this one
+// comparison, independent of grid size or where the tile sits in the
+// sweep. Raise this above LEAD_IN_REVERSE_MS and tiles begin turning with
+// half-drawn seams.
+const BORDER_SEAL_MS = 220
+// The unseal (fadingOut) reuses each tile's own delayMs so the seams
+// vanish along the same top-right -> bottom-left diagonal they arrived
+// on, but COMPRESSED by this factor: the seal-in gets to spread across
+// the whole lead-in and flip window, whereas the unseal has to fit inside
+// FADE_OUT_MS alongside the container's own opacity fade. 0.4 makes the
+// worst case land exactly on FADE_OUT_MS -- see that constant.
+const BORDER_UNSEAL_DELAY_SCALE = 0.4
 // Matches cube-flip-toggle's own overshoot easing, per explicit request to
 // make this read as the same mechanical "bounce" as that button. An
 // earlier version of this file used a symmetric ease-in-out instead,
@@ -209,6 +238,15 @@ export const TileTransition = memo(function TileTransition({ active, circle }: T
   // versa, would make cells non-square).
   const [rows, setRows] = useState(FALLBACK_ROWS)
   const tiles = useMemo(() => buildTiles(rows), [rows])
+  // Render-time copy of the sweep's longest delay, used only to size the
+  // grid container's own border-color fade so its outer L ramps in over
+  // the same window the per-tile seams seal across (a single element can't
+  // be staggered). Deliberately NOT the same value the layout effect
+  // computes -- that one must be a fresh local for the reasons spelled out
+  // at length in the effect below (staleness + an infinite-loop dependency
+  // cycle); this one is derived from the committed `tiles` and is only
+  // ever read during render, where `tiles` is by definition current.
+  const maxDelayMs = useMemo(() => tiles.reduce((m, t) => Math.max(m, t.delayMs), 0), [tiles])
 
   const [phase, setPhase] = useState<Phase>('idle')
   const [retriggered, setRetriggered] = useState(false)
@@ -336,6 +374,19 @@ export const TileTransition = memo(function TileTransition({ active, circle }: T
     ? `radial-gradient(circle at ${circle.centerX}px ${circle.centerY}px, transparent ${circle.radius}px, black ${circle.radius + 1}px)`
     : undefined
 
+  // Single source of truth for "the seam lines are drawn". Shares
+  // `entering` with the opacity fade-in on purpose: `entering` is exactly
+  // the "mounted, painted one frame, hasn't started yet" state, which is
+  // the only state a CSS transition can actually animate OUT of (a mount
+  // has no previous style to transition from -- see FADE_IN_MS). Keying
+  // the borders to the same flag means the seal is guaranteed to be a real
+  // transition rather than an initial value, for free, with no second
+  // double-rAF dance. On a mid-flight retrigger `entering` stays false and
+  // the seams are simply already sealed, which is correct -- the grid is
+  // visibly on screen at that point and re-drawing its seams would read as
+  // a glitch, not a sweep.
+  const sealed = !entering && phase !== 'fadingOut'
+
   return (
     // No pointer-events-none: the overlay intentionally swallows clicks for
     // its ~1.1s lifetime -- the entire answer to "user clicks a different
@@ -346,7 +397,7 @@ export const TileTransition = memo(function TileTransition({ active, circle }: T
     // correct again.
     <div
       aria-hidden="true"
-      className="fixed inset-0 z-40 grid border-l border-t border-border transition-opacity ease-out"
+      className="fixed inset-0 z-40 grid border-l border-t"
       style={{
         // Explicit px cells, not 1fr -- 1fr stretches each cell to fill the
         // container's exact width/COLUMNS x height/ROWS box, which only
@@ -365,7 +416,24 @@ export const TileTransition = memo(function TileTransition({ active, circle }: T
         // construction (entering is always set false well before
         // fadingOut is ever reached), so this can't fight itself.
         opacity: entering || phase === 'fadingOut' ? 0 : 1,
-        transitionDuration: phase === 'fadingOut' ? `${FADE_OUT_MS}ms` : `${FADE_IN_MS}ms`,
+        // The overlay's outer L (border-l/border-t, closing the two edges
+        // the per-tile border-r/border-b leave open). It's one element
+        // spanning the whole left and top edges, so it can't be staggered
+        // the way the internal seams are -- instead it ramps across the
+        // entire sweep's duration, so it neither snaps on nor finishes
+        // before the seams it's supposed to be continuous with.
+        // `border-border` was dropped from the className above: the class
+        // sets border-color, and the value has to be driven from here now.
+        borderColor: sealed ? 'var(--border)' : 'transparent',
+        // Was Tailwind's `transition-opacity ease-out`. Inlined because
+        // opacity and border-color need DIFFERENT durations on the same
+        // element (a per-property duration list, which the utility class
+        // can't express).
+        transitionProperty: 'opacity, border-color',
+        transitionDuration: `${phase === 'fadingOut' ? FADE_OUT_MS : FADE_IN_MS}ms, ${
+          phase === 'fadingOut' ? FADE_OUT_MS : maxDelayMs + BORDER_SEAL_MS
+        }ms`,
+        transitionTimingFunction: 'ease-out',
         maskImage,
         WebkitMaskImage: maskImage,
       }}
@@ -397,6 +465,47 @@ export const TileTransition = memo(function TileTransition({ active, circle }: T
         const restTransform = `translateZ(-${halfWidthPx}px) rotateY(0deg)`
         const openTransform = `translateZ(-${halfWidthPx}px) rotateY(90deg)`
         const isCoveringBack = phase === 'covering' && retriggered
+        // The seam animation, keyed to the SAME tile.delayMs that drives
+        // this tile's flip below. That shared key is the whole point: the
+        // seams used to be static `border-border`, so the entire wireframe
+        // appeared in one frame the moment the container faded in, while
+        // the tiles themselves opened on a staggered top-right ->
+        // bottom-left diagonal -- two motions that visibly did not belong
+        // to each other. Reusing delayMs makes the seam close on the same
+        // wavefront as the tile it belongs to.
+        //
+        // border-color (transparent -> var(--border)), NOT an opacity
+        // fade: opacity on a face would take its bg-muted tint, its dot
+        // grid and FACE_LIGHT_SHADOW down with it, and an opacity on a
+        // dedicated border-only overlay element would mean a fifth div per
+        // tile purely to carry 1px of colour. border-color is directly
+        // animatable, costs nothing extra, and touches only the lines.
+        //
+        // Its own transitionProperty on the FACE, separate from the
+        // rotating wrapper's `transform` transition one level up: the two
+        // need different delays (the seal fires during `covering`, the
+        // flip during `revealing`) and different durations, and they live
+        // on different elements, so there is nothing to reconcile.
+        //
+        // Not gated on `reduced` (unlike the flip's transform above): this
+        // is a colour cross-fade, not motion, and snapping the whole
+        // wireframe on in one frame is precisely the artifact being fixed.
+        //
+        // Applied identically to both faces. The front face carries the
+        // seal (it's what faces the viewer through `covering`); the back
+        // face is hidden then, is already sealed by the time it rotates
+        // into view, and is the face actually on screen during
+        // `fadingOut` -- so it's the one that carries the unseal. One
+        // shared object covers both without either needing to know which.
+        const faceBorderStyle: CSSProperties = {
+          borderColor: sealed ? 'var(--border)' : 'transparent',
+          transitionProperty: 'border-color',
+          transitionDuration: `${BORDER_SEAL_MS}ms`,
+          transitionTimingFunction: 'ease-out',
+          transitionDelay: `${
+            phase === 'fadingOut' ? tile.delayMs * BORDER_UNSEAL_DELAY_SCALE : tile.delayMs
+          }ms`,
+        }
         return (
           // Perspective lives on each cell, not the grid as a whole -- a
           // shared ancestor perspective would give every tile a different
@@ -445,8 +554,9 @@ export const TileTransition = memo(function TileTransition({ active, circle }: T
                   gradient overlay -- one was tried on this face and
                   explicitly reverted per request. */}
               <div
-                className="absolute inset-0 border-r border-b border-border bg-muted/55"
+                className="absolute inset-0 border-r border-b bg-muted/55"
                 style={{
+                  ...faceBorderStyle,
                   backfaceVisibility: 'hidden',
                   transform: `translateZ(${halfWidthPx}px)`,
                   boxShadow: FACE_LIGHT_SHADOW,
@@ -480,8 +590,9 @@ export const TileTransition = memo(function TileTransition({ active, circle }: T
                   between them to fill; the rim thickness the tile reads
                   with IS this face. */}
               <div
-                className="absolute inset-0 border-r border-b border-border bg-muted/40"
+                className="absolute inset-0 border-r border-b bg-muted/40"
                 style={{
+                  ...faceBorderStyle,
                   backfaceVisibility: 'hidden',
                   transform: `rotateY(-90deg) translateZ(${halfWidthPx}px)`,
                   boxShadow: FACE_LIGHT_SHADOW,

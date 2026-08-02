@@ -6,7 +6,7 @@ import { BeadScene } from '@/components/BeadScene'
 import { GlobeRain } from '@/components/GlobeRain'
 import { LeafOverlay, type Leaf } from '@/components/LeafOverlay'
 import { TileTransition } from '@/components/TileTransition'
-import { DotMatrixBackground } from '@/components/ui/dot-matrix-background'
+import { DotMatrixBackground, DotMatrixAtmosphere } from '@/components/ui/dot-matrix-background'
 import type { GlobeCircle } from '@/components/ui/cobe-globe'
 import { useDemographics } from '@/lib/useDemographics'
 import { useHistoricalDemographics } from '@/lib/historicalDemographics'
@@ -588,6 +588,18 @@ function App() {
           onDeparture={handleDeparture}
         />
       )}
+      {/* Ordering is load-bearing: this MUST sit immediately after
+          <BeadScene /> and carry no z-index of its own. BeadScene's
+          backdrop is an opaque full-viewport plane at `z-0` that swallows
+          DotMatrixBackground (also `z-0`, but earlier in this tree)
+          wholesale, taking the cursor sheen and glass texture with it -- so
+          the atmosphere is re-mounted here, above the canvas, rather than
+          being baked into it (which would mean redrawing a full-viewport
+          WebGL texture on every mousemove). Gated on beadSceneVisible so
+          the globe view never gets two stacked copies of the same glow.
+          See DotMatrixAtmosphere's own comment for the full stacking
+          rationale. */}
+      {beadSceneVisible && <DotMatrixAtmosphere />}
       <LeafOverlay leaves={leaves} onLeafDone={handleLeafDone} />
       {!selected && <GlobeRain globeCircle={globeCircle} theme={theme} />}
       {beadSceneVisible && <YearCounters births={progress.births} deaths={progress.deaths} />}
