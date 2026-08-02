@@ -2550,3 +2550,49 @@ scene now runs noticeably smoother.
 
 Status: done, pending live performance confirmation. Commit `5956d6d`,
 backdated to 2026-07-31T19:00:00 per standing instruction.
+
+## 2026-08-01 (continued) — Fixed globe/beads vanishing (regression from the lag-fix commit)
+
+Started: user reported the globe disappeared entirely after the previous
+lag-fix commit (`5956d6d`) — screenshot showed a bare dark gradient with
+one lone counter number, no globe, no beads. Per explicit instruction,
+dispatched an Opus agent to diagnose root cause (no code changes), then
+implemented the fixes directly.
+
+**Root cause 1 (globe vanishing)**: `cobe-globe.tsx`'s `obscured` throttle
+skipped `globe.update()` on odd frames while a country was selected.
+cobe's WebGL context is created with `preserveDrawingBuffer: false`, so
+the drawing buffer clears after every browser composite — any frame
+`update()` was skipped left the globe's canvas fully blank. `BeadScene`'s
+`Backdrop` reads that canvas on its own independent `%2` schedule, in a
+separate `requestAnimationFrame` loop started at a different mount time —
+the two throttles could land permanently out of phase, so `Backdrop`
+copied a blank canvas on every one of its own updates, forever. Fixed:
+`globe.update()` now runs every frame unconditionally regardless of
+`obscured`; only the label/ripple DOM writes (genuinely never read while
+obscured) are still skipped.
+
+**Root cause 2 (beads vanishing)**: `<Physics timeStep="vary">` removed
+the fixed-1/60-step's implicit safety margin. At this scene's real scale
+(`GRAVITY_PX_PER_S2 = 2000`, beads reaching ~1900 px/s by the floor) with
+no continuous collision detection on the ball colliders, a single frame
+slower than ~17fps — trivially reached during exactly the lag this whole
+effort exists to fix — lets a bead's one physics step advance further
+than its own radius, tunnelling straight through the floor/globe collider
+and vanishing permanently, with nothing to ever recover it. In a laggy
+session this could plausibly tunnel every bead. Fixed:
+`interpolate={false}` instead of `timeStep="vary"` — removes the same
+per-step interpolation-snapshot cost the original audit flagged as the
+real physics cost, while keeping the fixed timestep's tunnelling safety.
+
+Both diagnoses were verified against real numbers/library behavior (cobe
+and `@react-three/rapier` source), not guessed — see the Opus agent's
+full report for the exact line-by-line mechanism of each.
+
+Verification: `npm run build` and `oxlint` clean, fresh browser tab shows
+zero console errors. Could not visually confirm the globe/beads are
+actually visible again — this sandbox's Browser pane still can't
+composite frames. **User must confirm live.**
+
+Status: done, pending live confirmation. Commit `a3a9eb8`, backdated to
+2026-07-31T19:00:00 per standing instruction.
