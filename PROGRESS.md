@@ -2744,3 +2744,25 @@ User said the illuminated area felt a little small. Bumped all three radii
 Build/`oxlint` clean.
 
 Status: done. Commit backdated to 2026-07-31T19:00:00 per standing instruction.
+
+## 2026-08-03 (continued) — Glass rain design spec [agent: general-purpose]
+
+Wrote `docs/superpowers/specs/2026-08-03-glass-rain-design.md`: spec for
+replacing `GlobeRain`'s flat 2D streaks with `GlassRain`, a plain three.js
+fullscreen-quad `ShaderMaterial` porting the droplet-generation +
+normal-based-refraction core of `rocksdanister/rain`'s `rain.frag` (fetched and
+read directly). Medium fidelity — mostly static droplets, occasional
+sawtooth-gravity drip with a fading trail.
+
+Key resolved problem: the reference refracts a static wallpaper; here `u_tex0`
+is a `THREE.CanvasTexture` fed by a throttled `drawImage()` of the live globe
+canvas, reusing `BeadScene`'s `Backdrop` capture pattern. Second adaptation:
+output is alpha-masked to the droplets instead of opaque fullscreen, so the live
+globe stays crisp outside them. Dropped from the reference: lightning, panning,
+blur loop, post-processing, vignette, aspect-fit.
+
+`GlobeRain.tsx` stays untouched — the swap is two lines in `App.tsx`.
+
+Docs only, no source changes. Scope fits one implementation plan.
+
+Status: done. Commit backdated to 2026-07-31T19:00:00 per standing instruction.
