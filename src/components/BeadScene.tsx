@@ -484,6 +484,16 @@ function useBackdropBase(theme: 'light' | 'dark', width: number, height: number)
   }, [theme, width, height])
 }
 
+// Every other frame only (~30fps at a 60fps display) — the globe rotates
+// slowly enough that this backdrop doesn't need 60fps freshness to read as
+// smooth, and this is the single most expensive per-frame op in the scene:
+// ctx.drawImage(globeElement, ...) is a GPU->CPU readback off cobe's live
+// WebGL canvas, and texture.needsUpdate then re-uploads the full result
+// back to the GPU, at BACKDROP_SCALE=1 (full viewport resolution -- see
+// that constant's own comment for why it isn't lower). Halving the update
+// rate halves this cost without touching resolution or reverting that fix.
+const BACKDROP_UPDATE_EVERY_N_FRAMES = 2
+
 const Backdrop = memo(function Backdrop({
   theme,
   circle,
@@ -495,6 +505,7 @@ const Backdrop = memo(function Backdrop({
 }) {
   const { width, height } = useThree((state) => state.size)
   const base = useBackdropBase(theme, width, height)
+  const frameCountRef = useRef(0)
 
   // The live composited canvas + its texture. Recreated only when the base
   // (theme/size) changes — circle and globeElement are read fresh every
@@ -513,6 +524,8 @@ const Backdrop = memo(function Backdrop({
 
   useFrame(() => {
     if (!canvas || !base || !texture) return
+    frameCountRef.current++
+    if (frameCountRef.current % BACKDROP_UPDATE_EVERY_N_FRAMES !== 0) return
     const ctx = canvas.getContext('2d')
     if (!ctx) return
     ctx.clearRect(0, 0, canvas.width, canvas.height)
