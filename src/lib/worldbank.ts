@@ -35,17 +35,22 @@ const SECONDS_PER_YEAR = 365.25 * 24 * 3600
 
 // The World Bank API is a public third-party service with no SLA and no
 // retry logic of its own -- it occasionally blips (a single request taking
-// several seconds, or a transient network failure) even though it's up and
-// fast the rest of the time. Two retries with a short delay absorbs that
-// without masking a genuinely broken endpoint (persistent 4xx/5xx still
-// exhausts the retries and surfaces the real error).
+// several seconds, a transient network failure, or hanging with no response
+// at all) even though it's up and fast the rest of the time. Two retries
+// with a short delay absorbs that without masking a genuinely broken
+// endpoint (persistent 4xx/5xx still exhausts the retries and surfaces the
+// real error). A hang doesn't throw on its own, so it's given an explicit
+// timeout that aborts the request and turns it into a retryable error --
+// without this, a single hung request leaves the whole app stuck on its
+// loading screen forever, since Promise.all never settles.
 const FETCH_RETRIES = 2
 const RETRY_DELAY_MS = 500
+const FETCH_TIMEOUT_MS = 10_000
 
-async function fetchJson<T>(url: string): Promise<T> {
+export async function fetchJson<T>(url: string): Promise<T> {
   for (let attempt = 0; ; attempt++) {
     try {
-      const res = await fetch(url)
+      const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) })
       if (!res.ok) throw new Error(`World Bank API request failed: ${url}`)
       return (await res.json()) as T
     } catch (err) {
@@ -91,7 +96,7 @@ export function loadDemographics(): Promise<Map<string, CountryDemographics>> {
   return cachedPromise
 }
 
-async function buildDemographics(): Promise<Map<string, CountryDemographics>> {
+export async function buildDemographics(): Promise<Map<string, CountryDemographics>> {
   const [countries, population, growthPct, birthRate, deathRate] = await Promise.all([
     fetchCountryList(),
     fetchIndicator(INDICATORS.population),

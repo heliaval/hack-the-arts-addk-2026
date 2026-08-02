@@ -13,6 +13,8 @@ import { marbleCountFor } from '@/lib/marbleCount'
 import { useTheme } from '@/lib/useTheme'
 import { CubeFlipToggle } from '@/components/ui/cube-flip-toggle'
 import { Slider } from '@/components/ui/slider-number-flow'
+import { Dropdown } from '@/components/ui/dropdown'
+import { TextRotate, type TextRotateRef } from '@/components/ui/text-rotate'
 import { LANG_GLYPH, LANGUAGES, nextLang, type Lang } from '@/lib/lang'
 import { MIN_CITY_COUNT, MAX_CITY_COUNT } from '@/components/GlobeView'
 import { DEFAULT_ROTATION_SPEED_KM_S, MAX_ROTATION_SPEED_KM_S } from '@/lib/globeSpeed'
@@ -208,6 +210,71 @@ const LagWarning = memo(function LagWarning({
   )
 })
 
+const ONBOARDING_LINES = [
+  'Adjust the cities and globe speed with the sliders, bottom left',
+  'Click a city to watch a cascade of marbles fall, representing life and death',
+  'Language toggles available in the top right',
+]
+const ONBOARDING_LINE_SECONDS = 10
+
+// Same structure as LagWarning: one flowing single-line span (no wrap
+// block), main message followed by a trailing accent-highlighted segment
+// after a " · " separator (there it's the countdown seconds, here it's the
+// skip hint) -- shown once automatically on every load (not persisted,
+// same in-memory-only pattern as the lag warning). Only the message itself
+// is animated (TextRotate, same component the globe's city/arc labels use)
+// so longer sentences roll in word-by-word instead of an abrupt swap; the
+// trailing " · tab to skip" segment stays static throughout.
+// `suppressed` mirrors LagWarning's own reasoning: two overlapping messages
+// in the same corner read as broken, not just visually.
+//
+// TextRotate is driven externally via its `jumpTo` ref rather than its own
+// `auto`/`rotationInterval` timer (same pattern cobe-globe.tsx already uses
+// for the globe's label rotation) -- App owns `lineIndex` and the countdown,
+// so a Tab press can advance the line immediately without fighting an
+// internal timer that doesn't know about the skip.
+const OnboardingHint = memo(function OnboardingHint({
+  visible,
+  suppressed,
+  lineIndex,
+  secondsRemaining,
+}: {
+  visible: boolean
+  suppressed: boolean
+  lineIndex: number
+  secondsRemaining: number
+}) {
+  const textRotateRef = useRef<TextRotateRef>(null)
+  useEffect(() => {
+    textRotateRef.current?.jumpTo(lineIndex)
+  }, [lineIndex])
+
+  return (
+    <span
+      aria-hidden="true"
+      className={`pointer-events-none absolute bottom-4 right-4 z-10 font-mono text-xs tracking-wide text-muted-foreground/60 transition-opacity duration-700 ease-in-out dark:text-foreground/70 ${
+        visible && !suppressed ? 'opacity-100' : 'opacity-0'
+      }`}
+    >
+      <TextRotate
+        ref={textRotateRef}
+        texts={ONBOARDING_LINES}
+        auto={false}
+        loop={false}
+        splitBy="words"
+        staggerDuration={0.02}
+        animatePresenceMode="popLayout"
+        transition={{ type: 'spring', damping: 28, stiffness: 320 }}
+        mainClassName="inline-flex"
+      />
+      {' · '}
+      <span className="text-accent">tab</span>
+      {' to skip · '}
+      <span className="text-accent">{secondsRemaining}s</span>
+    </span>
+  )
+})
+
 // Bottom-left instrument panel, mirroring the top-left "reading" panel's
 // card/border/uppercase-label styling.
 // Slider position itself is a continuous float (fine step) so dragging
@@ -373,6 +440,58 @@ function App() {
     return () => clearTimeout(t)
   }, [lagWarningRemaining])
 
+  // Onboarding hint: cycles the ONBOARDING_LINES once, every load (in-memory
+  // only, like the lag warning above -- resets on refresh). App owns the
+  // current line and its countdown (not TextRotate's own timer -- see
+  // OnboardingHint above), so both the automatic advance and a Tab-skip can
+  // share the exact same "go to next line, or dismiss if already on the
+  // last one" logic.
+  const [onboardingVisible, setOnboardingVisible] = useState(true)
+  const [onboardingLineIndex, setOnboardingLineIndex] = useState(0)
+  const [onboardingSecondsRemaining, setOnboardingSecondsRemaining] = useState(ONBOARDING_LINE_SECONDS)
+
+  const advanceOnboarding = useCallback(() => {
+    setOnboardingLineIndex((i) => {
+      if (i >= ONBOARDING_LINES.length - 1) {
+        setOnboardingVisible(false)
+        return i
+      }
+      return i + 1
+    })
+  }, [])
+
+  // Resets the countdown every time the line changes.
+  useEffect(() => {
+    setOnboardingSecondsRemaining(ONBOARDING_LINE_SECONDS)
+  }, [onboardingLineIndex])
+
+  useEffect(() => {
+    if (!onboardingVisible) return
+    if (onboardingSecondsRemaining <= 0) {
+      advanceOnboarding()
+      return
+    }
+    const t = setTimeout(() => setOnboardingSecondsRemaining((s) => s - 1), 1000)
+    return () => clearTimeout(t)
+  }, [onboardingVisible, onboardingSecondsRemaining, advanceOnboarding])
+
+  // Tab advances to the next line immediately, only dismissing the whole
+  // hint once pressed on the last one -- scoped to only capture Tab while
+  // the hint is actually showing, so normal keyboard navigation
+  // (focusing buttons/sliders/the year dropdown) is unaffected once it's
+  // dismissed or has finished on its own.
+  useEffect(() => {
+    if (!onboardingVisible) return
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Tab') {
+        e.preventDefault()
+        advanceOnboarding()
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [onboardingVisible, advanceOnboarding])
+
   // Stable references (required for GlobeView's React.memo to actually skip
   // re-renders on unrelated App state changes) — must be declared before
   // the early returns below, since hooks can't run conditionally.
@@ -402,22 +521,6 @@ function App() {
   useEffect(() => {
     setProgress({ births: 0, deaths: 0 })
   }, [selectedIso3, selectedYear])
-
-  if (demographics.status === 'loading') {
-    return (
-      <div className="flex h-full items-center justify-center font-mono text-sm text-muted-foreground">
-        loading population data…
-      </div>
-    )
-  }
-
-  if (demographics.status === 'error') {
-    return (
-      <div className="flex h-full items-center justify-center font-mono text-sm text-destructive">
-        failed to load population data: {demographics.error.message}
-      </div>
-    )
-  }
 
   const selected = selectedIso3 ? demographics.data.get(selectedIso3) : undefined
   const yearTotals =
@@ -471,7 +574,16 @@ function App() {
       </div>
       <LanguageHint lang={lang} visible={langHintVisible} />
       <ThemeHint theme={theme} visible={themeHintVisible} />
-      <LagWarning remainingSeconds={lagWarningRemaining} suppressed={langHintVisible || themeHintVisible} />
+      <LagWarning
+        remainingSeconds={lagWarningRemaining}
+        suppressed={langHintVisible || themeHintVisible || onboardingVisible}
+      />
+      <OnboardingHint
+        visible={onboardingVisible}
+        suppressed={langHintVisible || themeHintVisible}
+        lineIndex={onboardingLineIndex}
+        secondsRemaining={onboardingSecondsRemaining}
+      />
       <ControlPanel
         cityCountRaw={cityCountRaw}
         onCityCountRawChange={setCityCountRaw}
@@ -487,22 +599,17 @@ function App() {
               {selected.name}
             </div>
             {historical.status === 'ready' && selectedYear !== null && (
-              <label className="flex items-center gap-1.5 pl-3 text-[0.65rem] uppercase tracking-widest text-muted-foreground">
-                year
-                <select
-                  value={selectedYear}
-                  onChange={(e) => setSelectedYear(Number(e.target.value))}
-                  className="rounded-sm border border-border bg-transparent px-1 py-0.5 font-mono text-xs text-foreground"
-                >
-                  {[...historical.years.keys()]
+              <div className="flex items-center gap-1.5 pl-3">
+                <span className="text-[0.65rem] uppercase tracking-widest text-muted-foreground">year</span>
+                <Dropdown
+                  label="year"
+                  items={[...historical.years.keys()]
                     .sort((a, b) => b - a)
-                    .map((year) => (
-                      <option key={year} value={year}>
-                        {year}
-                      </option>
-                    ))}
-                </select>
-              </label>
+                    .map((year) => ({ value: String(year), label: String(year) }))}
+                  value={String(selectedYear)}
+                  onChange={(v) => setSelectedYear(Number(v))}
+                />
+              </div>
             )}
           </div>
         )}

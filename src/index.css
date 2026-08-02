@@ -47,7 +47,7 @@
      (src/components/ui/dot-matrix-background.tsx) — deliberately not
      --foreground (too cold/neutral) or --accent (reserved for selection
      meaning), a dedicated low-chroma warm tone instead. */
-  --sheen: oklch(0.62 0.06 55);
+  --sheen: var(--accent);
   --destructive: oklch(0.55 0.21 27);
   --border: oklch(0.5 0 0 / 16%);
   --input: oklch(0.5 0 0 / 24%);
@@ -93,6 +93,11 @@ body,
 #root {
   height: 100%;
   margin: 0;
+  /* This is a fixed full-viewport app, not a scrolling page -- also
+     guards against transient native scrollbars flashing in from
+     absolutely-positioned corner UI (e.g. the onboarding hint) briefly
+     overflowing during a layout/exit transition. */
+  overflow: hidden;
 }
 
 body {

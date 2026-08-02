@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react'
+import { fetchJson } from './worldbank'
+import { readHistoricalCache, readHistoricalSnapshot, writeHistoricalCache } from '@/lib/historicalCache'
 
 const WB_BASE = 'https://api.worldbank.org/v2'
 const YEAR_RANGE = '2000:2022'
@@ -12,25 +14,6 @@ const INDICATORS = {
 export interface YearTotals {
   births: number
   deaths: number
-}
-
-// Same retry rationale as src/lib/worldbank.ts's fetchJson: the World Bank
-// API has no SLA and occasionally blips, but a persistent failure should
-// still surface as a real error rather than being masked forever.
-const FETCH_RETRIES = 2
-const RETRY_DELAY_MS = 500
-
-async function fetchJson<T>(url: string): Promise<T> {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      const res = await fetch(url)
-      if (!res.ok) throw new Error(`World Bank API request failed: ${url}`)
-      return (await res.json()) as T
-    } catch (err) {
-      if (attempt >= FETCH_RETRIES) throw err
-      await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS))
-    }
-  }
 }
 
 interface WbIndicatorEntry {
@@ -65,7 +48,7 @@ export function loadHistoricalDemographics(iso3: string): Promise<Map<number, Ye
   return cached
 }
 
-async function buildYearTotals(iso3: string): Promise<Map<number, YearTotals>> {
+export async function buildYearTotals(iso3: string): Promise<Map<number, YearTotals>> {
   const [birthRate, deathRate, population] = await Promise.all([
     fetchYearSeries(iso3, INDICATORS.birthRatePer1000),
     fetchYearSeries(iso3, INDICATORS.deathRatePer1000),
@@ -93,7 +76,17 @@ export type HistoricalState =
 
 /** Lazy per-country historical totals, fetched the first time `iso3` is
  * non-null (or changes to a new country) and cached across future
- * selections of the same country for the lifetime of the page. */
+ * selections of the same country for the lifetime of the page.
+ *
+ * Stale-while-revalidate, same rationale as useDemographics: this hits the
+ * same api.worldbank.org host that's unreachable on some machines (see
+ * PROGRESS.md), and unlike that hook this one gates the entire bead-scene
+ * render (App.tsx), so blocking on the live fetch isn't just a stale-data
+ * inconvenience -- it silently breaks the app's core interaction. Seeds
+ * synchronously from a per-country localStorage cache or a bundled
+ * snapshot (the ~18 countries actually clickable on the globe) before the
+ * live fetch even starts; a background failure never downgrades a
+ * successfully-seeded state to 'error'. */
 export function useHistoricalDemographics(iso3: string | null): HistoricalState {
   const [state, setState] = useState<HistoricalState>({ status: 'idle' })
 
@@ -103,13 +96,21 @@ export function useHistoricalDemographics(iso3: string | null): HistoricalState 
       return
     }
     let cancelled = false
-    setState({ status: 'loading' })
+    const seed = readHistoricalCache(iso3) ?? readHistoricalSnapshot(iso3)
+    setState(seed ? { status: 'ready', years: seed } : { status: 'loading' })
     loadHistoricalDemographics(iso3).then(
       (years) => {
-        if (!cancelled) setState({ status: 'ready', years })
+        if (cancelled) return
+        writeHistoricalCache(iso3, years)
+        setState({ status: 'ready', years })
       },
       (error: Error) => {
-        if (!cancelled) setState({ status: 'error', error })
+        if (cancelled) return
+        if (seed) {
+          console.warn(`Live historical fetch for ${iso3} failed, keeping fallback data:`, error)
+        } else {
+          setState({ status: 'error', error })
+        }
       },
     )
     return () => {

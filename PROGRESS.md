@@ -3233,3 +3233,544 @@ GlobeRain entry).
 
 Status: done, pending live visual confirmation. Commit backdated to
 2026-07-31T19:00:00 per standing instruction.
+
+## 2026-08-04 (continued) — Glass texture overlay on dot-matrix background
+
+Started: user provided a real glass-texture photo (dust/scratches, ~3MB
+JPEG, slightly above 4K, colors not meaningful) to layer subtly into the
+existing cursor-revealed `DotMatrixBackground` component. Planned with an
+Opus subagent (per standing "plan with opus, implement with sonnet"
+instruction), implementing now with Sonnet.
+
+Implemented in `src/components/ui/dot-matrix-background.tsx`: added a third
+sibling layer showing `public/textures/glass.jpg` (moved there from the
+project root), masked with the same 340px/70%-falloff radial gradient as
+the existing sheen layer so it's revealed in the identical footprint —
+fully invisible until the cursor moves. `background-size: cover` (source
+is >4K so this only ever downscales, never tiles), `filter: grayscale(1)
+contrast(1.2)` to strip the photo's color per instruction and keep
+scratches legible after desaturation, `mix-blend-mode: soft-light` (chosen
+over the initially-assumed `overlay`, which would wash to white against
+this app's light-mode `#fffffa` background — `soft-light` keys off source
+luminance instead of backdrop luminance, so it stays visible in both
+themes), starting `opacity: 0.1` (tune-by-eye starting point, not final).
+No new dependencies, no build-time image preprocessing (sharp/imagemagick
+not installed) — desaturation/blending is CSS-only against a
+background-image loaded once, not a per-frame cost.
+
+Verification: `graphify update .` clean, `glass.jpg` confirmed 200 OK and
+requested exactly once (not re-fetched on interaction), all computed
+styles (background-size/position, filter, blend-mode, opacity, mask)
+resolve exactly as planned, mask correctly initializes off-screen before
+first mouse move (matches the other two layers' invisible-by-default
+behavior), no console errors. **Not verified**: live cursor-tracked reveal
+and both-theme visual check — this environment's Browser pane doesn't
+composite frames (documented limitation throughout this project's
+history), and a synthetic `mousemove` dispatch couldn't be confirmed either
+since `requestAnimationFrame` stays paused while the tab is non-visible.
+**User should eyeball this in `npm run dev`**: move the cursor and confirm
+the glass grain appears only inside the existing sheen glow, stays
+stationary as the cursor moves (reveal window slides over a fixed pane,
+texture itself doesn't pan), and looks right in both light and dark mode.
+
+Also flagged, not fixed (out of scope per the plan): `glass.jpg` is ~3MB,
+heavy for a decorative layer — worth compressing/converting to WebP once
+the opacity is dialed in, if load time becomes a concern for the demo.
+
+Status: done, pending user visual confirmation.
+
+## 2026-08-04 (continued) — Cursor sheen flicker + World Bank stuck-loading fix
+
+Started: user asked for a subtle lamp-like flicker on the cursor sheen
+(iterated: first attempt read as "pulsing" not flickering, fixed by
+switching to a held-steady-then-snap CSS keyframe burst; then asked for it
+to be semi-random, which CSS keyframes can't do per-loop, so it was
+rewritten in JS). Separately, user reported the app stuck on "loading
+population data…" and shared a screenshot.
+
+**Root-caused the stuck-loading bug** (systematic-debugging): `fetchJson()`
+in `src/lib/worldbank.ts` had retry logic (2 retries, 500ms delay) but no
+timeout on the underlying `fetch()` call. A hung request (no response, no
+thrown error) never triggers the retry's catch block, so `Promise.all`
+across the 5 parallel World Bank calls in `buildDemographics()` never
+settles — `useDemographics()` stays in `'loading'` forever, even though an
+`'error'` UI state already exists in `App.tsx` and would have shown a
+recoverable message if the promise had ever rejected. Confirmed the API
+itself was reachable/fast at the time of debugging (not a live outage),
+consistent with this being an intermittent hang rather than a persistent
+failure. Fixed by adding `AbortSignal.timeout(10_000)` to the fetch call,
+so a hang now aborts and becomes a retryable/eventually-surfaced error
+instead of an infinite spinner. `npm run build` and `npx oxlint src` both
+clean after the fix (only pre-existing unrelated warnings).
+
+**Flicker, final implementation**: replaced the CSS `@keyframes
+lamp-flicker` approach entirely with a JS scheduler in
+`dot-matrix-background.tsx` — `scheduleNextBurst()`/`runFlickerBurst()`
+using randomized `setTimeout` chains (burst interval 2.5–8s, 3–4 opacity
+snaps per burst at random magnitude 0.04–0.075, random ~15–45ms spacing
+between snaps, settles back to `SHEEN_BASE_OPACITY = 0.06`), so no two
+flickers repeat identically. The CSS keyframes rule in `src/index.css`
+(added and iterated twice earlier this session) was removed as dead code
+now that the mechanism moved to JS.
+
+**Glass texture tuning recap** (same session, iterative live feedback):
+opacity settled at 0.28 (`contrast(1.5) brightness(1.1)`), up from an
+initial imperceptible 0.1 (root-caused via a deliberate diagnostic
+overshoot to 0.6/normal-blend, confirming the layer was rendering fine and
+just too weak against `soft-light` blend at low opacity on the light-mode
+background) and down from a too-strong 0.45.
+
+Verification: build + lint clean after each step. Live interaction
+(cursor-tracked reveal, flicker timing/randomness, both themes) could not
+be visually confirmed in this environment's Browser pane (same recurring
+composited-frame limitation noted throughout this project) — verified
+instead via computed-style checks, network request counts, and direct
+code reasoning; **user should confirm live** in `npm run dev`, especially
+whether the stuck-loading fix actually resolves the issue next time it
+would have hung (hard to force-reproduce a hang on demand).
+
+Status: done, pending user confirmation on both the flicker feel and
+whether the loading-hang fix holds up.
+
+## 2026-08-05 — Diagnosed and fixed the real stuck-loading root cause
+
+Started: after the 10s-timeout fix (previous entry), user confirmed it now
+correctly surfaces `signal timed out` instead of hanging forever — but the
+underlying question was WHY the fetches time out on their machine at all,
+given the exact same URL loads fine via direct browser navigation. Per
+"diagnose with opus, fix with sonnet," dispatched an Opus agent with the
+full evidence trail (sandbox fetch succeeds in 4ms; user's direct
+navigation to the identical URL succeeds; user's app-level `fetch()` to
+that same URL times out every time).
+
+**Opus's diagnosis**: ruled out CORS (this fetch is a CORS-safelisted
+simple GET requiring no preflight, and a CORS rejection fails in
+milliseconds with a console error, not a 10s hang; the API also serves
+`Access-Control-Allow-Origin: *`, confirmed by the sandbox's fast success).
+Ruled out DNS/proxy/server-side causes (all would break the direct
+navigation too, which succeeded). Best-supported hypothesis: an in-browser
+request filter on the user's machine specifically — a content/privacy/ad
+blocker extension or endpoint-security browser component — that
+distinguishes page-initiated `fetch`/XHR calls (`resourceType:
+"xmlhttprequest"`) from top-level navigations and silently stalls
+(rather than fast-rejects) traffic to unclassified third-party API
+domains. This is machine-specific, fetch-specific by design, and matches
+the exact "navigation works, fetch hangs" pattern — and is fundamentally
+undetectable/unfixable from the app's own code.
+
+**Also found in passing**: `src/lib/historicalDemographics.ts` had the
+exact same bare-`fetch`-no-timeout bug, never hit before because nothing
+had exercised a hang on that path yet — would have caused every country
+click to hang forever on an affected machine, one interaction after the
+demographics fix "worked."
+
+**Recommended and implemented fix: stale-while-revalidate, never block.**
+Rather than trying to detect or work around the specific blocker (fragile,
+unfixable in general), the app now renders instantly from cached/bundled
+data and upgrades in the background if a live fetch succeeds:
+- `src/lib/worldbank.ts`: exported `fetchJson` and `buildDemographics`
+  (previously private) for reuse.
+- `scripts/gen-demographics-snapshot.ts` (new): one-off generator, calls
+  `buildDemographics()` for real and writes the result to
+  `src/data/demographics-fallback.json` (`Map` -> `Object.fromEntries` for
+  JSON-serializability). Wired as `npm run snapshot`; `tsx` added as a
+  devDependency to run it. Generated once this session: 217 countries.
+- `src/lib/demographicsCache.ts` (new): `readCache()`/`writeCache()`
+  (versioned `localStorage` envelope, silently bails to `null`/no-op on
+  any parse error or quota failure) and `readSnapshot()` (reads the
+  bundled JSON).
+- `src/lib/useDemographics.ts`: rewritten. `useState` now seeds
+  synchronously from `readCache() ?? readSnapshot()` — the very first
+  render already has real data, no loading state exists anymore. The
+  existing `useEffect` still kicks off a live `loadDemographics()`; on
+  success it writes the fresh data to cache and upgrades state; on
+  failure it `console.warn`s and leaves the fallback in place instead of
+  transitioning to an error screen.
+- `src/App.tsx`: removed the two blocking branches
+  (`demographics.status === 'loading' | 'error'`) entirely — now
+  unreachable by construction. `demographics.data` usage elsewhere
+  unchanged (same shape).
+- `src/lib/historicalDemographics.ts`: dropped its duplicate
+  timeout-less `fetchJson` and now imports the shared, timeout-aware one
+  from `worldbank.ts`. Its own hang-blocking wasn't literally fixed by
+  going stale-while-revalidate (the per-country historical panel doesn't
+  have a bundled fallback), but it was already structurally non-blocking
+  for the main app (App.tsx's `yearTotals` gracefully falls through to
+  0/undefined when not ready) — the real fix needed there was just the
+  timeout, which it now has via the shared implementation.
+- `tsconfig.app.json`: added `resolveJsonModule: true` (needed for the
+  fallback JSON import to type-check under `tsc -b`).
+
+Verification: `npm run build` and `npx oxlint src` both clean (only
+pre-existing unrelated warnings). Confirmed the app renders fully and
+instantly on a live reload (globe + all default markers visible
+immediately, no console errors). Manually sanity-checked the generated
+snapshot file's shape and a sample entry (USA). **Could not directly
+simulate the user's exact blocked-network condition** in this
+environment's Browser pane (no reliable way to inject a fetch-blocking
+extension or persist a `window.fetch` override across a page reload here)
+— but the fix is structurally sound by inspection: the loading/error
+states are no longer reachable code paths at all, data is seeded
+synchronously before any network call fires, so no failure mode of the
+live fetch (hang, timeout, block, outage) can prevent the initial render.
+**User should confirm live** that the app now loads instantly on their
+machine even with the same blocker/network condition that caused the
+original hang.
+
+Status: done, pending user confirmation on their actual machine.
+
+## 2026-08-05 (continued) — Marbles-not-loading root cause + fix, sheen color
+
+Started: user reported the bead-scene marbles no longer load, asked to
+diagnose with Opus and fix with Sonnet. Also asked for the cursor sheen to
+be a shade of red in light mode (quick token change, done directly:
+`--sheen` light-mode value in `src/index.css` changed from
+`oklch(0.62 0.06 55)` (amber) to `oklch(0.62 0.1 25)` (red, matching the
+app's wine-red accent hue family) — dark mode's `--sheen` left unchanged
+per the request being scoped to light mode).
+
+**This entry corrects a wrong conclusion in the previous entry.** That
+entry claimed the historical-data fetch (`historicalDemographics.ts`) was
+"already structurally non-blocking for the main app" because
+`yearTotals` gracefully falls through to `undefined`/0 when not ready.
+That's true for the numeric fallback values, but false for what actually
+matters: `App.tsx`'s `selected && yearTotals` expression is the SOLE gate
+on `BeadScene` rendering, `GlobeView`'s `obscured` prop (the globe
+shrink), and `YearCounters` — so on the user's machine, where
+`api.worldbank.org` fetches are silently blocked (same root cause
+diagnosed the previous session for the main demographics screen), clicking
+a country produced no marbles, no globe shrink, nothing but the country
+name appearing — a straight-up broken core interaction, not a graceful
+degradation. This bug was almost certainly always present on this user's
+machine; it only became reachable/visible once the main loading-screen fix
+let them actually get to the globe and click something.
+
+**Opus's diagnosis** (dispatched with the hypothesis above already
+spelled out, asked to verify against real code rather than trust it):
+confirmed via direct code reading. Also confirmed the previous session's
+timeout fix on `historicalDemographics.ts` (via the shared `fetchJson`
+import) IS correctly wired — the bug isn't a hang, it's a ~31s timeout
+into a permanent `'error'` state that nothing ever surfaces or recovers
+from. Ruled out any unrelated regression (checked `git diff`/`git log` —
+no other relevant changes to `BeadScene.tsx`/`marbleCount.ts`/the render
+condition). Key scoping fact found: only 18 countries are ever clickable
+(`GlobeView.tsx`'s `CITIES` marker list), making a full per-country
+historical snapshot cheap to bundle (unlike the previous session's
+217-country main dataset).
+
+**Implemented** (mirrors the previous session's `useDemographics`
+stale-while-revalidate pattern, applied to the historical hook):
+- `src/lib/historicalDemographics.ts`: `fetchJson` import switched to a
+  relative path (`./worldbank`, not `@/lib/worldbank`) so the generator
+  script below can import this module directly under plain `tsx`/Node
+  without needing the `@/` bundler alias resolved. `buildYearTotals`
+  exported. `useHistoricalDemographics` rewritten: seeds synchronously
+  from `readHistoricalCache(iso3) ?? readHistoricalSnapshot(iso3)` before
+  the live fetch starts; on live success, writes the cache and upgrades
+  state; on live failure, `console.warn`s and keeps the seeded data
+  instead of downgrading to `'error'` (only actually errors if there was
+  no seed to fall back to at all, i.e. a country outside the bundled 18).
+- `src/lib/historicalCache.ts` (new): `readHistoricalCache`/
+  `writeHistoricalCache` (per-country `localStorage` key
+  `redthread:historical:v1:{iso3}`, versioned envelope, silent
+  fail-to-null/no-op) and `readHistoricalSnapshot` (reads the bundled
+  JSON below, `null` for any iso3 not in it).
+- `scripts/gen-historical-snapshot.ts` (new): sequential (not parallel —
+  18 countries × 3 indicators would be 54 simultaneous requests) fetch of
+  all 18 clickable countries' 2000-2022 series via the now-exported
+  `buildYearTotals`, written to `src/data/historical-fallback.json`.
+  Wired as `npm run snapshot:historical`. **Hit a real transient issue
+  while generating this**: the World Bank API started timing out after
+  ~7-8 rapid sequential country requests (even from this sandbox, which
+  otherwise reaches the API in single-digit ms) — added a 400ms pause
+  between countries and a 3-attempt retry with 1.5s backoff per country to
+  the generator script itself (dev-tooling only, not shipped runtime code)
+  to get a clean full run. Generated successfully on the second attempt:
+  all 18 countries, 23 years each.
+- Skipped Opus's optional "belt-and-braces" step (deriving a same-year
+  fallback total directly from the main demographics record, for
+  countries outside the bundled 18) — since the 18 bundled countries are
+  *exhaustively* every country the UI can ever select (confirmed via
+  `GlobeView.tsx`'s marker list), that code path can't currently be
+  reached, so adding it now would be unexercised speculative complexity.
+  Flagged here in case `CITIES` ever grows past the bundled list — re-run
+  `npm run snapshot:historical` after adding a country, and reconsider
+  this fallback if the list becomes dynamic/large enough that bundling
+  everything stops being cheap.
+
+Verification: `npm run build` and `npx oxlint src` clean (only
+pre-existing unrelated warnings). Verified the generated snapshot's shape
+and completeness directly (`historical-fallback.json` parses, all 18
+ISO3 keys present, USA has 23 years with plausible birth/death totals).
+**Could not click-test the actual globe → marbles interaction live** in
+this environment's Browser pane — cobe's marker hit-testing is manual
+canvas raycasting in `GlobeView.tsx`, not real DOM elements, and this
+session's screenshot/coordinate-click tooling isn't working (same
+recurring composited-frame limitation as this entire project's history).
+**User should confirm live**: click a city marker and verify marbles fall
+immediately (no ~30s dead click) and the globe shrinks, both with and
+without their network condition that was blocking the original fetch.
+
+Status: done, pending user confirmation on their actual machine.
+
+## 2026-08-05 (continued) — Animated Dropdown integrated as the year picker
+
+Started: user pasted a full shadcn-style component-integration prompt for
+an animated `Dropdown` (headless `useDropdown` hook + styled trigger/panel,
+using `motion` for the open/close and active-row-slide animations),
+asked to "implement onto all of the cities" and to make it open on hover
+rather than click, "not annoying to use," for picking among a country's
+available years.
+
+Interpreted "onto all of the cities" as: use this as the year-picker for
+whichever city is currently selected (the app only ever shows one
+selected country's year picker at a time — there's no scenario where 18
+dropdowns are on screen simultaneously), replacing the plain native
+`<select>` that was doing this job.
+
+Implemented:
+- `src/components/ui/dropdown.tsx` (new): the pasted component, adapted —
+  dropped `"use client"`, replaced the pasted hardcoded stone/white
+  Tailwind classes with this project's actual design tokens (`border`,
+  `popover`, `muted`, `accent`, `foreground`/`muted-foreground`) and
+  `font-mono` (matching the app's existing numeric-readout convention:
+  `NumberFlow`, `ControlPanel`), tightened all border-radii from the
+  pasted design's soft `rounded-[9px]`/`rounded-[11px]`/heavy drop-shadows
+  down to this project's `rounded-sm`/`shadow-sm` "instrument-panel" look
+  (`--radius: 0.3rem`, already established app-wide) rather than shipping
+  the pasted component's generic soft-SaaS styling as-is. Changed the
+  trigger's visible text from the pasted design's static category label
+  (e.g. "Visibility") to the *currently selected item's label* (i.e. the
+  selected year), since this is a value-picker, not a filter menu — used
+  `label` only for the accessible name (`aria-label`, sr-only text) now.
+  Swapped the pasted checkmark-SVG "selected" indicator for a small
+  accent-colored dot, matching the dot-prefix convention already used for
+  the selected-country label in `App.tsx`.
+  **Hover-to-open behavior** (the actual ask): added `onMouseEnter`/
+  `onMouseLeave` on the component's root wrapper (which contains both the
+  trigger button and the popup panel, so hovering either keeps it open)
+  — enter opens the menu immediately, leave schedules a close after a
+  150ms grace delay (cleared if the pointer re-enters before it fires),
+  so crossing the small gap between button and panel doesn't flicker it
+  shut. Original click/keyboard activation (Enter/Space/arrows/Escape/
+  typeahead) left fully intact as a fallback/accessibility path — hover
+  is additive, not a replacement of keyboard support.
+  `motion` was already an installed dependency (added earlier this
+  project for `text-rotate.tsx`) — no new package needed.
+- `src/App.tsx`: replaced the year `<select>` (previously plain native
+  HTML select styled to match the app) with `<Dropdown>`, items built from
+  `historical.years.keys()` sorted descending, `value`/`onChange` wired to
+  the existing `selectedYear` state — same trigger condition
+  (`historical.status === 'ready' && selectedYear !== null`) as before,
+  so this doesn't change *when* the picker appears, just what renders.
+
+Verification: `npm run build` and `npx oxlint src` clean (only the same
+pre-existing hook+component-in-one-file warning pattern already accepted
+for `GlobeRain.tsx`). **Could not visually/interactively verify the hover
+behavior or animations live** in this environment's Browser pane (same
+recurring composited-frame limitation as this project's entire history) —
+verified via code review only (the mouseenter/mouseleave logic and its
+interaction with the existing click/keyboard paths, the timer
+clear-on-re-enter logic). **User should confirm live**: hover over the
+year control with a country selected, confirm it opens without a click,
+stays open while moving between the button and the list, closes shortly
+after the pointer leaves both, and that picking a year still updates the
+bead scene correctly.
+
+Status: done, pending user confirmation on the live feel/behavior.
+
+## 2026-08-05 (continued) — Onboarding hint (bottom-right, cycling instructions)
+
+Started: user asked to co-write instructional copy for first-time visitors
+(the app had none) and place it bottom-right, each line shown 5-10s, with
+Tab to skip. Went through several rounds of copy iteration together before
+implementing (final requests: more descriptive, sentence case, tighter
+literary phrasing, "cascade of marbles fall" for the click-a-city line).
+
+Final copy (`ONBOARDING_LINES` in `App.tsx`):
+1. "Adjust the cities and globe speed with the sliders, bottom left."
+2. "Click a city to watch a cascade of marbles fall, representing life and
+   death."
+3. "Language toggles live in the top right."
+
+Confirmed with user: shows every page load (not persisted to
+localStorage) — same "in-memory ref/state only" pattern as the existing
+`LagWarning`'s one-time-per-load city-count advisory, not a
+seen-once-ever onboarding flag.
+
+Implemented in `src/App.tsx`:
+- New `OnboardingHint` component (bottom-4 right-4, same corner/fade
+  pattern as `LanguageHint`/`LagWarning`), using the app's existing
+  `TextRotate` component (already used for the globe's city/arc labels)
+  to cycle the three lines word-by-word (`splitBy="words"`, since these
+  are full sentences — the existing usage elsewhere uses
+  `splitBy="characters"` for short single-word labels, which would look
+  noisy at this length) via its built-in `auto`/`rotationInterval`/`loop`
+  props rather than reinventing a timer. `ONBOARDING_LINE_DURATION_MS =
+  7000` (mid-point of the requested 5-10s range). A persistent "press
+  `tab` to skip" sub-line (accent-colored key word, matching the app's
+  existing convention of highlighting the actionable part of a hint —
+  see `LagWarning`'s countdown number, `LanguageHint`'s active language)
+  stays visible the whole time, not just on the last line.
+- `App` component: `onboardingVisible`/`onboardingLineIndex` state.
+  `TextRotate`'s `onNext` callback is wired directly to
+  `setOnboardingLineIndex` (its signature already matches). One effect
+  waits for the LAST line to also get its own full display duration
+  before hiding the whole hint (`onboardingLineIndex ===
+  ONBOARDING_LINES.length - 1` → schedule a further
+  `ONBOARDING_LINE_DURATION_MS` timeout). A separate effect listens for
+  `Tab` globally but ONLY while `onboardingVisible` is true (removes the
+  listener once dismissed/finished), calling `preventDefault()` and
+  hiding immediately — scoped this way so normal keyboard
+  tab-navigation through the rest of the page (buttons, sliders, the
+  year dropdown) is never intercepted once the hint is gone.
+- Coordinated with the existing bottom-right occupants to avoid text
+  overlap: `LagWarning`'s `suppressed` prop now also includes
+  `onboardingVisible` (the onboarding hint, shown from page load, takes
+  priority over the lag advisory, which only fires if the user drags the
+  city slider to max during that window); `OnboardingHint` itself is
+  suppressed by the existing `langHintVisible`/`themeHintVisible` hover
+  states, same as `LagWarning` already was.
+
+Verification: `npm run build` and `npx oxlint src` clean (same
+pre-existing warning classes only). Live-checked via the Browser pane's
+`get_page_text` (this environment can't screenshot, but text content and
+DOM state ARE readable) — confirmed the hint renders with real cycling
+text and the "press tab to skip" line present on a fresh load. Hit a
+red herring while checking the console: a batch of stale
+`Failed to resolve import` errors appeared, timestamped ~50 minutes
+earlier (from the historicalCache/historical-fallback work earlier this
+session, before that snapshot file existed) — confirmed stale via
+`preview_logs`' timestamps (most recent entries were clean `hmr update`s
+matching this change), not a real current problem. **Could not verify
+the Tab-to-skip keyboard behavior or the exact visual timing/animation
+feel live** — this environment's `computer` tool needs a cached
+screenshot to dispatch key/click events, and screenshots don't composite
+here (same recurring limitation throughout this project). **User should
+confirm live**: the three lines cycle at a comfortable pace, Tab
+dismisses the hint immediately without otherwise breaking keyboard
+navigation, and it doesn't visually collide with the lag-count advisory
+if both conditions overlap.
+
+Status: done, pending user confirmation on timing/feel and Tab-skip.
+
+## 2026-08-05 (continued) — Onboarding hint: matched LagWarning structure + added countdown
+
+Started: user asked for the onboarding hint to be "structured similarly
+to how the 20 cities message appears" (LagWarning), then to add a
+countdown too: "[message] - tab to skip | xS".
+
+Restructured `OnboardingHint` in `src/App.tsx` to mirror `LagWarning`
+exactly: single flowing `<span>` (was a `<div>` with a separate second
+`<div>` underneath for the skip hint) — no max-width/wrap constraint, just
+one line extending left from the bottom-right anchor like the lag
+advisory does. `TextRotate`'s animated line stays inline
+(`mainClassName="inline-flex"` merged over its default `flex flex-wrap`
+via `cn()`), followed by the trailing segment " · press tab to skip · Xs"
+in the same style as LagWarning's own trailing " · Xs".
+
+Added the countdown itself: new `onboardingSecondsRemaining` state,
+reset to `Math.round(ONBOARDING_LINE_DURATION_MS / 1000)` (7) every time
+`onboardingLineIndex` changes (i.e. every time TextRotate's `onNext`
+fires), ticking down once a second via the same
+setTimeout-in-an-effect-keyed-on-itself pattern `lagWarningRemaining`
+already uses. Consolidated the previous separate "hide after last line's
+duration" timeout into this same countdown: once it reaches 0 on the
+final line, `onboardingVisible` is set to false — one timer mechanism
+instead of two.
+
+Verification: `npm run build` and `npx oxlint src` clean (same
+pre-existing warning classes). Live-checked via `get_page_text` this
+time (unlike earlier passes in this thread) — confirmed the actual
+rendered structure: "Adjust the cities and globe speed with the
+sliders, bottom left. · press tab to skip · 6s", ticking down as
+expected on a fresh load.
+
+Status: done, confirmed via live text read (not just build/lint).
+
+## 2026-08-05 (continued) — Onboarding hint: Tab now advances per-line, not dismiss-all
+
+Started: user asked to (1) remove the trailing period from each line, (2)
+capitalize "Press" in the skip hint, (3) bump the per-line duration to
+10s, (4) change Tab so it only advances to the next message instead of
+dismissing the whole sequence.
+
+(4) required a real restructure: `TextRotate`'s own `auto`/
+`rotationInterval` timer has no way to be told "skip early" from outside.
+Switched to the same externally-driven pattern `cobe-globe.tsx` already
+uses for its label rotation -- `auto={false}` on `TextRotate`, driven via
+its `jumpTo(index)` ref method from an effect keyed on a `lineIndex` prop
+that `App` now owns. Consolidated the automatic-advance and Tab-skip
+paths into one `advanceOnboarding()` callback (advance to next line, or
+`setOnboardingVisible(false)` if already on the last one) used by both
+the countdown-reaches-zero effect and the Tab keydown handler, so there's
+one source of truth for "what happens next" instead of two separate
+branches that could drift.
+
+Also: removed trailing periods from `ONBOARDING_LINES`, capitalized
+"Press" (was lowercase, matching neither "Tab" being a literal key name
+nor a sentence start -- now reads "· Press tab to skip · Xs"),
+`ONBOARDING_LINE_SECONDS = 10` (was a 7000ms/7s duration constant, now a
+plain 10-second integer constant since there's no more ms-to-seconds
+rounding needed with the external-timer approach).
+
+Verification: `npm run build` and `npx oxlint src` clean (same
+pre-existing warning classes). **Live-verified this time, not just
+build/lint** -- navigated the sandbox browser, read the actual page text
+to confirm no period and "Press" capitalized, then dispatched real
+`KeyboardEvent('keydown', {key: 'Tab'})` events via `javascript_tool` and
+re-read page text after each: first Tab moved line 1 → line 2 (hint
+stayed visible, countdown reset), two more Tabs moved to line 3 then
+attempted a 4th (the actual dismiss), confirmed via the element's
+computed `className` showing `opacity-0` (the `textContent` read
+immediately after the last dispatch still showed `opacity: 1` due to the
+700ms CSS transition still in flight -- rechecked via class name instead
+of computed style to get the intended end-state, not a mid-transition
+snapshot).
+
+Status: done, verified live end-to-end (first time in this whole
+onboarding-hint thread that Tab-skip behavior was actually exercised,
+not just reasoned about).
+
+## 2026-08-05 (continued) — Removed "Press", fixed scrollbar glitch
+
+Started: user asked to (1) drop the word "Press" from the skip hint,
+leaving just the highlighted "tab" word, and (2) fix a small glitch where
+the browser's own scrollbars flash in on the last onboarding message.
+
+(1) `App.tsx`'s `OnboardingHint`: trailing segment simplified from
+" · Press tab to skip" to " · tab to skip" (only "tab" itself
+accent-highlighted now).
+
+(2) Root cause reasoning: `html`/`body`/`#root` had no `overflow` rule at
+all, and the onboarding hint (and `LagWarning`) are single-line,
+unwrapped, absolutely-positioned text anchored to the bottom-right corner
+with no width constraint -- long lines (or content still animating via
+TextRotate's `AnimatePresence`/`layout` exit transitions) can transiently
+extend past the viewport's left edge, and with no `overflow: hidden`
+anywhere the browser's native scrollbar flashes in/out in response. This
+app is a fixed full-viewport experience (no legitimate page-level
+scrolling anywhere -- the only real scroll container is the new
+Dropdown's own internal `overflow-y-auto` list, which is unaffected by
+the outer page's overflow setting). Added `overflow: hidden` to the
+existing `html, body, #root { height: 100%; margin: 0; }` rule in
+`src/index.css` rather than trying to precisely diagnose which exact
+frame/transition produced the overflow -- a general guard against any
+current or future absolutely-positioned decorative element doing this,
+appropriate given the app has no scrolling to lose.
+
+Verification: `npm run build` and `npx oxlint src` clean (same
+pre-existing warning classes). Live-checked via `get_page_text`: confirmed
+"· tab to skip · 7s" (no "Press"). **Did not specifically reproduce the
+scrollbar glitch itself** to verify the fix against it -- this
+environment's Browser pane doesn't composite frames for a visual
+scrollbar check, and the glitch was described as transient/small, hard to
+capture via text-based tools. The `overflow: hidden` fix is reasoned from
+the actual CSS gap (confirmed via direct inspection: no overflow rule
+existed anywhere in the codebase) rather than observed and re-tested.
+**User should confirm live** that the scrollbar flash is gone after this
+change, and flag if any other legitimate scrolling elsewhere in the app
+broke (none expected, but not exhaustively re-tested).
+
+Status: done, pending user confirmation the scrollbar glitch is actually
+resolved.
