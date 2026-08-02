@@ -4740,3 +4740,95 @@ Visual confirmation (texture no longer visible over the sphere itself,
 only in the surrounding margin) needs a live check.
 
 Status: done. Committed with the standing backdated timestamp.
+
+## 2026-08-07 (continued) — Water ripple layer for the bead scene, designed with Opus
+
+User asked for a follow-up to `GlobeRain` (the idle globe view's rain
+effect) for the bead scene: instead of literal falling drops, raindrops
+should manifest only as ripples on a water surface, behind and separate
+from the beads, realistic, and reactive to the existing cursor "light
+sheen." Dispatched an Opus agent to DESIGN this (not just plan an
+already-fixed spec) per explicit request, since there were real open
+technical decisions, not just implementation details.
+
+**Key finding that shaped everything**: a DOM canvas layer truly "behind
+the beads" is architecturally impossible in this app. BeadScene's
+backdrop is an opaque full-viewport plane inside a `fixed inset-0 z-0`
+`<Canvas>` that occludes every DOM layer behind it -- that's the entire
+reason `DotMatrixAtmosphere` (added two rounds ago) had to be mounted
+*above* the canvas instead. So the water layer has to live *inside* the
+R3F scene, in the depth band between the existing backdrop plane
+(z=-420) and the beads (z=0).
+
+**Approach chosen (of three considered)**: rather than adding a new
+mesh/layer, the existing backdrop plane's `meshBasicMaterial` is
+replaced with a custom `ShaderMaterial` that samples the SAME
+already-drawn dot+brick texture, offset by an analytically-derived
+ripple heightfield gradient (refraction) plus specular/shading terms
+computed from the resulting surface normal. Net cost: zero new meshes,
+zero new draw calls, zero new textures, zero new per-frame texture
+uploads -- the base texture still uploads exactly once per theme/resize,
+untouched. Ripple state is just `(x, y, birthTime, amplitude)` per slot,
+written only at spawn; the whole animation is a pure function of one
+`u_time` uniform, so the per-frame CPU cost of the entire effect is one
+float write. Rejected alternatives: a true ping-ponged wave-equation sim
+(two extra fullscreen passes for a difference invisible at this ripple
+density) and a separate 2D canvas ripple layer (architecturally can't be
+behind the beads for the reason above, and can only add light over the
+backdrop, never refract it -- refraction of the known-straight dot
+lattice is the strongest "this is water" cue available).
+
+Implemented:
+- **New `src/components/WaterSurface.tsx`**: the ripple shader (radially
+  expanding wave-packet model, not a full wave-equation simulation --
+  ripples sum linearly, don't reflect/interfere, which is invisible at
+  the ~7-live steady state this spawns), a fixed 10-slot ripple pool
+  (oldest evicted on overflow, same discipline `GlobeRain`'s own pool
+  uses -- built fresh rather than reusing `GlobeRain`'s spawner, since
+  that file's depth-tier/state-machine machinery has no analogue for an
+  invisible point-in-time drop), ambient spawn timing deliberately NOT
+  tied to the births/deaths batch cadence (a batch drains in ~3s; data-
+  tied rain would be an effect that stops for the rest of the session),
+  and specular response to BOTH a fixed key light and the cursor's live
+  position -- the latter using the exact same 340px falloff radius the
+  DOM sheen layer already uses, so ripple crests genuinely glint where
+  the atmosphere glow falls.
+- **`BeadScene.tsx`**: swapped the backdrop's `meshBasicMaterial` for
+  `<WaterSurface>` (same mesh position, same texture). Also changed the
+  base texture's colorSpace from `SRGBColorSpace` to `NoColorSpace` --
+  load-bearing, not cosmetic: `meshBasicMaterial` relies on three's
+  built-in colorspace decode/encode pair canceling out for a plain
+  texture map, but a custom `ShaderMaterial` gets no such re-encode
+  unless it asks for one, so leaving `SRGBColorSpace` would have made
+  the whole backdrop visibly darker and washed out.
+- Theme-dependent values (specular/shade strength, the `--sheen` color)
+  are resolved via a `requestAnimationFrame`-deferred effect, not a
+  render-time read -- same pattern this file's `resolveBeadColors`
+  already uses, needed because `--sheen` is `oklch()` in dark mode and
+  can't be hand-converted reliably.
+
+**Bug found and fixed during verification, not by the plan**: the
+fragment shader source (a JS template literal) contained a code comment
+using backticks (`` `radial-gradient(...)` ``) referencing another
+file's CSS value -- since it's nested inside an OUTER JS template
+literal, those backticks prematurely closed the string, and everything
+after was parsed as invalid JS. `npm run build` caught it immediately
+(`tsc` parse errors pointing at the exact line). Fixed by removing the
+inner backticks from that one comment line.
+
+Verification: `npm run build` clean, `npx oxlint src` clean (same
+pre-existing unrelated warnings). Unlike most of this session's WebGL
+work, this one WAS actually exercised live -- a synthetic click landed
+on a city marker this time (`New York`), the bead scene mounted
+(`United States`, year 2022, births/deaths panel rendered), 2 canvases
+present, and critically **no shader compile/link error appeared in the
+console** (a real GLSL error would show as a loud
+`THREE.WebGLProgram: Shader Error` with the annotated source -- absence
+of that is meaningful evidence the shader compiled). A pre-existing
+`WebGL: INVALID_OPERATION: drawArrays` warning appears on every page
+load, including before any country is ever selected, so it predates
+this change and isn't a new regression. The actual ripple/refraction/
+specular visual quality still needs the user's own eyes -- this
+sandbox's WebGL rendering can't be screenshotted meaningfully.
+
+Status: done. Committed with the standing backdated timestamp.

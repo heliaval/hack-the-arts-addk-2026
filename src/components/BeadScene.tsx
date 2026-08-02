@@ -4,6 +4,7 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { Environment, Lightformer } from '@react-three/drei'
 import { BallCollider, CuboidCollider, Physics, RigidBody } from '@react-three/rapier'
 import { GLOBE_SURFACE_RADIUS_FRACTION, type GlobeCircle } from '@/components/ui/cobe-globe'
+import { WaterSurface } from '@/components/WaterSurface'
 
 // With <Canvas orthographic> and no manual frustum override, react-three-
 // fiber sizes the camera frustum to the canvas's CSS pixel dimensions on
@@ -747,10 +748,29 @@ const Backdrop = memo(function Backdrop({
   const backdropTextureImage = useBackdropTextureImage()
   const base = useBackdropBase(theme, width, height, backdropTextureImage, circle)
 
+  // NoColorSpace, not SRGBColorSpace -- load-bearing, and NOT a stylistic
+  // change. Three uploads an SRGBColorSpace texture with the SRGB8_ALPHA8
+  // internal format on WebGL2, so the GPU hardware-decodes it to linear on
+  // sample. With the old meshBasicMaterial that was invisible: three's own
+  // fragment shader ends with <colorspace_fragment>, which re-encodes to
+  // sRGB on output, and the pair cancel to an identity. A custom
+  // ShaderMaterial (WaterSurface, below) gets no such re-encode unless it
+  // asks for one, so an SRGB texture would come back linear and be written
+  // out raw -- a visibly darker, washed-out backdrop. NoColorSpace disables
+  // the hardware decode, making the water shader a true pass-through: raw
+  // sRGB bytes in, same bytes out, byte-identical to today whenever the
+  // surface is flat. It also means the shader's own arithmetic (the
+  // shading and specular terms) happens in sRGB space, which is
+  // deliberate -- those constants are tuned against sRGB values, and it
+  // matches the Canvas 2D world this backdrop is authored in.
+  //
+  // The globe composite plane's own texture below is UNTOUCHED and stays
+  // SRGBColorSpace: it still uses meshBasicMaterial, so it still needs the
+  // decode/encode pair.
   const gradientTexture = useMemo(() => {
     if (!base) return null
     const texture = new THREE.CanvasTexture(base)
-    texture.colorSpace = THREE.SRGBColorSpace
+    texture.colorSpace = THREE.NoColorSpace
     return texture
   }, [base])
   useEffect(() => () => gradientTexture?.dispose(), [gradientTexture])
@@ -813,10 +833,14 @@ const Backdrop = memo(function Backdrop({
   if (!gradientTexture) return null
   return (
     <>
-      <mesh position={[0, 0, -420]}>
-        <planeGeometry args={[width, height]} />
-        <meshBasicMaterial map={gradientTexture} toneMapped={false} />
-      </mesh>
+      {/* The backdrop base plane IS the water surface -- see
+          WaterSurface.tsx's header for why this is the same mesh rather
+          than a new layer. It renders the identical texture at the
+          identical z, and is a pixel-exact pass-through whenever no ripple
+          is live, so a still scene looks exactly as it did before. The
+          globe composite plane below still sits in FRONT of it at z=-419,
+          so the globe is never rippled or refracted. */}
+      <WaterSurface texture={gradientTexture} width={width} height={height} theme={theme} circle={circle} />
       {texture && circle && (
         <mesh position={[circle.centerX - width / 2, height / 2 - circle.centerY, -419]}>
           <planeGeometry args={[boxSize, boxSize]} />
