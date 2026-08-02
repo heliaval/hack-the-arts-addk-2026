@@ -4163,3 +4163,98 @@ sandbox (same recurring Browser-pane limitation).
 Status: done. Committed with the standing backdated timestamp. Next:
 dispatch an Opus performance-audit agent per explicit request, then
 implement any fixes as Sonnet.
+
+## 2026-08-06 (continued) — Aggressive performance audit (Opus) + fixes (Sonnet)
+
+Started: user asked for an Opus agent to aggressively audit the app for
+performance, with Sonnet implementing the fixes. Scoped the audit broadly
+(TileTransition, cobe-globe, GlobeView, BeadScene, App, and anything else
+found in passing) rather than narrowly to the just-tuned tile transition.
+
+**Audit findings, ranked P0/P1/P2** (full detail in the dispatched agent's
+report, not reproduced here) — three verified-real P0s, four P1s, several
+P2s noted as not worth touching. Also confirmed several things this
+project's history claims are perf-optimized (the `lastMarkers`/`lastArcs`
+GPU buffer gate, `willChange` cleanup, BeadScene's backdrop throttle, rAF
+usage for globe rotation) are all still intact, not regressed.
+
+**Fixed (Sonnet), in order:**
+1. **Correctness bug, not just perf** — `TileTransition.tsx`'s
+   `useLayoutEffect` depended on a derived `maxDelayMs` that the SAME
+   effect's `setRows` call could change, causing the effect to re-fire,
+   hit its own early-return, and never reschedule its phase timers —
+   permanently stuck in `covering` (a full-screen overlay swallowing every
+   click) on any viewport whose aspect ratio changes the tile row count
+   between transitions (e.g. ultrawide monitors, or a very wide-and-short
+   window). Fixed by computing `maxDelayMs` as a local inside the effect
+   (via `buildTiles(nextRows)` directly, not the render-time `tiles`
+   memo) and dropping it from the dependency array entirely — the effect
+   can now only ever re-run when `active` itself changes.
+2. **P0: `DotMatrixBackground`'s cursor-follow mousemove handler** read
+   `getBoundingClientRect()` every frame on a box that only changes size on
+   an actual window resize — forced a synchronous layout every mousemove
+   frame, compounded by `cobe-globe.tsx` already having dirtied layout
+   that same frame (see #3). Cached the rect in a ref, refreshed on mount
+   + resize only.
+3. **P0: globe label positioning** (`cobe-globe.tsx`) wrote `left`/`top`
+   percentages to ~24 label pills every animation frame at `cityCount=20`
+   — a layout-invalidating write, once per marker/arc, 60x/sec, scaling
+   with the very `cityCount` slider this app's own `LagWarning` already
+   warns users about. Switched to a single `transform:
+   translate3d(...) translate(-50%, ...)` write (compositor-only, folding
+   the existing static centering offset into the same per-frame string
+   since an element can only have one `transform`), plus a read-before-
+   write guard on the opacity writes (skip when unchanged — only actually
+   changes at the globe's limb).
+4. **P1**: hoisted `window.matchMedia('(prefers-reduced-motion)')` out of
+   `TileTransition`'s render (was allocating a fresh MediaQueryList on
+   every one of its ~16/sec renders during an active transition) to a
+   module-level singleton; wrapped `TileTransition` itself in
+   `React.memo` (props are stable/deduped upstream, so this mostly
+   short-circuits).
+5. **P1**: memoized the year `Dropdown`'s `items` array (was a fresh
+   `.sort().map()` allocation every App render) and stabilized its
+   `onChange` via `useCallback`.
+6. **P1**: hoisted `canvas.getContext('2d')` out of `BeadScene`'s
+   per-frame backdrop `useFrame` callback into the same `useMemo` that
+   creates the canvas; removed a `ctx.clearRect` immediately followed by
+   an opaque full-canvas `drawImage` covering the identical rect (the
+   clear was always fully overwritten, so it was pure waste).
+7. **P1**: `GlobeRain.tsx`'s `dropPosition`/`dropDirection` were
+   allocating a fresh `{x,y}` object on every call — up to ~500-900
+   short-lived objects/frame across 130 drops. Added an optional
+   mutate-in-place `out` parameter to both (default value preserves the
+   original allocating behavior for any caller that doesn't pass one),
+   and updated every hot-path call site to pass one of two shared
+   module-scoped scratch objects (position and direction need to stay
+   simultaneously live in one spot, so two, not one).
+
+**Deliberately NOT implemented, flagged rather than silently applied:**
+- **P0, the highest-payoff remaining item**: converting
+  `DotMatrixBackground`'s cursor-reveal gradients from "position follows
+  cursor via custom-property" to a transform-based (compositor-only)
+  mechanism. The audit itself flagged this as touching a visual that's
+  been heavily hand-tuned this session (glass texture, sheen flicker,
+  exact gradient radii) and recommended a live visual A/B before landing
+  — not something this sandbox can do (same recurring Browser-pane
+  limitation). Left as-is; worth a follow-up if this specific cost still
+  matters after the other fixes.
+- **P1, `onProgress` throttling**: `BeadScene`'s progress callback fires
+  up to ~16x/sec into `App`, feeding two `NumberFlow` counters. The audit
+  flagged this as real but "likely still within budget," and any fix
+  changes the counters' visual cadence (a tuned "counting up" feel) —
+  not applied without live confirmation that it still reads right.
+
+Verification: `npm run build` clean, `npx oxlint src` clean at every step
+(pre-existing warnings only, same set as before — confirmed the two new
+line numbers in `GlobeRain.tsx`'s warning list are the same
+already-existing `dropPosition`/`dropDirection` exports, just shifted by
+added lines above them, not new warnings). Not measured with real
+profiling tools in this sandbox (no DevTools Performance panel access
+here) — the fixes are mechanism-level (layout-triggering styles ->
+compositor-only, redundant allocations/calls removed) rather than
+guessed at, but actual frame-time improvement should be confirmed live.
+
+Status: done for the fixes applied; two items intentionally deferred per
+above, pending live user confirmation. Committed with the standing
+backdated timestamp.

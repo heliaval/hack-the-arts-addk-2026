@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import NumberFlow from '@number-flow/react'
 import { Globe as GlobeIcon, Moon, Sun } from 'lucide-react'
 import { GlobeView } from '@/components/GlobeView'
@@ -539,6 +539,22 @@ function App() {
   // React commit and there's never a frame where only one of them exists.
   const beadSceneVisible = !!(selected && yearTotals)
 
+  // Memoized/stabilized (found in a 2026-08-06 performance audit): App
+  // re-renders up to ~16x/sec while BeadScene's onProgress callback is
+  // firing (see handleProgress above), and without these, this inline
+  // `.sort().map()` allocated a fresh 23-element array of fresh objects,
+  // and the inline `onChange` arrow was a fresh reference, on every one
+  // of those renders -- Dropdown isn't memoized, so it fully re-rendered
+  // each time regardless of whether the actual year list changed.
+  const yearDropdownItems = useMemo(
+    () =>
+      historical.status === 'ready'
+        ? [...historical.years.keys()].sort((a, b) => b - a).map((year) => ({ value: String(year), label: String(year) }))
+        : [],
+    [historical],
+  )
+  const handleYearChange = useCallback((v: string) => setSelectedYear(Number(v)), [])
+
   return (
     <div className="relative h-full w-full">
       <DotMatrixBackground />
@@ -610,11 +626,9 @@ function App() {
                 <span className="text-[0.65rem] uppercase tracking-widest text-muted-foreground">year</span>
                 <Dropdown
                   label="year"
-                  items={[...historical.years.keys()]
-                    .sort((a, b) => b - a)
-                    .map((year) => ({ value: String(year), label: String(year) }))}
+                  items={yearDropdownItems}
                   value={String(selectedYear)}
-                  onChange={(v) => setSelectedYear(Number(v))}
+                  onChange={handleYearChange}
                 />
               </div>
             )}

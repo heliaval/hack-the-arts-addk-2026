@@ -255,19 +255,35 @@ export function updateDrop(
 }
 
 /** Current on-screen position of a drop, deriving it from wrapAngle while
- * phase === 'wrap' rather than trusting stale x/y fields. */
-export function dropPosition(drop: Drop, globe: GlobeCircleLike | null): { x: number; y: number } {
+ * phase === 'wrap' rather than trusting stale x/y fields. `out`, if
+ * given, is mutated and returned instead of allocating a fresh object --
+ * the render loop below passes a shared scratch object, since this was
+ * previously allocating up to several hundred short-lived {x,y} objects
+ * per frame across ~130 drops (found in a 2026-08-06 performance audit;
+ * same pattern as BeadScene.tsx's `_departureScratch`). Omitting `out`
+ * keeps the original allocating behavior for any other caller. */
+export function dropPosition(
+  drop: Drop,
+  globe: GlobeCircleLike | null,
+  out: { x: number; y: number } = { x: 0, y: 0 },
+): { x: number; y: number } {
   if (drop.phase === 'wrap' && globe) {
-    return {
-      x: globe.centerX + globe.radius * Math.sin(drop.wrapAngle) * drop.wrapSide,
-      y: globe.centerY - globe.radius * Math.cos(drop.wrapAngle),
-    }
+    out.x = globe.centerX + globe.radius * Math.sin(drop.wrapAngle) * drop.wrapSide
+    out.y = globe.centerY - globe.radius * Math.cos(drop.wrapAngle)
+    return out
   }
-  return { x: drop.x, y: drop.y }
+  out.x = drop.x
+  out.y = drop.y
+  return out
 }
 
-/** Current unit direction of travel, used to orient the drawn streak. */
-export function dropDirection(drop: Drop, globe: GlobeCircleLike | null): { x: number; y: number } {
+/** Current unit direction of travel, used to orient the drawn streak. Same
+ * optional-`out` scratch pattern as dropPosition above. */
+export function dropDirection(
+  drop: Drop,
+  globe: GlobeCircleLike | null,
+  out: { x: number; y: number } = { x: 0, y: 0 },
+): { x: number; y: number } {
   if (drop.phase === 'wrap' && globe) {
     // d/dangle of (centerX + r*sin(a)*side, centerY - r*cos(a)) is
     // (r*cos(a)*side, r*sin(a)) — the radius factor cancels out on
@@ -275,9 +291,13 @@ export function dropDirection(drop: Drop, globe: GlobeCircleLike | null): { x: n
     const dx = Math.cos(drop.wrapAngle) * drop.wrapSide
     const dy = Math.sin(drop.wrapAngle)
     const len = Math.hypot(dx, dy) || 1
-    return { x: dx / len, y: dy / len }
+    out.x = dx / len
+    out.y = dy / len
+    return out
   }
-  return { x: 0, y: 1 }
+  out.x = 0
+  out.y = 1
+  return out
 }
 
 function hexToRgb(hex: string): [number, number, number] {
@@ -644,6 +664,18 @@ export function GlobeRain({ globeCircle, theme }: GlobeRainProps) {
     // Preallocated once, reused every frame (length reset to 0 rather than
     // reallocated) — binning 130 drops per frame must not allocate.
     const buckets: Drop[][] = Array.from({ length: BUCKET_COUNT }, () => [])
+    // Same reasoning, for dropPosition/dropDirection's optional `out`
+    // param (see their definitions above) — up to 5 calls per drop per
+    // frame across 130 drops previously each allocated a fresh {x,y}.
+    // Two distinct scratch objects (not one shared) because line ~700
+    // below needs a position AND a direction simultaneously live; a
+    // single shared scratch would corrupt the position while computing
+    // direction. Safe to reuse across sequential unrelated call sites
+    // otherwise, since every read here extracts x/y (or hands the object
+    // straight to a synchronous ctx.moveTo/lineTo call) immediately, never
+    // holding a reference across iterations.
+    const posScratch = { x: 0, y: 0 }
+    const dirScratch = { x: 0, y: 0 }
 
     let rafId: number
     let lastTime = performance.now()
@@ -665,10 +697,10 @@ export function GlobeRain({ globeCircle, theme }: GlobeRainProps) {
         const drops = dropsRef.current
         for (const drop of drops) {
           const wasFalling = drop.phase === 'fall'
-          const wasAboveBottom = dropPosition(drop, globe).y < viewportHeight
+          const wasAboveBottom = dropPosition(drop, globe, posScratch).y < viewportHeight
           updateDrop(drop, dt, globe, viewportWidth, viewportHeight)
           if (wasFalling && drop.phase === 'wrap' && globe) {
-            const entryPoint = dropPosition(drop, globe)
+            const entryPoint = dropPosition(drop, globe, posScratch)
             spawnRipple(ripplesRef.current, entryPoint.x, entryPoint.y, now)
           }
           // The same collision cue as a globe entry, now also at the
@@ -676,7 +708,7 @@ export function GlobeRain({ globeCircle, theme }: GlobeRainProps) {
           // instant a drop's head first reaches the visible bottom edge.
           // No fade means nothing else marks that moment, so this is the
           // only visual cue a drop is about to be recycled.
-          const afterPosition = dropPosition(drop, globe)
+          const afterPosition = dropPosition(drop, globe, posScratch)
           if (wasAboveBottom && afterPosition.y >= viewportHeight) {
             spawnRipple(ripplesRef.current, afterPosition.x, viewportHeight, now)
           }
@@ -694,8 +726,8 @@ export function GlobeRain({ globeCircle, theme }: GlobeRainProps) {
         const cursor = cursorRef.current
         for (const bucket of buckets) bucket.length = 0
         for (const drop of drops) {
-          const pos = dropPosition(drop, globe)
-          const dir = dropDirection(drop, globe)
+          const pos = dropPosition(drop, globe, posScratch)
+          const dir = dropDirection(drop, globe, dirScratch)
           const level = Math.round(dropAlpha(drop, pos, dir, cursor) * ALPHA_LEVELS)
           if (level <= 0) continue
           buckets[bucketIndex(drop.depth, level)].push(drop)
@@ -718,8 +750,8 @@ export function GlobeRain({ globeCircle, theme }: GlobeRainProps) {
                 if (drop.phase === 'wrap' && globe) {
                   appendWrapStreak(ctx, drop, globe, pass.endInset)
                 } else {
-                  const head = dropPosition(drop, globe)
-                  appendStreak(ctx, head, dropDirection(drop, globe), drop.length, pass.endInset)
+                  const head = dropPosition(drop, globe, posScratch)
+                  appendStreak(ctx, head, dropDirection(drop, globe, dirScratch), drop.length, pass.endInset)
                 }
               }
               ctx.stroke()

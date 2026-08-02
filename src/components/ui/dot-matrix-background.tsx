@@ -21,6 +21,28 @@ export function DotMatrixBackground() {
   const sheenRef = useRef<HTMLDivElement>(null)
   const latestRef = useRef({ x: -9999, y: -9999 })
   const rafPendingRef = useRef(false)
+  // Cached instead of read fresh every mousemove frame (found in a
+  // 2026-08-06 performance audit): this layer is `absolute inset-0` on a
+  // container that only ever changes size on an actual viewport resize,
+  // so re-measuring it 60x/sec while the cursor moves bought nothing but
+  // a forced synchronous layout on every one of those frames -- and since
+  // the rAF callback below runs before the browser's style/layout step,
+  // that reflow also had to first flush whatever cobe-globe's own rAF
+  // (see cobe-globe.tsx) had already written to the label pills' styles
+  // that same frame. Refreshed on mount and on resize only.
+  const rectRef = useRef({ left: 0, top: 0 })
+
+  useEffect(() => {
+    function refreshRect() {
+      const node = layerRef.current
+      if (!node) return
+      const rect = node.getBoundingClientRect()
+      rectRef.current = { left: rect.left, top: rect.top }
+    }
+    refreshRect()
+    window.addEventListener('resize', refreshRect)
+    return () => window.removeEventListener('resize', refreshRect)
+  }, [])
 
   useEffect(() => {
     function handleMouseMove(event: MouseEvent) {
@@ -34,10 +56,11 @@ export function DotMatrixBackground() {
         // Gradient `at X Y` is relative to this element's own box, not the
         // viewport — clientX/clientY are viewport-relative, so they only
         // lined up by coincidence when the layer's box sat exactly at
-        // (0, 0). Subtract the layer's own on-screen position to convert.
-        const rect = node.getBoundingClientRect()
-        node.style.setProperty('--mx', `${latestRef.current.x - rect.left}px`)
-        node.style.setProperty('--my', `${latestRef.current.y - rect.top}px`)
+        // (0, 0). Subtract the layer's own on-screen position (cached, see
+        // rectRef above) to convert.
+        const { left, top } = rectRef.current
+        node.style.setProperty('--mx', `${latestRef.current.x - left}px`)
+        node.style.setProperty('--my', `${latestRef.current.y - top}px`)
       })
     }
 

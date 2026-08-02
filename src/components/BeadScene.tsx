@@ -554,25 +554,29 @@ const Backdrop = memo(function Backdrop({
   // Recreated only when the base (theme/size) or the globe's on-screen
   // size changes — globeElement is read fresh every frame in useFrame
   // instead of triggering a recreate, since the globe rotates continuously.
-  const { canvas, texture } = useMemo(() => {
-    if (!base || boxSize <= 0) return { canvas: null, texture: null }
+  // ctx hoisted alongside the canvas it belongs to (found in a 2026-08-06
+  // performance audit) -- was previously re-fetched via canvas.getContext
+  // inside useFrame every BACKDROP_UPDATE_EVERY_N_FRAMES-th frame; cheap
+  // per-call (browsers cache the context object) but pointless work in a
+  // hot path when it can just be captured once here instead.
+  const { canvas, ctx, texture } = useMemo(() => {
+    if (!base || boxSize <= 0) return { canvas: null, ctx: null, texture: null }
     const canvas = document.createElement('canvas')
     canvas.width = boxSize
     canvas.height = boxSize
+    const ctx = canvas.getContext('2d')
     const texture = new THREE.CanvasTexture(canvas)
     texture.colorSpace = THREE.SRGBColorSpace
-    return { canvas, texture }
+    return { canvas, ctx, texture }
   }, [base, boxSize])
   useEffect(() => () => texture?.dispose(), [texture])
 
   const frameCountRef = useRef(0)
 
   useFrame(() => {
-    if (!canvas || !base || !texture || !circle) return
+    if (!canvas || !ctx || !base || !texture || !circle) return
     frameCountRef.current++
     if (frameCountRef.current % BACKDROP_UPDATE_EVERY_N_FRAMES !== 0) return
-    const ctx = canvas.getContext('2d')
-    if (!ctx) return
     // Coordinates are DOM/CSS pixels with a top-left origin, matching this
     // canvas's own 2D coordinate system directly (unlike GlobeCollider,
     // which has to flip into world-space for Rapier). Crop `base` at the
@@ -582,7 +586,10 @@ const Backdrop = memo(function Backdrop({
     const cy = circle.centerY * BACKDROP_SCALE
     const sx = cx - boxSize / 2
     const sy = cy - boxSize / 2
-    ctx.clearRect(0, 0, boxSize, boxSize)
+    // No clearRect: the drawImage immediately below is opaque and covers
+    // this exact same (0, 0, boxSize, boxSize) target rect every time, so
+    // the clear was always immediately overwritten in full (found in the
+    // same audit).
     ctx.drawImage(base, sx, sy, boxSize, boxSize, 0, 0, boxSize, boxSize)
     if (globeElement) ctx.drawImage(globeElement, 0, 0, boxSize, boxSize)
     texture.needsUpdate = true

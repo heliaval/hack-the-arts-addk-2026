@@ -467,26 +467,44 @@ export const Globe = forwardRef<GlobeRef, GlobeProps>(function Globe({
         opacity: 0.7,
       })
 
+      // Positions labels via `transform: translate3d(...)` instead of
+      // `left`/`top` percentages, and skips redundant opacity writes --
+      // found in a 2026-08-06 performance audit. `left`/`top` are layout
+      // properties: writing them invalidates layout for the label's
+      // subtree (each pill is a TextRotate instance, ~8-13 child spans),
+      // and at cityCount=20 this ran for ~24 markers/arcs every animation
+      // frame (60x/sec) -- exactly the "20 cities" cost this file's own
+      // LagWarning already warns users about. `transform` is
+      // compositor-only, so the same positioning work no longer touches
+      // layout at all. `width` is the canvas's own on-screen size
+      // (captured once at init, canvas is always square) -- multiplying
+      // the 0-1 fraction from projectMarker/projectArcMidpoint by it
+      // converts to the same px space the label's container box uses,
+      // since the label pills are siblings of the canvas inside the same
+      // aspect-square container. The `-50%, calc(-100% - 10px)` offset
+      // (pill anchored above-and-centered on its point) has to be folded
+      // into this same transform string rather than left as a separate
+      // static one, since an element can only have one `transform`.
       function updateLabels(currentPhi: number, currentTheta: number, markerElevation: number, arcHeight: number) {
         for (const m of liveProps.current.markers) {
           const el = labelRefs.current.get(m.id)
           if (!el) continue
           const { x, y, visible } = projectMarker(m.location, currentPhi, currentTheta, markerElevation)
-          el.style.left = `${x * 100}%`
-          el.style.top = `${y * 100}%`
-          el.style.opacity = visible ? "1" : "0"
+          el.style.transform = `translate3d(${x * width}px, ${y * width}px, 0) translate(-50%, calc(-100% - 10px))`
+          const opacity = visible ? "1" : "0"
+          if (el.style.opacity !== opacity) el.style.opacity = opacity
         }
         for (const a of liveProps.current.arcs) {
           const el = arcLabelRefs.current.get(a.id)
           if (!el) continue
           const projected = projectArcMidpoint(a.from, a.to, currentPhi, currentTheta, markerElevation, arcHeight)
           if (!projected) {
-            el.style.opacity = "0"
+            if (el.style.opacity !== "0") el.style.opacity = "0"
             continue
           }
-          el.style.left = `${projected.x * 100}%`
-          el.style.top = `${projected.y * 100}%`
-          el.style.opacity = projected.visible ? "1" : "0"
+          el.style.transform = `translate3d(${projected.x * width}px, ${projected.y * width}px, 0) translate(-50%, calc(-100% - 10px))`
+          const opacity = projected.visible ? "1" : "0"
+          if (el.style.opacity !== opacity) el.style.opacity = opacity
         }
       }
 
@@ -792,7 +810,13 @@ const LabelPill = memo(function LabelPill({
       ref={setRef}
       style={{
         position: "absolute",
-        transform: "translate(-50%, calc(-100% - 10px))",
+        // No static transform here -- the per-frame animation loop
+        // (updateLabels in Globe, above) now writes the full
+        // translate3d(...) translate(-50%, calc(-100% - 10px)) transform
+        // itself every frame, since an element can only have one
+        // `transform` and the position component has to live in the same
+        // string. Fine to start with none: opacity is 0 until the first
+        // real frame positions this correctly.
         pointerEvents: "none",
         opacity: 0,
         transition: "opacity 1.4s ease",

@@ -1,6 +1,15 @@
-import { useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { memo, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { computeSweepDelays } from '@/lib/sweep'
 import type { GlobeCircle } from '@/components/ui/cobe-globe'
+
+// Module-level, not called inside render: `matchMedia` allocates a fresh
+// MediaQueryList and re-evaluates the query every call. This component
+// re-renders ~16x/sec while BeadScene's onProgress callback is firing
+// during an active transition (see App.tsx's handleProgress), so calling
+// this per-render was doing real repeated work for a value that -- for
+// this component's ~1s lifetime -- never actually changes.
+const reducedMotionQuery =
+  typeof window !== 'undefined' ? window.matchMedia('(prefers-reduced-motion: reduce)') : null
 
 // See docs/superpowers/specs/2026-08-05-tile-flip-transition-design.md.
 //
@@ -120,14 +129,21 @@ interface TileTransitionProps {
 
 type Phase = 'idle' | 'covering' | 'revealing' | 'fadingOut'
 
-export function TileTransition({ active, circle }: TileTransitionProps) {
+// memo: App re-renders ~16x/sec while BeadScene's onProgress callback is
+// firing mid-transition (see App.tsx), and this component's own props
+// (`active`, `circle`) don't change nearly that often -- without memo,
+// every one of those renders re-allocates and diffs this file's full
+// tile tree (up to ~30 tiles x 5 faces x several inline style props each)
+// for no output change. `circle` is already deduped upstream in
+// GlobeView (stable reference unless the globe's on-screen box actually
+// moves), so this comparison is cheap and almost always short-circuits.
+export const TileTransition = memo(function TileTransition({ active, circle }: TileTransitionProps) {
   // Row count is derived from the viewport, not fixed -- see the layout
   // effect below, which sets this alongside halfWidthPx so both stay in
   // sync (rows changing without a matching halfWidthPx update, or vice
   // versa, would make cells non-square).
   const [rows, setRows] = useState(FALLBACK_ROWS)
   const tiles = useMemo(() => buildTiles(rows), [rows])
-  const maxDelayMs = useMemo(() => Math.max(...tiles.map((t) => t.delayMs)), [tiles])
 
   const [phase, setPhase] = useState<Phase>('idle')
   const [retriggered, setRetriggered] = useState(false)
@@ -162,9 +178,32 @@ export function TileTransition({ active, circle }: TileTransitionProps) {
     prevActiveRef.current = active
     setRetriggered(wasMidFlight)
     const cellPx = window.innerWidth / COLUMNS
+    const nextRows = Math.max(1, Math.ceil(window.innerHeight / cellPx))
     setHalfWidthPx(cellPx / 2)
-    setRows(Math.max(1, Math.ceil(window.innerHeight / cellPx)))
+    setRows(nextRows)
     setPhase('covering')
+    // maxDelayMs computed as a LOCAL here (via buildTiles(nextRows), not
+    // read from the `tiles`/state derived elsewhere) and deliberately kept
+    // OUT of this effect's dependency array. Two reasons, found together
+    // during a 2026-08-06 performance audit:
+    // 1. `rows` (and therefore `tiles`/maxDelayMs) is state set by THIS
+    //    effect a few lines up -- reading a memoized `tiles` value derived
+    //    from it would only reflect the PREVIOUS cycle's row count until
+    //    next render, one cycle stale.
+    // 2. Depending on that derived value at all was an infinite-loop bug
+    //    on wide/short viewports: setRows above triggers a re-render with
+    //    a new `tiles`/maxDelayMs, which if listed as a dependency
+    //    re-fires this whole effect -- whose body then hits the
+    //    `prevActiveRef.current === active` early return and never
+    //    reschedules t1/t2/t3, permanently stuck in `covering` (a
+    //    full-screen overlay swallowing every pointer event). Any
+    //    viewport/window shape that changes `rows` between the previous
+    //    and current transition triggers it -- e.g. an ultrawide monitor,
+    //    or a window resized short-and-wide. Computing it locally and
+    //    depending on nothing but `active` makes this structurally
+    //    impossible: the effect can only ever re-run when `active` itself
+    //    changes.
+    const maxDelayMs = Math.max(...buildTiles(nextRows).map((t) => t.delayMs))
     const leadIn = wasMidFlight ? RETRIGGER_COVER_MS : forward ? LEAD_IN_FORWARD_MS : LEAD_IN_REVERSE_MS
     const t1 = window.setTimeout(() => setPhase('revealing'), leadIn)
     const t2 = window.setTimeout(
@@ -180,12 +219,11 @@ export function TileTransition({ active, circle }: TileTransitionProps) {
       window.clearTimeout(t2)
       window.clearTimeout(t3)
     }
-  }, [active, maxDelayMs])
+  }, [active])
 
   if (phase === 'idle') return null
 
-  const reduced =
-    typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  const reduced = reducedMotionQuery?.matches ?? false
 
   // Punches a transparent hole in the grid exactly where the globe's sphere
   // renders, so the grid can stay the TOPMOST layer (z-40, covering both
@@ -394,4 +432,4 @@ export function TileTransition({ active, circle }: TileTransitionProps) {
       })}
     </div>
   )
-}
+})
