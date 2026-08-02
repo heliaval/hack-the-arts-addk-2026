@@ -2231,3 +2231,54 @@ repeatedly blocked FPS measurement across every phase — see the marbles
 phase-3 entry above) than a code-level regression from parallel work.
 
 Status: done (audit only, no code or dependency changes).
+
+---
+
+2026-08-01 19:59 — Started: hide backdrop glow, fix blurry globe, simplify
+country badge, then fast-fill bead burst feature (spec/plan/subagent-driven
+implementation) with follow-on lag debugging, all in src/components/
+BeadScene.tsx and src/App.tsx.
+
+- Moved the backdrop's bokeh spots into the invisible Lightformer rig
+  (BeadEnvironment) so they still light the beads without being directly
+  visible in the backdrop plane. Spec:
+  docs/superpowers/specs/2026-08-01-hidden-backdrop-glow-design.md.
+- Fixed blurry globe: BACKDROP_SCALE 0.35 -> 1 (was downsampling the globe
+  canvas then upscaling it via the backdrop plane).
+- Simplified the selected-country badge from a bordered card to a dot +
+  name, matching the control panel's label style.
+- Fast-fill bead burst (spec + plan under docs/superpowers/{specs,plans}/
+  2026-08-01-fast-fill-bead-burst*): replaced the fixed MAX_BEADS=70 with
+  a viewport-area-computed capacity, and added a burst-spawn phase that
+  fills the screen fast on mount/country-switch instead of trickling in.
+  Implemented via subagent-driven-development (Tasks 1-2 reviewed clean by
+  subagents); Task 3 (live FPS verification) couldn't complete in-sandbox
+  — World Bank API fetch was unreliable in this browser tool for both the
+  controller and a dispatched subagent independently — so verification
+  moved to the user testing locally.
+- User-reported-bug iterations (each addressed via systematic-debugging,
+  one change at a time, confirmed/redirected by user after each):
+  1. Burst paced by wall-clock setInterval could outrun actual achievable
+     frame rate, evicting beads before they'd ever rendered ("disappears
+     too soon" / "never fills"). Fixed: burst now paced by
+     requestAnimationFrame, self-throttling to real frame delivery.
+  2. Still laggy + user wanted no disappearing at all: removed the
+     eviction/fade-out mechanism entirely (spawning just stops at
+     capacity), lowered MAX_CAPACITY 110 -> 70.
+  3. Still laggy specifically when moving the mouse: found MeshPhysicalMaterial
+     .dispersion was nonzero (2.5), which compiles three's 3x-sample
+     transmission code path regardless of magnitude — set to 0. Dropped
+     Canvas dpr cap 1.5 -> 1 (flat).
+  4. User asked to reintroduce disappearing, faster, running forever
+     (not just during the initial fill): restored the evict-oldest +
+     BeadFadeOut mechanism, with BEAD_EXIT_MS shortened 420ms -> 180ms so
+     exits keep pace with eviction happening on every spawn once at
+     capacity (not just occasional demographic-rate evictions like
+     before). MAX_CAPACITY also dropped 70 -> 55 pending further
+     real-hardware testing.
+
+Status: partial — code changes committed and type-checked each round, but
+no live FPS number was ever obtained (sandbox network/browser limitations
+throughout). Current state (BEAD_EXIT_MS=180, MAX_CAPACITY=55, dispersion=0,
+dpr=1, rAF-paced burst, permanent eviction) is unverified pending the
+user's next local test.
