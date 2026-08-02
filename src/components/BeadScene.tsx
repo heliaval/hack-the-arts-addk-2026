@@ -68,6 +68,15 @@ export function computeBeadCapacity(width: number, height: number): number {
 // streams, so at most ~7 beads are mid-exit at any moment.
 const BEAD_EXIT_MS = 420
 
+// Burst-phase spawn interval: fast enough to visibly fill the screen in a
+// few seconds even at MAX_CAPACITY (110 beads * 40ms = 4.4s worst case),
+// comparable to the fastest single-stream demographic rate this scene
+// already exercises today (FASTEST_SPAWN_INTERVAL_MS = 120ms in
+// src/lib/beadSpawnRate.ts) rather than an order of magnitude faster —
+// kept conservative here specifically because new-body-creation rate is
+// itself a performance variable (see Task 3).
+const BURST_SPAWN_INTERVAL_MS = 40
+
 // No marble texture (see the removed painting pipeline further down this
 // file). MARBLE_VARIANTS survives purely so Bead.variant keeps the same
 // range and the material-array indexing in useBeadMaterials/BeadBody stays
@@ -871,6 +880,12 @@ export function BeadScene({ demographics, theme, globeCircle, globeElement }: Be
   )
 
   const [beads, setBeads] = useState<Bead[]>([])
+  // Read inside the burst-spawn effect below to seed its live-count estimate
+  // without a stale closure — mirrors the same "ref updated every render"
+  // pattern cobe-globe.tsx uses for liveProps (see its comment at that ref's
+  // declaration).
+  const beadsRef = useRef<Bead[]>(beads)
+  beadsRef.current = beads
   // Monotonic counter, not Math.random(): React keys must be stable and
   // never collide, or Rapier bodies get torn down and recreated mid-fall.
   const nextIdRef = useRef(0)
@@ -892,6 +907,10 @@ export function BeadScene({ demographics, theme, globeCircle, globeElement }: Be
   }, [])
 
   useEffect(() => {
+    function countLive(list: Bead[]): number {
+      return list.reduce((count, bead) => (bead.dying ? count : count + 1), 0)
+    }
+
     function spawn(kind: 'birth' | 'death') {
       setBeads((prev) => {
         // Evicting the oldest bead is what keeps the scene bounded, but
@@ -906,7 +925,7 @@ export function BeadScene({ demographics, theme, globeCircle, globeElement }: Be
         // The computed capacity therefore caps live beads, not array length — a handful
         // of dying beads ride along for under half a second each (see the
         // bound in BEAD_EXIT_MS's comment).
-        const live = prev.reduce((count, bead) => (bead.dying ? count : count + 1), 0)
+        const live = countLive(prev)
         let next = prev
         if (live >= capacity) {
           // find() returns the first non-dying entry, i.e. the oldest one,
@@ -926,11 +945,45 @@ export function BeadScene({ demographics, theme, globeCircle, globeElement }: Be
         ]
       })
     }
-    const birthTimer = window.setInterval(() => spawn('birth'), birthIntervalMs)
-    const deathTimer = window.setInterval(() => spawn('death'), deathIntervalMs)
+
+    let burstTimer: number | null = null
+    let birthTimer: number | null = null
+    let deathTimer: number | null = null
+
+    function startNormalTimers() {
+      birthTimer = window.setInterval(() => spawn('birth'), birthIntervalMs)
+      deathTimer = window.setInterval(() => spawn('death'), deathIntervalMs)
+    }
+
+    // Burst phase: fill up to `capacity` fast, alternating kind, before
+    // falling back to the normal demographic-paced timers. liveEstimate is a
+    // local counter, not a re-read of React state — setBeads is async, so
+    // beadsRef.current would still show the pre-spawn count on the very next
+    // tick. Safe to count this way because eviction only happens once
+    // `live >= capacity`, which by construction can't happen while
+    // liveEstimate is still below capacity — so no bead this loop spawns can
+    // trigger an eviction.
+    let liveEstimate = countLive(beadsRef.current)
+    let burstKind: 'birth' | 'death' = 'birth'
+    if (liveEstimate < capacity) {
+      burstTimer = window.setInterval(() => {
+        spawn(burstKind)
+        burstKind = burstKind === 'birth' ? 'death' : 'birth'
+        liveEstimate += 1
+        if (liveEstimate >= capacity && burstTimer !== null) {
+          window.clearInterval(burstTimer)
+          burstTimer = null
+          startNormalTimers()
+        }
+      }, BURST_SPAWN_INTERVAL_MS)
+    } else {
+      startNormalTimers()
+    }
+
     return () => {
-      window.clearInterval(birthTimer)
-      window.clearInterval(deathTimer)
+      if (burstTimer) window.clearInterval(burstTimer)
+      if (birthTimer) window.clearInterval(birthTimer)
+      if (deathTimer) window.clearInterval(deathTimer)
     }
   }, [birthIntervalMs, deathIntervalMs, capacity])
 
