@@ -11,11 +11,31 @@
          Matches src/index.css's light/dark --background values directly
          rather than guessing -- no JS needed since prefers-color-scheme is
          available at parse time, same signal useTheme.ts falls back to
-         when there's no localStorage choice yet. -->
+         when there's no localStorage choice yet.
+
+         MUST be `@layer base`, not a bare/unlayered rule -- found live: an
+         earlier unlayered version of this permanently overrode the app's
+         real theme background whenever the OS preferred dark, regardless
+         of the in-app light/dark toggle, not just during the brief
+         pre-mount flash this comment describes. Root cause is CSS
+         cascade layers, not source order: Tailwind v4 wraps its own
+         `body { background-color: var(--background) }` (see
+         src/index.css) inside `@layer base`, and per spec, ANY unlayered
+         style always wins over ANY layered style regardless of
+         specificity or where either rule sits in the document -- so a
+         bare `html, body { background }` here would beat the real,
+         theme-toggle-driven background forever, not just transiently.
+         Declaring this same rule inside `@layer base` puts it in that
+         same bucket instead, where ordinary last-one-wins cascade rules
+         apply -- and since index.css's compiled base layer is attached
+         after this static HTML parses, the real token wins once it's
+         ready, exactly as intended. -->
     <style>
-      html, body { background: #fffffa; }
-      @media (prefers-color-scheme: dark) {
-        html, body { background: #0d0d0d; }
+      @layer base {
+        html, body { background: #fffffa; }
+        @media (prefers-color-scheme: dark) {
+          html, body { background: #0d0d0d; }
+        }
       }
     </style>
   </head>

@@ -4401,3 +4401,31 @@ reliably trigger via synthetic canvas clicks (documented limitation,
 unchanged) -- user should confirm live.
 
 Status: done. Committed with the standing backdated timestamp.
+
+## 2026-08-06 (continued) — Fix: startup-background fix was permanently overriding light mode
+
+User screenshot showed the app fully dark (background black) while the
+theme toggle indicated light mode was active. Root cause: the earlier
+`index.html` startup-flash fix (a bare, unlayered `<style>` block setting
+`html, body { background }`) was itself the bug -- not just active during
+the brief pre-mount flash it was meant to cover. Tailwind v4 wraps its own
+`body { background-color: var(--background) }` (src/index.css) inside
+`@layer base`, and per the CSS Cascade Layers spec, ANY unlayered style
+always wins over ANY layered style regardless of specificity or source
+order. My unlayered fallback rule was therefore permanently beating the
+real, theme-toggle-driven background whenever the OS preferred dark,
+independent of the in-app light/dark toggle state entirely.
+
+Fixed by wrapping the same rule in `@layer base` (`index.html`), the same
+layer name Tailwind's real background rule uses -- puts both in the same
+cascade bucket, where ordinary last-one-wins order applies, and the real
+compiled stylesheet (attached after this static HTML parses) wins once
+it's ready, exactly as originally intended.
+
+Verification: `npm run build` and `npx oxlint src` clean. Confirmed live
+this time (not just build/lint) -- toggled the in-app theme button from
+dark to light and checked `getComputedStyle(document.body).backgroundColor`
+before/after: now correctly resolves to `rgb(255, 255, 250)` (the light
+token) instead of staying pinned to black.
+
+Status: done. Committed with the standing backdated timestamp.
