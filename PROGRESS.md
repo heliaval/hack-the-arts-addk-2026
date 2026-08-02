@@ -3872,3 +3872,104 @@ timestamp (2026-08-01 19:10:00 -0700) used throughout this session.
 
 Status: done, pending user confirmation on the live animation feel and
 the A→B switch edge case.
+
+## 2026-08-06 — Revised TileTransition to a real two-face cube, then Opus-reviewed and fixed 6 real defects
+
+Started: user said the tile transition "works but it's not what I had in
+mind" — the single-face door-hinge version read as an object leaning open
+into nothing, not a solid cube turning. Clarified via questions: they
+wanted `CubeFlipToggle`'s actual two-face construction (translateZ,
+`backfaceVisibility`, a real second surface glimpsed mid-rotation), just
+on `rotateY` instead of `rotateX`, sweeping right-to-left. Rebuilt the
+per-tile mechanic around that (front face + back face, both plain tinted
+surfaces, no different content on the back — the scene reveal still
+happens when the whole grid unmounts at the end, not from face
+transparency).
+
+**Then asked for an Opus review of the result for deformities.** Real
+findings, all fixed:
+
+1. **Transparent-hole flash on both directions (high)**: the effect
+   driving the overlay was a plain `useEffect`, which runs *after* the
+   browser paints the commit where `BeadScene` mounts/unmounts — meaning
+   there was always at least one painted frame of the raw, uncovered cut
+   before the overlay ever appeared, defeating the entire point of the
+   lead-in. Fixed by switching to `useLayoutEffect` (flushes synchronously
+   before paint).
+2. **Every tile overflowed into its neighbors at rest (high)**: with
+   `translateZ(90px)` on both faces and `perspective: 900px`, the resting
+   front face rendered ~11% larger than its cell (perspective scaling
+   `p/(p-z)`), overlapping adjacent tiles by double-digit pixels and
+   doubling up the border grid-lines into a visible lattice — before any
+   animation even started. Root cause: nothing recentred the cube on the
+   cell after pushing both faces out along Z. Fixed by adding a
+   `translateZ(-halfWidthPx)` baseline on the rotating wrapper itself, so
+   both faces' *resting* positions land exactly flush (z=0) — verified
+   algebraically, not just asserted.
+3. **`TILE_HALF_WIDTH_PX` was a fixed guess, not real tile geometry
+   (medium)**: a two-face cube's translateZ must equal half the actual
+   rotation-axis dimension or the faces don't meet at a shared edge — my
+   own code comment claimed this constant "only affects how pronounced the
+   bulge reads, not correctness," which was wrong (mirrors the exact
+   invariant `cube-flip-toggle.tsx`'s own doc comment states for its
+   fixed-size button, which doesn't apply to a responsive CSS-grid tile).
+   Fixed: measure `window.innerWidth / COLUMNS / 2` fresh at the start of
+   each transition cycle (not via a persistent ResizeObserver, since the
+   overlay only lives ~1.1s) instead of a constant.
+4. **`motion-reduce:transition-none` was dead code (medium, a11y)**: the
+   Tailwind class was overridden by a same-property inline style
+   (`transitionProperty` in the `style` object always wins the cascade),
+   so `prefers-reduced-motion: reduce` users got the full animated flip
+   anyway. Fixed with a JS `matchMedia` check instead of relying on a CSS
+   class to beat an inline style.
+5. **Hard pop at the very end (medium, flagged as a design risk more than
+   a bug)**: every tile's back face is just as covering as the front, so
+   the sequence ended in an instant full-grid removal rather than an
+   "opening" — mild today with translucent placeholder tints, would become
+   a real hard cut once opaque texture art replaces them later. Added a
+   `fadingOut` phase: a 150ms opacity fade on the whole grid before
+   unmount.
+6. **Mid-flight retrigger snapped tiles back to flat with no
+   transition (low)**: if `active` flips again before a cycle finishes
+   (e.g. the historical-data refetch briefly clearing `yearTotals` on a
+   country switch), the tiles jumped instantly back to `rotateY(0deg)`
+   instead of animating. Added a distinct quicker/non-staggered
+   `RETRIGGER_COVER_MS` transition for exactly this case, detected via a
+   `phaseRef` read inside the layout effect (not a `phase` dependency,
+   which would have made the effect rerun on every phase change it itself
+   causes).
+   Also applied Opus's minor findings: a `TRAILING_SLACK_MS` buffer so the
+   fade-out doesn't start before the slowest (highest-delay) tile's own
+   CSS transition has actually finished, and switched each face's border
+   from all-four-sides to `border-r border-b` only (plus a matching
+   `border-l border-t` on the grid container) so adjacent tiles' borders
+   don't double up into 2px seams once finding 2's fix makes them sit
+   truly flush.
+   Opus confirmed clean (no changes needed): the core rotation math/sign
+   conventions (re-derived algebraically, not trusted from comments), the
+   existing timeout-clearing/re-entrancy logic in the state machine, and
+   the CSS Grid gap/sizing itself.
+
+Also hit oxlint using a different disable-comment syntax than expected: a
+first attempt at silencing the `phase`-as-dependency warning used
+`// eslint-disable-next-line` (this project uses oxlint, not eslint --
+confirmed the correct directive is `oxlint-disable-next-line`, though
+even that would have been the wrong fix here). Used the honest fix instead
+(a `phaseRef` synced each render, read without being a dependency) rather
+than suppressing a legitimate warning either way.
+
+Verification: `npm run build` and `npx oxlint src` clean (same
+pre-existing warning classes only, the `phase` dependency warning
+resolved for real). Live-checked no console errors from the component
+itself (only an unrelated, pre-existing World Bank CORS block from this
+sandbox's current network condition -- confirmed the app still renders
+fully via the resilience work from earlier this session, not a regression
+here). **Still could not visually verify the actual cube motion, the
+recentered resting scale, the fade-out, or the retrigger case** -- same
+screenshot/compositing limitation as this whole project's history.
+**User should confirm live**: the tiles now sit flush at rest (no visible
+overlap lattice before anything animates), the flip reads as a solid cube
+turn rather than a flat door, and the sequence ends with a brief fade
+rather than an instant pop.
+
+Status: done, pending user confirmation on the live motion.
