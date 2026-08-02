@@ -1392,6 +1392,15 @@ const Boundaries = memo(function Boundaries() {
   const halfW = width / 2
   const halfH = height / 2
   const half = WALL_THICKNESS / 2
+  // Same "Rapier reads position and collider args once, at creation" issue
+  // documented on GlobeCollider below, and the same fix: without a key tied
+  // to the viewport size, shrinking the window re-renders these RigidBodies
+  // with new position/args props that Rapier silently ignores post-creation,
+  // leaving the actual physics walls stuck at the old (larger) size and
+  // position -- beads pile up against an invisible wall that no longer lines
+  // up with the visible edge. Keying on the rounded size forces a clean
+  // unmount/remount on every resize instead.
+  const sizeKey = `${Math.round(width)}:${Math.round(height)}`
   // CuboidCollider args are HALF-extents.
   // Side walls use halfH * 2 (i.e. extend to 2x the viewport height, not
   // just to its edges): beads spawn ABOVE the visible viewport (see
@@ -1400,19 +1409,19 @@ const Boundaries = memo(function Boundaries() {
   // wall's top edge before ever entering the visible region.
   return (
     <>
-      <RigidBody type="fixed" colliders={false} position={[0, -halfH - half, 0]}>
+      <RigidBody key={`${sizeKey}:floor`} type="fixed" colliders={false} position={[0, -halfH - half, 0]}>
         <CuboidCollider args={[halfW + WALL_THICKNESS, half, WALL_THICKNESS]} />
       </RigidBody>
-      <RigidBody type="fixed" colliders={false} position={[-halfW - half, 0, 0]}>
+      <RigidBody key={`${sizeKey}:left`} type="fixed" colliders={false} position={[-halfW - half, 0, 0]}>
         <CuboidCollider args={[half, halfH * 2, WALL_THICKNESS]} />
       </RigidBody>
-      <RigidBody type="fixed" colliders={false} position={[halfW + half, 0, 0]}>
+      <RigidBody key={`${sizeKey}:right`} type="fixed" colliders={false} position={[halfW + half, 0, 0]}>
         <CuboidCollider args={[half, halfH * 2, WALL_THICKNESS]} />
       </RigidBody>
-      <RigidBody type="fixed" colliders={false} position={[0, 0, BEAD_RADIUS + half]}>
+      <RigidBody key={`${sizeKey}:front`} type="fixed" colliders={false} position={[0, 0, BEAD_RADIUS + half]}>
         <CuboidCollider args={[halfW + WALL_THICKNESS, halfH * 2, half]} />
       </RigidBody>
-      <RigidBody type="fixed" colliders={false} position={[0, 0, -BEAD_RADIUS - half]}>
+      <RigidBody key={`${sizeKey}:back`} type="fixed" colliders={false} position={[0, 0, -BEAD_RADIUS - half]}>
         <CuboidCollider args={[halfW + WALL_THICKNESS, halfH * 2, half]} />
       </RigidBody>
     </>
