@@ -920,9 +920,19 @@ export function BeadScene({ demographics, theme, globeCircle, globeElement }: Be
         // The glass shader and three's transmission pass both scale with
         // pixel count, and react-three-fiber otherwise renders at the full
         // device pixel ratio — 2 or 3 on the kind of laptop a demo gets
-        // recorded on, i.e. 4-9x the fragments. Capping at 1.5 keeps bead
-        // silhouettes smooth while bounding the worst case.
-        dpr={[1, 1.5]}
+        // recorded on, i.e. 4-9x the fragments. Was capped at 1.5, still
+        // 2.25x native fragment count on a 2x-DPR display — every one of
+        // those fragments re-evaluates BOTH real-time lights (the static
+        // directionalLight and MouseLight's moving pointLight; the
+        // Lightformer rig is baked once and doesn't cost this) against the
+        // full transmission+clearcoat+dispersion glass shader, every frame.
+        // MouseLight moving is what makes that cost visible frame-to-frame
+        // (the directional light's contribution is just as expensive but
+        // doesn't visibly change, so a slow frame reads as "the cursor
+        // effect is laggy" rather than "everything is slow"). Flat 1
+        // removes the DPR multiplier entirely — the highest-leverage
+        // remaining cut without touching the lighting itself.
+        dpr={1}
         style={{ pointerEvents: 'none' }}
         onCreated={({ gl }) => {
           // three sizes its transmission render target to viewport *
