@@ -7,12 +7,26 @@ import { resolveAccentColor } from '@/lib/resolveAccentColor'
 // edge of the screen — it's already off-screen when it (re)starts falling.
 const RESPAWN_MARGIN_PX = 60
 
-const MIN_SPEED_PX_S = 220
-const MAX_SPEED_PX_S = 420
-const MIN_WIDTH_PX = 1.5
-const MAX_WIDTH_PX = 3
-const MIN_LENGTH_PX = 18
-const MAX_LENGTH_PX = 34
+// Three depth tiers instead of independently randomized speed/width/length
+// per drop: correlating them (near = faster/wider/longer/more opaque) is
+// what actually reads as depth/parallax rather than a flat wall of
+// identical lines, and fixing width/length PER TIER (not randomized within
+// it) is what makes the batched-by-tier rendering in GlobeRain's tick()
+// possible — one canvas path per tier per style, instead of one
+// beginPath/stroke pair per drop (260 -> 6 draw calls at DROP_COUNT=130).
+interface DepthTier {
+  speedRangePxS: [number, number]
+  widthPx: number
+  lengthPx: number
+  bodyAlpha: number
+  highlightAlpha: number
+}
+
+const DEPTH_TIERS: readonly DepthTier[] = [
+  { speedRangePxS: [340, 420], widthPx: 3, lengthPx: 34, bodyAlpha: 0.42, highlightAlpha: 0.85 },
+  { speedRangePxS: [280, 350], widthPx: 2.2, lengthPx: 26, bodyAlpha: 0.3, highlightAlpha: 0.7 },
+  { speedRangePxS: [220, 280], widthPx: 1.5, lengthPx: 18, bodyAlpha: 0.2, highlightAlpha: 0.55 },
+]
 
 // Fraction of spawns pulled toward the globe's own horizontal band rather
 // than scattered uniformly across the full viewport width — otherwise, on a
@@ -52,6 +66,9 @@ export interface Drop {
   speed: number
   width: number
   length: number
+  /** Index into DEPTH_TIERS — fixes this drop's width/length/color for its
+   * whole lifetime (a respawn via spawnDropAbove picks a fresh one). */
+  depth: number
   phase: 'fall' | 'wrap' | 'release'
   /** Angle in [0, π] around the globe's center, 0 = top (north pole of the
    * visible silhouette), π = bottom. Only meaningful while phase === 'wrap'. */
@@ -68,12 +85,15 @@ export interface Drop {
 }
 
 function randomDrop(x: number, y: number): Drop {
+  const depth = Math.floor(Math.random() * DEPTH_TIERS.length)
+  const tier = DEPTH_TIERS[depth]
   return {
     x,
     y,
-    speed: randomBetween(MIN_SPEED_PX_S, MAX_SPEED_PX_S),
-    width: randomBetween(MIN_WIDTH_PX, MAX_WIDTH_PX),
-    length: randomBetween(MIN_LENGTH_PX, MAX_LENGTH_PX),
+    speed: randomBetween(tier.speedRangePxS[0], tier.speedRangePxS[1]),
+    width: tier.widthPx,
+    length: tier.lengthPx,
+    depth,
     phase: 'fall',
     wrapAngle: 0,
     wrapExitAngle: Math.PI,
@@ -247,7 +267,7 @@ function hexToRgba(hex: string, alpha: number): string {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`
 }
 
-interface RainColors {
+interface TierColors {
   /** Translucent body/tail color, drawn as a wider, lower-alpha stroke. */
   body: string
   /** Brighter core along the streak's leading edge, standing in for a
@@ -256,11 +276,24 @@ interface RainColors {
   highlight: string
 }
 
+interface RainColors {
+  /** Index-aligned with DEPTH_TIERS. */
+  tiers: TierColors[]
+  /** Base color for the entry-ripple rings (see Ripple, below) — full
+   * alpha here, ripple fade is applied separately via ctx.globalAlpha so
+   * one color resolve covers every ripple regardless of its age. */
+  ripple: string
+}
+
 function resolveRainColors(): RainColors {
   const accent = resolveAccentColor()
+  const highlightHex = mixHex(accent, '#ffffff', 0.65)
   return {
-    body: hexToRgba(accent, 0.32),
-    highlight: hexToRgba(mixHex(accent, '#ffffff', 0.65), 0.75),
+    tiers: DEPTH_TIERS.map((tier) => ({
+      body: hexToRgba(accent, tier.bodyAlpha),
+      highlight: hexToRgba(highlightHex, tier.highlightAlpha),
+    })),
+    ripple: hexToRgba(highlightHex, 0.6),
   }
 }
 
@@ -285,27 +318,95 @@ function resizeCanvasToViewport(canvas: HTMLCanvasElement): void {
   ctx?.setTransform(dpr, 0, 0, dpr, 0, 0)
 }
 
-function drawDrop(ctx: CanvasRenderingContext2D, drop: Drop, globe: GlobeCircleLike | null, colors: RainColors): void {
+// A drop mid-wrap is moving along the globe's circular silhouette, but the
+// original drawDrop always drew a straight tangent segment behind it — so
+// the trail visibly stuck off the sphere instead of hugging the curve it's
+// supposedly gliding along, the one moment the enterWrap/dropPosition curve
+// math exists to sell. Sampling several points along the actual arc (via
+// the same sin/cos parametrization dropPosition already uses for wrap
+// phase) and connecting them with short line segments fixes this without
+// needing canvas arc()'s angle-direction bookkeeping: since wrapAngle only
+// ever increases going forward, "behind in time" is always simply "a
+// smaller wrapAngle," for either wrapSide.
+const WRAP_TRAIL_SEGMENTS = 5
+
+function wrapPointAt(globe: GlobeCircleLike, angle: number, side: -1 | 1): { x: number; y: number } {
+  return {
+    x: globe.centerX + globe.radius * Math.sin(angle) * side,
+    y: globe.centerY - globe.radius * Math.cos(angle),
+  }
+}
+
+// Appends one subpath (moveTo + lineTo...) to the currently-open path
+// without stroking it — callers batch many drops into one path per
+// (depth tier, body|highlight) combination and issue a single stroke() for
+// all of them at once, instead of one beginPath/stroke pair per drop.
+function appendDropSegment(
+  ctx: CanvasRenderingContext2D,
+  drop: Drop,
+  globe: GlobeCircleLike | null,
+  spanFraction: number,
+): void {
+  if (drop.phase === 'wrap' && globe) {
+    const fullSpan = drop.length / globe.radius
+    const span = fullSpan * spanFraction
+    const headAngle = drop.wrapAngle
+    const tailAngle = Math.max(0, headAngle - span)
+    for (let i = 0; i <= WRAP_TRAIL_SEGMENTS; i++) {
+      const a = tailAngle + (headAngle - tailAngle) * (i / WRAP_TRAIL_SEGMENTS)
+      const p = wrapPointAt(globe, a, drop.wrapSide)
+      if (i === 0) ctx.moveTo(p.x, p.y)
+      else ctx.lineTo(p.x, p.y)
+    }
+    return
+  }
   const head = dropPosition(drop, globe)
   const dir = dropDirection(drop, globe)
-  const tail = { x: head.x - dir.x * drop.length, y: head.y - dir.y * drop.length }
-
-  ctx.lineCap = 'round'
-  ctx.strokeStyle = colors.body
-  ctx.lineWidth = drop.width
-  ctx.beginPath()
-  ctx.moveTo(tail.x, tail.y)
+  const tailStart = { x: head.x - dir.x * drop.length * spanFraction, y: head.y - dir.y * drop.length * spanFraction }
+  ctx.moveTo(tailStart.x, tailStart.y)
   ctx.lineTo(head.x, head.y)
-  ctx.stroke()
+}
 
-  // Highlight core: the leading third of the streak, thinner and brighter.
-  const coreStart = { x: head.x - dir.x * drop.length * 0.3, y: head.y - dir.y * drop.length * 0.3 }
-  ctx.strokeStyle = colors.highlight
-  ctx.lineWidth = Math.max(1, drop.width * 0.5)
-  ctx.beginPath()
-  ctx.moveTo(coreStart.x, coreStart.y)
-  ctx.lineTo(head.x, head.y)
-  ctx.stroke()
+// A drop's on-screen entry point into the globe's silhouette, marked by a
+// small expanding ring that fades out — a hairline, water-instrument-style
+// punctuation for the one moment in a drop's life that previously happened
+// silently (see enterWrap). Fixed-cap pool, oldest evicted on overflow —
+// no unbounded growth, no per-frame allocation beyond the occasional push.
+export interface Ripple {
+  x: number
+  y: number
+  startMs: number
+}
+
+const RIPPLE_MAX_COUNT = 24
+const RIPPLE_DURATION_MS = 350
+const RIPPLE_MAX_RADIUS_PX = 14
+
+function spawnRipple(pool: Ripple[], x: number, y: number, nowMs: number): void {
+  if (pool.length >= RIPPLE_MAX_COUNT) pool.shift()
+  pool.push({ x, y, startMs: nowMs })
+}
+
+// Iterates backward so expired ripples can be spliced out mid-loop without
+// skipping the element that shifts into the current index.
+function drawRipples(ctx: CanvasRenderingContext2D, pool: Ripple[], nowMs: number, color: string): void {
+  if (pool.length === 0) return
+  ctx.lineWidth = 1
+  ctx.strokeStyle = color
+  for (let i = pool.length - 1; i >= 0; i--) {
+    const ripple = pool[i]
+    const elapsed = nowMs - ripple.startMs
+    if (elapsed >= RIPPLE_DURATION_MS) {
+      pool.splice(i, 1)
+      continue
+    }
+    const t = elapsed / RIPPLE_DURATION_MS
+    ctx.globalAlpha = 1 - t
+    ctx.beginPath()
+    ctx.arc(ripple.x, ripple.y, RIPPLE_MAX_RADIUS_PX * t, 0, Math.PI * 2)
+    ctx.stroke()
+  }
+  ctx.globalAlpha = 1
 }
 
 export interface GlobeRainProps {
@@ -322,6 +423,7 @@ export interface GlobeRainProps {
 export function GlobeRain({ globeCircle, theme }: GlobeRainProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const dropsRef = useRef<Drop[]>([])
+  const ripplesRef = useRef<Ripple[]>([])
   const globeRef = useRef<GlobeCircleLike | null>(globeCircle)
   globeRef.current = globeCircle
 
@@ -342,8 +444,10 @@ export function GlobeRain({ globeCircle, theme }: GlobeRainProps) {
     const canvas = canvasRef.current
     if (!canvas) return
     resizeCanvasToViewport(canvas)
+    const initialViewportWidth = window.innerWidth
+    const initialViewportHeight = window.innerHeight
     dropsRef.current = Array.from({ length: DROP_COUNT }, () =>
-      seedDrop(window.innerWidth, window.innerHeight, globeRef.current),
+      seedDrop(initialViewportWidth, initialViewportHeight, globeRef.current),
     )
 
     function handleResize() {
@@ -360,10 +464,56 @@ export function GlobeRain({ globeCircle, theme }: GlobeRainProps) {
       if (ctx && canvas) {
         ctx.clearRect(0, 0, canvas.width, canvas.height)
         const globe = globeRef.current
-        for (const drop of dropsRef.current) {
-          updateDrop(drop, dt, globe, window.innerWidth, window.innerHeight)
-          drawDrop(ctx, drop, globe, colorsRef.current)
+        // Hoisted out of the per-drop loop below — window.innerWidth/
+        // innerHeight are layout reads, and reading them once per DROP
+        // (previously 130x/frame) rather than once per FRAME was pure
+        // waste, not a correctness requirement (the viewport doesn't
+        // change mid-frame).
+        const viewportWidth = window.innerWidth
+        const viewportHeight = window.innerHeight
+
+        const drops = dropsRef.current
+        for (const drop of drops) {
+          const wasFalling = drop.phase === 'fall'
+          updateDrop(drop, dt, globe, viewportWidth, viewportHeight)
+          if (wasFalling && drop.phase === 'wrap' && globe) {
+            const entryPoint = dropPosition(drop, globe)
+            spawnRipple(ripplesRef.current, entryPoint.x, entryPoint.y, now)
+          }
         }
+
+        // Batched by depth tier: one path (and one stroke()) per tier per
+        // style, instead of one beginPath/stroke pair per drop — see
+        // DEPTH_TIERS' own comment for why width/length are fixed per tier
+        // rather than randomized, which is what makes this possible.
+        ctx.lineCap = 'round'
+        const colors = colorsRef.current
+        for (let tier = 0; tier < DEPTH_TIERS.length; tier++) {
+          const tierColors = colors.tiers[tier]
+          const tierSpec = DEPTH_TIERS[tier]
+
+          ctx.strokeStyle = tierColors.body
+          ctx.lineWidth = tierSpec.widthPx
+          ctx.beginPath()
+          for (const drop of drops) {
+            if (drop.depth !== tier) continue
+            appendDropSegment(ctx, drop, globe, 1)
+          }
+          ctx.stroke()
+
+          // Highlight core: the leading third of each streak, thinner and
+          // brighter.
+          ctx.strokeStyle = tierColors.highlight
+          ctx.lineWidth = Math.max(1, tierSpec.widthPx * 0.5)
+          ctx.beginPath()
+          for (const drop of drops) {
+            if (drop.depth !== tier) continue
+            appendDropSegment(ctx, drop, globe, 0.3)
+          }
+          ctx.stroke()
+        }
+
+        drawRipples(ctx, ripplesRef.current, now, colors.ripple)
       }
       rafId = requestAnimationFrame(tick)
     }

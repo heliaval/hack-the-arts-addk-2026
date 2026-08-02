@@ -2925,3 +2925,64 @@ worth revisiting later.
 Build/`oxlint` clean.
 
 Status: done. Commit backdated to 2026-07-31T19:00:00 per standing instruction.
+
+## 2026-08-04 (continued) — GlobeRain: Opus-evaluated richness pass [agent: opus + inline]
+
+User said the reverted GlobeRain "is not bad, but it looks extremely basic" and
+asked for an Opus evaluation of what would make it better, then to implement
+all of it (Sonnet). Opus diagnosed the basic-ness as NOT a rendering-technique
+problem (line strokes are fine) but a variety/event-lessness problem: all 130
+drops were visually identical, and state transitions (globe entry, bottom
+recycle) were silent teleports.
+
+Implemented all 5 ranked recommendations in `src/components/GlobeRain.tsx`:
+
+1. **Fixed wrap-phase rendering — it was geometrically wrong.** While a drop
+   hugs the globe's silhouette, `drawDrop` still drew its trail as a straight
+   tangent segment, so it visibly stuck off the sphere instead of following
+   the curve. New `appendDropSegment` samples several points along the actual
+   arc (`wrapPointAt`, same sin/cos parametrization `dropPosition` already
+   used) and connects them — verified via a standalone Node script that every
+   sampled point lands exactly on the circle (deviation ~1e-14) for both entry
+   sides.
+2. **Entry ripples.** A fixed-cap (24) pool of small expanding rings fired at
+   the exact moment a drop transitions fall -> wrap (observed in the
+   component's tick loop by comparing phase before/after `updateDrop`, not by
+   modifying `updateDrop` itself) — the tide-gauge-appropriate punctuation for
+   a moment that previously happened silently.
+3. **Three depth tiers.** New `DEPTH_TIERS` (near/mid/far), each with
+   correlated speed/width/length/alpha — replaces fully independent
+   randomBetween ranges per drop. Near drops are faster, wider, longer, more
+   opaque; far drops the opposite. Reads as parallax/depth for free.
+4. **Batched rendering by tier.** Width/length are now FIXED per tier (not
+   randomized within it) specifically so all drops in a tier can share one
+   canvas path — draw calls drop from 260 (one beginPath/stroke pair per drop)
+   to 6 (one per tier per body/highlight style), plus ripples.
+5. **Free perf fix.** `window.innerWidth`/`innerHeight` were read inside the
+   130-drop update loop every frame (260 layout reads/frame) — hoisted above
+   the loop (and the equivalent one-time initial-seed loop).
+
+Explicitly did NOT do (per Opus's own rejected-and-why list, preserved here so
+it isn't re-derived later): any WebGL/shader path (the GlassRain precedent —
+just reverted), ambient glow/mist (violates the anti-slop mandate and
+duplicates `DotMatrixBackground`'s job), per-drop hue tinting (breaks the
+one-accent-color rule for a difference invisible at 1.5-3px), fake motion blur
+via a translucent fill (would smear the live globe underneath), bottom-of-
+viewport splashes (collides with `ControlPanel`), and raising `DROP_COUNT`
+(density wasn't the deficit).
+
+Verification: `npm run build`/`oxlint` clean (same 5 pre-existing
+only-export-components warnings as before, no new ones). Live-checked in a
+fresh tab (an existing tab again had stale-HMR errors from an earlier,
+already-fixed GlassRain edit — confirmed stale via a new tab with zero
+console errors, same recurring precedent this session). **Could not visually
+confirm actual rendering**: this sandbox's tab reports `document.hidden ===
+true`, and browsers throttle/pause `requestAnimationFrame` in hidden tabs, so
+the draw loop never advances here regardless of which rain component is
+mounted — confirmed the canvas exists at the correct real viewport size
+(1280x720) but stays blank (0 non-zero-alpha pixels) for that reason, not a
+code bug. Verified the highest-risk new geometry (the wrap-arc fix) directly
+via math instead, as described above.
+
+Status: done, pending live visual confirmation. Commit backdated to
+2026-07-31T19:00:00 per standing instruction.
