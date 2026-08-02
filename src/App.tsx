@@ -5,6 +5,7 @@ import { GlobeView } from '@/components/GlobeView'
 import { BeadScene } from '@/components/BeadScene'
 import { GlobeRain } from '@/components/GlobeRain'
 import { LeafOverlay, type Leaf } from '@/components/LeafOverlay'
+import { TileTransition } from '@/components/TileTransition'
 import { DotMatrixBackground } from '@/components/ui/dot-matrix-background'
 import type { GlobeCircle } from '@/components/ui/cobe-globe'
 import { useDemographics } from '@/lib/useDemographics'
@@ -532,6 +533,12 @@ function App() {
   const birthMarbleCount = yearTotals ? marbleCountFor(yearTotals.births) : 0
   const deathMarbleCount = yearTotals ? marbleCountFor(yearTotals.deaths) : 0
 
+  // Single source of truth for "the bead scene is the thing on screen" —
+  // TileTransition's trigger MUST be the exact same expression that gates
+  // BeadScene's mount, so the overlay and the new scene land in the same
+  // React commit and there's never a frame where only one of them exists.
+  const beadSceneVisible = !!(selected && yearTotals)
+
   return (
     <div className="relative h-full w-full">
       <DotMatrixBackground />
@@ -548,10 +555,10 @@ function App() {
           onElementChange={setGlobeElement}
           cityCount={cityCount}
           rotationSpeedKmS={rotationSpeedKmS}
-          obscured={!!(selected && yearTotals)}
+          obscured={beadSceneVisible}
         />
       </div>
-      {selected && yearTotals && (
+      {beadSceneVisible && (
         <BeadScene
           key={`${selectedIso3}-${selectedYear}`}
           birthMarbleCount={birthMarbleCount}
@@ -567,7 +574,7 @@ function App() {
       )}
       <LeafOverlay leaves={leaves} onLeafDone={handleLeafDone} />
       {!selected && <GlobeRain globeCircle={globeCircle} theme={theme} />}
-      {selected && yearTotals && <YearCounters births={progress.births} deaths={progress.deaths} />}
+      {beadSceneVisible && <YearCounters births={progress.births} deaths={progress.deaths} />}
       <div className="absolute right-4 top-4 z-10 flex gap-2">
         <LanguageToggle lang={lang} onToggle={handleLanguageToggle} onHoverChange={setLangHintVisible} />
         <ThemeToggle theme={theme} toggleTheme={toggleTheme} onHoverChange={setThemeHintVisible} />
@@ -614,6 +621,7 @@ function App() {
           </div>
         )}
       </div>
+      <TileTransition active={beadSceneVisible} />
     </div>
   )
 }

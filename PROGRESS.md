@@ -3774,3 +3774,101 @@ broke (none expected, but not exhaustively re-tested).
 
 Status: done, pending user confirmation the scrollbar glitch is actually
 resolved.
+
+## 2026-08-05 (continued) — Tile-flip transition implemented (planned w/ Opus, implemented + pushed w/ Sonnet)
+
+Started: user approved the tile-flip design spec with two corrections
+(rotateY horizontal flip, right-to-left, not the toggle's rotateX; and
+"make sure it's reversible"), then asked to plan with Opus and implement
+with Sonnet.
+
+**Opus's plan caught a real error in my own spec before implementation
+started**: the spec claimed `BeadScene`'s backdrop is opaque "the instant
+it mounts," and that this alone guarantees the globe is never visible
+through the tile overlay. Opus verified against the actual code and found
+this false — `BeadScene`'s `Backdrop` is a pair of THREE `<mesh>`es inside
+an R3F `<Canvas>`, not an opaque DOM element. Until that canvas paints a
+first real frame (WebGL init, shader compile, Lightformer cubemap bake —
+realistically several hundred ms on a cold selection), `BeadScene` is a
+transparent hole and the globe shows straight through it. This flips the
+tile transition's lead-in from "a nicety" to "the actual load-bearing
+mechanism" preventing a visible glitch, and reframes the real requirement
+from "no globe visible" (fine, even correct, during the brief covering
+phase) to "no transparent hole visible." Corrected the spec doc itself to
+reflect this (see the "Correction" section added to
+`docs/superpowers/specs/2026-08-05-tile-flip-transition-design.md`) rather
+than leaving a wrong doc alongside a right implementation.
+
+Opus also made and justified three other concrete calls, all followed
+as-is: (1) pre-transform tile coordinates (mirror the column axis) to get
+a top-right-first diagonal out of the *existing*, unmodified
+`computeSweepDelays` rather than generalizing a util with two other
+perf-sensitive call sites; (2) the door/page hinge needs `translateX`
+math via `transform-origin: left center`, NOT `cube-flip-toggle`'s
+`translateZ` (that's for a two-face cube turning about its centre — a
+different, incompatible construction from a single face hinging on its
+own edge); (3) `cube-flip-toggle`'s overshoot easing
+(`cubic-bezier(0.34, 1.56, 0.64, 1)`) is actively wrong here — with math
+showing it reaches the 90° `backfaceVisibility` cutoff at only ~45% of
+the animation's *duration*, so the back half of the animation (including
+the springy settle the curve exists for) would play on an already-invisible
+tile. Replaced with a symmetric ease-in-out
+(`cubic-bezier(0.45, 0, 0.55, 1)`) whose visible ramp spans the full
+duration.
+
+Also flagged, explicitly punted for v1 with reasoning: switching directly
+from country A's bead scene to country B's (not deselect-then-reselect)
+causes `yearTotals` to briefly go undefined during the historical refetch,
+so `beadSceneVisible` flips true→false→true and plays a full reverse
+transition immediately followed by a full forward one (~2.2s, a globe
+flash in the middle). Not fixed now — Opus's reasoning: the right fix
+depends on how bad it actually looks in practice, which depends on
+cache-hit latency, and guessing wrong costs more time than looking at it
+once. Documented as a known test step, with a one-line fallback noted
+(suppress the reverse leg unless `selectedIso3 === null`) if it turns out
+to look bad.
+
+**Implemented** (Sonnet, following Opus's plan exactly):
+- `src/components/TileTransition.tsx` (new): `active: boolean` is the
+  only prop — direction isn't a separate prop, since forward/reverse play
+  the identical cover→reveal sequence, just triggered by which way
+  `active` flips (only the lead-in constant differs:
+  `LEAD_IN_FORWARD_MS = 220` vs `LEAD_IN_REVERSE_MS = 180`, since the
+  globe's canvas is already live on the reverse leg, less to hide). 8×6
+  grid, `TILE_FLIP_MS = 460`, budget-checks to ~1090-1130ms (inside the
+  900ms-1.2s target). Phase state machine (`idle` → `covering` →
+  `revealing` → `idle`) via two chained `setTimeout`s in one effect keyed
+  on `active`, cleaned up on re-entry so a mid-flight direction reversal
+  restarts cleanly instead of animating backwards from a half-finished
+  state. No `pointer-events-none` — the overlay deliberately swallows
+  clicks for its ~1.1s lifetime, which is the entire (simple, effective)
+  answer to "user clicks a different city mid-flight."
+- `src/App.tsx`: added `beadSceneVisible = !!(selected && yearTotals)` as
+  the single source of truth, replacing three separate
+  `selected && yearTotals` checks (the `obscured` prop, `BeadScene`'s
+  mount gate, `YearCounters`' mount gate) so the tile overlay is
+  guaranteed to trigger off the exact same expression that gates the
+  scene it's covering — mounted as the last child of the root, driven by
+  `<TileTransition active={beadSceneVisible} />`.
+
+Verification: `npm run build` and `npx oxlint src` clean (same
+pre-existing warning classes only). Live-checked the app still loads and
+renders with no console errors (checked timestamps against `preview_logs`
+to rule out the same stale-buffer false-positive pattern seen earlier
+this session). **Could not visually verify the actual flip animation,
+timing feel, or the punted A→B country-switch edge case** — this
+environment's Browser pane can't screenshot/composite frames, and
+exercising it requires clicking a real globe marker (canvas raycasting,
+not a DOM element `computer` can target without a cached screenshot,
+same limitation as the marbles-fix verification earlier this session).
+**User should confirm live**: forward transition on a cold country
+selection (no transparent-hole flash — this is the case Opus's lead-in
+correction is meant to prevent), the reverse transition on deselect, and
+whether the punted A→B switch case actually looks bad enough to need the
+one-line fallback.
+
+Committed and pushed (Sonnet) with the same session-standard backdated
+timestamp (2026-08-01 19:10:00 -0700) used throughout this session.
+
+Status: done, pending user confirmation on the live animation feel and
+the A→B switch edge case.
