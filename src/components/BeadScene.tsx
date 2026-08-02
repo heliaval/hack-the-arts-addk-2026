@@ -504,15 +504,24 @@ const BACKDROP_COLORS = {
 
 // Same treatment as the DOM atmosphere layer's texture photo
 // (AtmosphereLayers in dot-matrix-background.tsx: grayscale + contrast/
-// brightness filter, soft-light blend, 23% opacity) reproduced with
-// Canvas 2D calls, for the same reason the dot grid above is -- this
-// backdrop is a raw <canvas> feeding a THREE.CanvasTexture, no DOM
-// element to put a CSS filter/background-image on. "Behind the globe"
-// per explicit request, i.e. this backdrop specifically, not the DOM
-// overlay (DotMatrixAtmosphere) that already sits above the beads.
+// brightness filter, soft-light blend), reproduced with Canvas 2D calls,
+// for the same reason the dot grid above is -- this backdrop is a raw
+// <canvas> feeding a THREE.CanvasTexture, no DOM element to put a CSS
+// filter/background-image on. "Behind the globe" per explicit request,
+// i.e. this backdrop specifically, not the DOM overlay
+// (DotMatrixAtmosphere) that already sits above the beads.
+//
+// Contrast and opacity are LOWER here than the DOM layer's 1.5/0.23,
+// deliberately, not a copy of those values -- found live: this plane has
+// no cursor-reveal mask (unlike the DOM layer, which only ever shows a
+// localized 340px patch), so it's permanently visible across the WHOLE
+// backdrop, and the same contrast/opacity that reads as a subtle patch
+// under the cursor reads as a bold, obviously-a-photo pattern spread
+// across the entire scene. Toned down until it reads as background grain
+// again rather than a visible motif.
 const BACKDROP_TEXTURE_URL = '/textures/brick.jpg'
-const BACKDROP_TEXTURE_FILTER = 'grayscale(1) contrast(1.5) brightness(1.1)'
-const BACKDROP_TEXTURE_OPACITY = 0.23
+const BACKDROP_TEXTURE_FILTER = 'grayscale(1) contrast(1.15) brightness(1.05)'
+const BACKDROP_TEXTURE_OPACITY = 0.1
 
 // Module-level singleton, not per-component-instance: the image only
 // ever needs to be fetched/decoded once for the whole app lifetime, and

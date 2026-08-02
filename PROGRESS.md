@@ -4623,3 +4623,39 @@ in the user's own browser, same as the rest of this session's WebGL/
 canvas work.
 
 Status: done. Committed with the standing backdated timestamp.
+
+## 2026-08-07 (continued) — Tone down the backdrop texture, swap in the smaller source photo
+
+User's screenshot showed the brick texture reading as a bold, obviously-
+a-photo pattern (moorish/quatrefoil shapes) spread across the whole bead
+scene, not a subtle grain. Root cause, on reflection: BeadScene's canvas
+backdrop texture has no cursor-reveal mask (unlike the DOM atmosphere
+layer, which only ever shows a localized 340px patch), so it's
+permanently visible across the ENTIRE scene -- the same contrast(1.5)/
+23% opacity that reads as subtle under a small cursor-following mask
+reads as an obvious motif spread over a full viewport with nothing
+localizing it.
+
+- Lowered `BACKDROP_TEXTURE_FILTER`'s contrast 1.5 -> 1.15 and brightness
+  1.1 -> 1.05, and `BACKDROP_TEXTURE_OPACITY` 0.23 -> 0.1 (canvas backdrop
+  only -- the DOM atmosphere layer's own values are untouched, since its
+  cursor mask already keeps it localized/subtle).
+- Swapped `public/textures/brick.jpg` for the smaller pixel-dimension
+  version the user pasted into the project root
+  (`Texturelabs_Brick_124L.jpg`, ~2.9MB vs the previous ~9.9MB XL file) --
+  same filename, same code, no reference changes needed.
+
+Verification: `npm run build` clean, `npx oxlint src` clean (same
+pre-existing unrelated warnings). No new console errors on a fresh load.
+Visual read (whether 0.1/1.15 is subtle enough, or needs further tuning)
+is a live check in the user's own browser, same as the rest of this
+session's canvas/WebGL work.
+
+Also: a design-hook `broken-image` finding on `BeadScene.tsx` was
+reviewed and confirmed a false positive -- it matched the literal text
+`<img>` inside a code COMMENT (documenting the module-level image
+singleton), not an actual DOM `<img>` element; the file has no `<img>`
+tags, only a `new Image()` object used for canvas texture decoding, with
+its `src` set immediately to a real URL. No change made.
+
+Status: done. Committed with the standing backdated timestamp.
