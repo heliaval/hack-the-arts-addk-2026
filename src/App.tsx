@@ -5,6 +5,7 @@ import { GlobeView } from '@/components/GlobeView'
 import { BeadScene } from '@/components/BeadScene'
 import { GlobeRain } from '@/components/GlobeRain'
 import { LeafOverlay, type Leaf } from '@/components/LeafOverlay'
+import { DotMatrixBackground } from '@/components/ui/dot-matrix-background'
 import type { GlobeCircle } from '@/components/ui/cobe-globe'
 import { useDemographics } from '@/lib/useDemographics'
 import { useHistoricalDemographics } from '@/lib/historicalDemographics'
@@ -430,6 +431,7 @@ function App() {
 
   return (
     <div className="relative h-full w-full">
+      <DotMatrixBackground />
       {/* The globe stays centered and full-size while a country is selected
           — it IS the obstacle the beads fall onto (see BeadScene's
           GlobeCollider), so it must never move or shrink out from under the

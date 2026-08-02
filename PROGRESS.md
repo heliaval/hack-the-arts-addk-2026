@@ -2609,3 +2609,36 @@ this session's earlier regressions. Spec references verified against the real
 
 Status: done (spec only — implementation is a separate session). Commit backdated
 to 2026-07-31T19:00:00 per standing instruction.
+
+## 2026-08-03 (continued) — Dot-matrix cursor-reveal background: plan + implementation [inline]
+
+Started: implement the design spec above. Wrote implementation plan to
+`docs/superpowers/plans/2026-08-03-dot-matrix-background.md` (single task, small
+scope), then executed it directly in-session (no subagent needed).
+
+Implemented `src/components/ui/dot-matrix-background.tsx`: a zero-prop
+`DotMatrixBackground` component — repeating 24px dot grid (`var(--border)`,
+opacity 0.35) revealed via a two-stop additive `mask-image` radial gradient
+centered on `--mx`/`--my`, plus an offset elliptical `--foreground` glass-sheen
+highlight underneath the mask. A single `window` `mousemove` listener batches
+writes to those two custom properties through one `requestAnimationFrame` at a
+time (mirrors the existing `useRafThrottled` pattern in `App.tsx`), writing
+straight to the DOM via a ref — no React state, no per-move re-render. Mounted as
+the first child of `App.tsx`'s root container so it paints behind the globe
+wrapper (both unpositioned/`z-0`, DOM order decides).
+
+Verification: `npm run build` (`tsc -b && vite build`) clean, `oxlint` clean on
+both changed files. A bare `npx tsc --noEmit` throws an unrelated pre-existing
+`baseUrl` deprecation error (TS5101) that doesn't reproduce under the project's
+actual `tsc -b` build command — not a regression from this change. Checked the
+live dev server via direct DOM/computed-style inspection: the layer resolves
+correctly in dark mode (`--border`/`--foreground` oklch values flow through to
+both gradients as expected), `--mx`/`--my` correctly default to `-9999px` (no
+flash on load), `pointer-events: none` confirmed via computed style. Could not
+exercise the live mousemove→rAF→custom-property path itself or take a screenshot
+— this sandbox's Browser pane doesn't composite frames while hidden (recurring,
+previously-documented limitation), so `requestAnimationFrame` never fires there.
+Logic mirrors the already-proven `useRafThrottled` pattern elsewhere in this
+file; user should confirm the live glow/sheen effect visually.
+
+Status: done. Commit backdated to 2026-07-31T19:00:00 per standing instruction.
