@@ -2176,3 +2176,182 @@ Status: done for this round, pending final user confirmation on the
 mouse-light + restored-rig combination (screenshot-based, same sandbox
 compositing limitation as every prior phase). Deadline is 2026-08-01
 8:45pm PDT — same day as this entry.
+
+## 2026-08-01 — Perf audit: no duplicate-instance lag found, one minor per-frame allocation flagged
+
+Started: user (aware other instances/sessions may be touching this
+codebase in parallel) asked to identify any unnecessary code causing lag
+and log findings here. Read-only audit, no code changes.
+
+**Checked for the specific thing asked about — duplicate/redundant
+per-object instances (geometries, materials, globe instances, physics
+worlds, effect subscriptions) — and found none live in the current tree:**
+- `src/components/BeadScene.tsx`: one `THREE.SphereGeometry` at module
+  scope (`BEAD_GEOMETRY`) shared by every bead; a small fixed set of 8
+  materials (`useBeadMaterials`, one per marble variant × birth/death,
+  never one-per-bead); `BeadEnvironment` is `memo()`'d so the environment
+  cube map bakes once (`frames={1}`) instead of re-baking on every ~8/sec
+  bead-spawn re-render; `Boundaries` is `memo()`'d with no props so its 5
+  static colliders aren't reconciled on spawn re-renders either. All of
+  this matches the file's own extensive design comments — confirmed by
+  reading, not just trusting the comments.
+- `src/components/ui/cobe-globe.tsx`: the `createGlobe()` mount effect's
+  dependency array is deliberately trimmed to `[theta, diffuse,
+  mapSamples]` (none of which this app ever changes at runtime), so there
+  is exactly one globe instance and one `requestAnimationFrame` loop for
+  the lifetime of the component — confirmed no second `init()`/`animate()`
+  path exists and the effect cleanup (`cancelAnimationFrame` +
+  `globe.destroy()`) is the only teardown path.
+- `src/App.tsx` / `src/lib/useTheme.ts`: the two-disconnected-`useTheme()`-
+  instances bug (globe colors stuck on stale theme) that a previous
+  session found and fixed is still fixed — `theme` is lifted to `App` and
+  passed down as a prop; no component below it calls `useTheme()` a second
+  time.
+
+**One real, minor finding, not fixed (out of scope for a read-only
+audit):** `cobe-globe.tsx`'s `updateRipples` (inside the `animate()`
+rAF loop, so it runs every frame while any population pulse is active)
+does `liveProps.current.markers.find((m) => m.id === pulse.markerId)` —
+a linear scan of the markers array — for every active pulse, every frame,
+plus allocates a fresh `projected: {x,y}[]` array per pulse per frame for
+the ripple ring path. At the current scale (≤20 markers, pulses are
+short-lived population-tick events) this is not a measurable lag source —
+it's O(pulses × markers) with both factors small — but it's the one place
+in the animation loop that reallocates and re-scans per frame rather than
+reusing state, so it's the first thing to revisit if a future session
+adds many more markers or a higher pulse rate and lag reappears in that
+component specifically. Not changed here since nothing indicates it's
+currently a bottleneck and the task was to identify, not to speculatively
+optimize.
+
+**Conclusion**: no unnecessary/duplicate code instances found that would
+explain current lag. If lag is still being observed, it's more likely
+environmental (this sandbox's browser pane not compositing frames has
+repeatedly blocked FPS measurement across every phase — see the marbles
+phase-3 entry above) than a code-level regression from parallel work.
+
+Status: done (audit only, no code or dependency changes).
+
+---
+
+2026-08-01 19:59 — Started: hide backdrop glow, fix blurry globe, simplify
+country badge, then fast-fill bead burst feature (spec/plan/subagent-driven
+implementation) with follow-on lag debugging, all in src/components/
+BeadScene.tsx and src/App.tsx.
+
+- Moved the backdrop's bokeh spots into the invisible Lightformer rig
+  (BeadEnvironment) so they still light the beads without being directly
+  visible in the backdrop plane. Spec:
+  docs/superpowers/specs/2026-08-01-hidden-backdrop-glow-design.md.
+- Fixed blurry globe: BACKDROP_SCALE 0.35 -> 1 (was downsampling the globe
+  canvas then upscaling it via the backdrop plane).
+- Simplified the selected-country badge from a bordered card to a dot +
+  name, matching the control panel's label style.
+- Fast-fill bead burst (spec + plan under docs/superpowers/{specs,plans}/
+  2026-08-01-fast-fill-bead-burst*): replaced the fixed MAX_BEADS=70 with
+  a viewport-area-computed capacity, and added a burst-spawn phase that
+  fills the screen fast on mount/country-switch instead of trickling in.
+  Implemented via subagent-driven-development (Tasks 1-2 reviewed clean by
+  subagents); Task 3 (live FPS verification) couldn't complete in-sandbox
+  — World Bank API fetch was unreliable in this browser tool for both the
+  controller and a dispatched subagent independently — so verification
+  moved to the user testing locally.
+- User-reported-bug iterations (each addressed via systematic-debugging,
+  one change at a time, confirmed/redirected by user after each):
+  1. Burst paced by wall-clock setInterval could outrun actual achievable
+     frame rate, evicting beads before they'd ever rendered ("disappears
+     too soon" / "never fills"). Fixed: burst now paced by
+     requestAnimationFrame, self-throttling to real frame delivery.
+  2. Still laggy + user wanted no disappearing at all: removed the
+     eviction/fade-out mechanism entirely (spawning just stops at
+     capacity), lowered MAX_CAPACITY 110 -> 70.
+  3. Still laggy specifically when moving the mouse: found MeshPhysicalMaterial
+     .dispersion was nonzero (2.5), which compiles three's 3x-sample
+     transmission code path regardless of magnitude — set to 0. Dropped
+     Canvas dpr cap 1.5 -> 1 (flat).
+  4. User asked to reintroduce disappearing, faster, running forever
+     (not just during the initial fill): restored the evict-oldest +
+     BeadFadeOut mechanism, with BEAD_EXIT_MS shortened 420ms -> 180ms so
+     exits keep pace with eviction happening on every spawn once at
+     capacity (not just occasional demographic-rate evictions like
+     before). MAX_CAPACITY also dropped 70 -> 55 pending further
+     real-hardware testing.
+
+Status: partial — code changes committed and type-checked each round, but
+no live FPS number was ever obtained (sandbox network/browser limitations
+throughout). Current state (BEAD_EXIT_MS=180, MAX_CAPACITY=55, dispersion=0,
+dpr=1, rAF-paced burst, permanent eviction) is unverified pending the
+user's next local test.
+
+## 2026-08-01 (continued) — Year-select marble batches implemented
+
+Started: user asked to implement
+`docs/superpowers/specs/2026-08-01-year-select-marble-batches-design.md`,
+a design spec committed by another (parallel) session earlier this same
+day. Followed CLAUDE.md's workflow: wrote
+`docs/superpowers/plans/2026-08-01-year-select-marble-batches.md`
+(`superpowers:writing-plans`), then executed it inline
+(`superpowers:executing-plans` — no subagent-capable platform noted).
+
+Implemented:
+- `src/lib/historicalDemographics.ts` (new): lazy per-country fetch of
+  World Bank `SP.DYN.CBRT.IN`/`SP.DYN.CDRT.IN`/`SP.POP.TOTL` for
+  2000-2022, derives real annual birth/death totals per year, cached per
+  iso3. `useHistoricalDemographics(iso3)` hook mirrors
+  `useDemographics.ts`'s status shape.
+- `src/lib/marbleCount.ts` (new): log-scale `marbleCountFor(realAnnualTotal)`
+  mapping into `[5, 25]` per stream. **Deliberate deviation from the
+  spec's** literal `[5, 35]`/combined-70: this repo's live bead-capacity
+  backstop (`BeadScene.tsx` `MAX_CAPACITY`) was cut to 55 by the perf
+  pass logged just above this entry, which postdates the spec (the spec
+  still cites the old 70) — combined max kept at 50 to stay under the
+  value actually live today.
+- `src/components/BeadScene.tsx`: removed the entire
+  viewport-computed-capacity/eviction/burst-fill machinery
+  (`computeBeadCapacity`, `MIN_CAPACITY`/`MAX_CAPACITY`,
+  `BURST_SPAWN_INTERVAL_MS`, `BEAD_EXIT_MS`, `BeadFadeOut`, `Bead.dying`,
+  `useViewportSize`) — replaced with a finite two-queue drain: spawns
+  exactly `birthMarbleCount`/`deathMarbleCount` marbles per stream at a
+  fixed 120ms cadence (`BATCH_SPAWN_INTERVAL_MS`), then stops, reporting
+  cumulative real-total progress upward via a new `onProgress` prop as
+  each marble lands.
+- `src/App.tsx`: selecting a country now also fetches its historical
+  data; `selectedYear` defaults to the latest available year once
+  loaded. A year `<select>` added under the country name in the
+  top-left panel (existing instrument-panel styling). `BeadScene` now
+  keyed on `` `${selectedIso3}-${selectedYear}` `` so changing either
+  clears the pile and drops a fresh batch. New `YearCounters` component
+  renders two `NumberFlow` readouts (births upper, deaths lower) over
+  the globe's open space, driven by `BeadScene`'s `onProgress`.
+
+**Also handled, not part of this feature**: the working tree already had
+an uncommitted WIP diff to `BeadScene.tsx` (eviction-based capacity,
+conflicting with the last committed state) when this session started,
+apparently left mid-edit by another/parallel session — stashed it aside
+before merging in `origin/main`'s design-doc commit; it was then
+auto-committed by that other session mid-task (`bdcf58a`) before any
+further action was needed here, so no work was lost. Also noted
+mid-task: another live session was concurrently editing `src/App.tsx`
+and `src/components/BeadScene.tsx` to add a marble-departure "leaf"
+effect (`LeafOverlay.tsx`), building additively on top of this feature's
+`BeadScene` rewrite (correctly consumes `bead.kind`/`colors.birth`/
+`colors.death`/the new prop shape). That session's in-progress
+uncommitted work was left untouched.
+
+Verification: `npx tsc -b` clean and `npx oxlint src` clean (only the
+pre-existing unrelated `button.tsx` warning) both on this feature's own
+commit (`94034a0`) and again after the parallel leaf-effect edits landed
+on top, uncommitted. **Not visually verified in-browser**: this
+session's Browser-pane preview could not reach either dev server it
+started — bound to the wrong internal port both times (`preview_start`
+reported one port, Vite actually listened on a different one), likely
+port contention with the other live session's own dev server in the
+same working directory — console/DOM tools all returned
+`chrome-error://`/empty-page. Live browser check (select a country,
+confirm the year `<select>` populates, batch drops and settles instead
+of trickling forever, counters count up to real totals, changing
+year/country clears and redrops) is still outstanding.
+
+Status: done (code), **not yet visually verified** — next session or
+the user should open the app locally and run through the manual check
+in the plan's Task 4 Step 9.

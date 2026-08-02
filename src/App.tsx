@@ -6,6 +6,8 @@ import { BeadScene } from '@/components/BeadScene'
 import { GlobeRain } from '@/components/GlobeRain'
 import type { GlobeCircle } from '@/components/ui/cobe-globe'
 import { useDemographics } from '@/lib/useDemographics'
+import { useHistoricalDemographics } from '@/lib/historicalDemographics'
+import { marbleCountFor } from '@/lib/marbleCount'
 import { useTheme } from '@/lib/useTheme'
 import { CubeFlipToggle } from '@/components/ui/cube-flip-toggle'
 import { Slider } from '@/components/ui/slider-number-flow'
@@ -277,6 +279,41 @@ const AppTitle = memo(function AppTitle() {
   )
 })
 
+// Two large serif readouts over the globe's own open space — upper for
+// births, lower for deaths. pointer-events-none so they never intercept
+// the globe's own drag/click handling; absolutely positioned against the
+// same full-viewport container GlobeView renders into.
+const YearCounters = memo(function YearCounters({
+  births,
+  deaths,
+}: {
+  births: number
+  deaths: number
+}) {
+  return (
+    <div className="pointer-events-none absolute inset-0 z-[5] flex flex-col items-center justify-between py-24">
+      <div className="flex flex-col items-center gap-1">
+        <span className="text-[0.65rem] uppercase tracking-widest text-muted-foreground">
+          births
+        </span>
+        <NumberFlow
+          value={Math.round(births)}
+          className="font-serif text-4xl font-medium text-accent"
+        />
+      </div>
+      <div className="flex flex-col items-center gap-1">
+        <span className="text-[0.65rem] uppercase tracking-widest text-muted-foreground">
+          deaths
+        </span>
+        <NumberFlow
+          value={Math.round(deaths)}
+          className="font-serif text-4xl font-medium text-foreground"
+        />
+      </div>
+    </div>
+  )
+})
+
 function App() {
   const demographics = useDemographics()
   const [selectedIso3, setSelectedIso3] = useState<string | null>(null)
@@ -297,6 +334,25 @@ function App() {
   const cityCount = useRafThrottled(Math.round(cityCountRaw))
   const rotationSpeedKmS = Math.round(rotationSpeedRaw)
   const { theme, toggleTheme } = useTheme()
+
+  const historical = useHistoricalDemographics(selectedIso3)
+  const [selectedYear, setSelectedYear] = useState<number | null>(null)
+  const [progress, setProgress] = useState({ births: 0, deaths: 0 })
+
+  // Defaults to the latest available year once a country's historical data
+  // loads, and re-defaults on country switch unless the previously
+  // selected year happens to also exist in the new country's map.
+  useEffect(() => {
+    if (historical.status !== 'ready') return
+    const latestYear = Math.max(...historical.years.keys())
+    setSelectedYear((prev) => (prev !== null && historical.years.has(prev) ? prev : latestYear))
+  }, [historical])
+
+  // Clears the stale year immediately on deselect, so it doesn't leak into
+  // the next selection before the effect above re-fires.
+  useEffect(() => {
+    if (!selectedIso3) setSelectedYear(null)
+  }, [selectedIso3])
 
   // Shows the lag warning once, ever, the first time the slider hits max.
   useEffect(() => {
@@ -327,6 +383,13 @@ function App() {
     [],
   )
   const handleLanguageToggle = useCallback(() => setLang(nextLang), [])
+  const handleProgress = useCallback((p: { births: number; deaths: number }) => setProgress(p), [])
+
+  // Resets the counters whenever a fresh batch starts, mirroring
+  // BeadScene's own remount on selectedIso3/selectedYear.
+  useEffect(() => {
+    setProgress({ births: 0, deaths: 0 })
+  }, [selectedIso3, selectedYear])
 
   if (demographics.status === 'loading') {
     return (
@@ -345,6 +408,14 @@ function App() {
   }
 
   const selected = selectedIso3 ? demographics.data.get(selectedIso3) : undefined
+  const yearTotals =
+    historical.status === 'ready' && selectedYear !== null
+      ? historical.years.get(selectedYear)
+      : undefined
+  const birthAnnualTotal = yearTotals?.births ?? 0
+  const deathAnnualTotal = yearTotals?.deaths ?? 0
+  const birthMarbleCount = yearTotals ? marbleCountFor(yearTotals.births) : 0
+  const deathMarbleCount = yearTotals ? marbleCountFor(yearTotals.deaths) : 0
 
   return (
     <div className="relative h-full w-full">
@@ -363,16 +434,21 @@ function App() {
           rotationSpeedKmS={rotationSpeedKmS}
         />
       </div>
-      {selected && (
+      {selected && yearTotals && (
         <BeadScene
-          key={selectedIso3}
-          demographics={selected}
+          key={`${selectedIso3}-${selectedYear}`}
+          birthMarbleCount={birthMarbleCount}
+          deathMarbleCount={deathMarbleCount}
+          birthAnnualTotal={birthAnnualTotal}
+          deathAnnualTotal={deathAnnualTotal}
+          onProgress={handleProgress}
           theme={theme}
           globeCircle={globeCircle}
           globeElement={globeElement}
         />
       )}
       {!selected && <GlobeRain globeCircle={globeCircle} theme={theme} />}
+      {selected && yearTotals && <YearCounters births={progress.births} deaths={progress.deaths} />}
       <div className="absolute right-4 top-4 z-10 flex gap-2">
         <LanguageToggle lang={lang} onToggle={handleLanguageToggle} onHoverChange={setLangHintVisible} />
         <ThemeToggle theme={theme} toggleTheme={toggleTheme} onHoverChange={setThemeHintVisible} />
@@ -389,9 +465,29 @@ function App() {
       <div className="absolute left-4 top-4 flex flex-col gap-2">
         <AppTitle />
         {selected && (
-          <div className="pointer-events-none flex items-center gap-1.5 font-mono text-sm font-medium text-foreground">
-            <span className="inline-block size-1.5 shrink-0 rounded-full bg-accent" />
-            {selected.name}
+          <div className="flex flex-col gap-1.5">
+            <div className="pointer-events-none flex items-center gap-1.5 font-mono text-sm font-medium text-foreground">
+              <span className="inline-block size-1.5 shrink-0 rounded-full bg-accent" />
+              {selected.name}
+            </div>
+            {historical.status === 'ready' && selectedYear !== null && (
+              <label className="flex items-center gap-1.5 pl-3 text-[0.65rem] uppercase tracking-widest text-muted-foreground">
+                year
+                <select
+                  value={selectedYear}
+                  onChange={(e) => setSelectedYear(Number(e.target.value))}
+                  className="rounded-sm border border-border bg-transparent px-1 py-0.5 font-mono text-xs text-foreground"
+                >
+                  {[...historical.years.keys()]
+                    .sort((a, b) => b - a)
+                    .map((year) => (
+                      <option key={year} value={year}>
+                        {year}
+                      </option>
+                    ))}
+                </select>
+              </label>
+            )}
           </div>
         )}
       </div>
