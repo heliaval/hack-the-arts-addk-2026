@@ -298,6 +298,13 @@ export const Globe = forwardRef<GlobeRef, GlobeProps>(function Globe({
   obscured = false,
 }: GlobeProps, ref) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  // The canvas's own on-screen box size in px, tracked live rather than
+  // captured once -- see the comment where this is written (below, near
+  // the ResizeObserver) for why a one-time snapshot was a real bug, not
+  // just imprecise. Initialized to 0 so the very first animation frame
+  // (before any measurement lands) skips label positioning entirely
+  // rather than positioning against a wrong size.
+  const boxSizeRef = useRef(0)
   const labelRefs = useRef<Map<string, HTMLDivElement>>(new Map())
   const arcLabelRefs = useRef<Map<string, HTMLDivElement>>(new Map())
   // Stable per-id setRef callbacks (created once, cached, reused) rather
@@ -434,6 +441,7 @@ export const Globe = forwardRef<GlobeRef, GlobeProps>(function Globe({
     function init() {
       const width = canvas.offsetWidth
       if (width === 0 || globe) return
+      boxSizeRef.current = width
 
       const dpr = Math.min(window.devicePixelRatio || 1, 2)
       const initial = liveProps.current
@@ -476,21 +484,41 @@ export const Globe = forwardRef<GlobeRef, GlobeProps>(function Globe({
       // frame (60x/sec) -- exactly the "20 cities" cost this file's own
       // LagWarning already warns users about. `transform` is
       // compositor-only, so the same positioning work no longer touches
-      // layout at all. `width` is the canvas's own on-screen size
-      // (captured once at init, canvas is always square) -- multiplying
-      // the 0-1 fraction from projectMarker/projectArcMidpoint by it
-      // converts to the same px space the label's container box uses,
-      // since the label pills are siblings of the canvas inside the same
-      // aspect-square container. The `-50%, calc(-100% - 10px)` offset
-      // (pill anchored above-and-centered on its point) has to be folded
-      // into this same transform string rather than left as a separate
-      // static one, since an element can only have one `transform`.
+      // layout at all.
+      //
+      // Reads `boxSizeRef.current` (a live, resize-tracked value -- see
+      // the ResizeObserver below), NOT a `width` closed over from this
+      // effect's own init-time measurement. That was the very first
+      // version of this fix and it was a real regression, found live: CSS
+      // percentages (the original `left`/`top` approach) always resolve
+      // against the container's CURRENT size, so they self-corrected
+      // automatically no matter when the browser read them. A `width`
+      // captured once at init doesn't -- if the canvas's `ResizeObserver`
+      // fires (as it must, to even get width>0 in the first place) before
+      // this page's webfonts (Geist, Cormorant Garamond) finish loading
+      // and reflow the layout, every label lands at an offset computed
+      // from a stale box size for the component's entire lifetime, which
+      // reads as labels scattered miles from their markers, stacked near
+      // the document's default flow position. A ref updated on every
+      // resize (not just the first) fixes this the same way percentages
+      // did, while still avoiding a per-frame layout-forcing read.
+      //
+      // Multiplying the 0-1 fraction from projectMarker/projectArcMidpoint
+      // by this box size converts to the same px space the label's
+      // container box uses, since the label pills are siblings of the
+      // canvas inside the same aspect-square container. The `-50%,
+      // calc(-100% - 10px)` offset (pill anchored above-and-centered on
+      // its point) has to be folded into this same transform string
+      // rather than left as a separate static one, since an element can
+      // only have one `transform`.
       function updateLabels(currentPhi: number, currentTheta: number, markerElevation: number, arcHeight: number) {
+        const boxSize = boxSizeRef.current
+        if (boxSize <= 0) return
         for (const m of liveProps.current.markers) {
           const el = labelRefs.current.get(m.id)
           if (!el) continue
           const { x, y, visible } = projectMarker(m.location, currentPhi, currentTheta, markerElevation)
-          el.style.transform = `translate3d(${x * width}px, ${y * width}px, 0) translate(-50%, calc(-100% - 10px))`
+          el.style.transform = `translate3d(${x * boxSize}px, ${y * boxSize}px, 0) translate(-50%, calc(-100% - 10px))`
           const opacity = visible ? "1" : "0"
           if (el.style.opacity !== opacity) el.style.opacity = opacity
         }
@@ -502,7 +530,7 @@ export const Globe = forwardRef<GlobeRef, GlobeProps>(function Globe({
             if (el.style.opacity !== "0") el.style.opacity = "0"
             continue
           }
-          el.style.transform = `translate3d(${projected.x * width}px, ${projected.y * width}px, 0) translate(-50%, calc(-100% - 10px))`
+          el.style.transform = `translate3d(${projected.x * boxSize}px, ${projected.y * boxSize}px, 0) translate(-50%, calc(-100% - 10px))`
           const opacity = projected.visible ? "1" : "0"
           if (el.style.opacity !== opacity) el.style.opacity = opacity
         }
@@ -633,19 +661,23 @@ export const Globe = forwardRef<GlobeRef, GlobeProps>(function Globe({
       setTimeout(() => canvas && (canvas.style.opacity = "1"))
     }
 
-    if (canvas.offsetWidth > 0) {
-      init()
-    } else {
-      const ro = new ResizeObserver((entries) => {
-        if (entries[0]?.contentRect.width > 0) {
-          ro.disconnect()
-          init()
-        }
-      })
-      ro.observe(canvas)
-    }
+    if (canvas.offsetWidth > 0) init()
+
+    // Kept alive for the whole effect lifetime (not disconnected after the
+    // first fire) so boxSizeRef stays live for as long as this globe is
+    // mounted -- see the comment on updateLabels above for why a one-time
+    // measurement was a real bug. `init()` itself still only runs once,
+    // guarded by `globe` being unset.
+    const ro = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width
+      if (!width || width <= 0) return
+      boxSizeRef.current = width
+      if (!globe) init()
+    })
+    ro.observe(canvas)
 
     return () => {
+      ro.disconnect()
       if (animationId) cancelAnimationFrame(animationId)
       if (globe) globe.destroy()
     }
@@ -810,6 +842,23 @@ const LabelPill = memo(function LabelPill({
       ref={setRef}
       style={{
         position: "absolute",
+        // Explicit left/top: 0 is load-bearing, not decorative. `transform`
+        // moves an element FROM its resolved layout position -- and with
+        // `top`/`left` left unset (auto), an absolutely positioned element
+        // resolves to its CSS "static position" (roughly: where it would
+        // have landed in normal flow), not the container's origin. Found
+        // live, the hard way: this container's only other child is the
+        // canvas, occupying the full box, so every label's static position
+        // fell BELOW it -- one full container-height off -- and the
+        // per-frame `translate3d(...)` (see updateLabels in Globe, above)
+        // was then offsetting FROM that wrong point instead of from
+        // (0, 0). Pinning left/top to 0 makes the container's own origin
+        // the transform's reference point, matching what the old
+        // percentage-based `left`/`top` approach did implicitly (a
+        // percentage always resolves against the containing block's
+        // origin, regardless of static-position quirks).
+        left: 0,
+        top: 0,
         // No static transform here -- the per-frame animation loop
         // (updateLabels in Globe, above) now writes the full
         // translate3d(...) translate(-50%, calc(-100% - 10px)) transform

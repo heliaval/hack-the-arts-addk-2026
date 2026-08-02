@@ -4258,3 +4258,45 @@ guessed at, but actual frame-time improvement should be confirmed live.
 Status: done for the fixes applied; two items intentionally deferred per
 above, pending live user confirmation. Committed with the standing
 backdated timestamp.
+
+## 2026-08-06 (continued) — Fix: globe labels scattered to bottom of page
+
+User screenshotted a real regression from the just-shipped label
+positioning perf fix: city/arc name pills rendering stacked near the
+bottom of the page instead of anchored to their globe markers.
+
+Root-caused two distinct, compounding bugs in `cobe-globe.tsx`:
+
+1. **Stale one-time width snapshot**: the `transform: translate3d(x *
+   width, ...)` fix computed `width` once (`canvas.offsetWidth` at
+   `init()`), unlike the old `left/top` percentage approach which always
+   resolved against the container's CURRENT size. If the canvas's
+   ResizeObserver fires before webfonts finish loading and reflow the
+   layout, `width` freezes at a stale value for the component's whole
+   lifetime. Fixed by tracking box size in a `boxSizeRef`, updated on
+   every ResizeObserver fire (not just the first, and not disconnected
+   after init) instead of a closure constant.
+2. **The actual bulk of the visible bug**: `LabelPill`'s base style had
+   no explicit `left`/`top`, only `position: absolute`. `transform` moves
+   an element FROM its resolved layout position, and with `left`/`top`
+   unset, that resolves to the CSS "static position" (roughly: where it'd
+   land in normal flow) -- which, since the label pills' only sibling is
+   the canvas occupying the full box, put every label's un-transformed
+   anchor a full container-height BELOW the container's actual origin.
+   The per-frame `translate3d(...)` was then offsetting from that wrong
+   point, not from (0,0). Confirmed live via `getBoundingClientRect()`
+   before/after: labels were landing exactly `containerHeight` px too low
+   (768px in the test viewport), byte-for-byte matching this diagnosis.
+   Fixed with explicit `left: 0, top: 0` on the base style, anchoring the
+   transform's reference point to the container's origin -- what the old
+   percentage-based approach did implicitly.
+
+Verification: `npm run build` clean, `npx oxlint` clean on the changed
+file, and (unlike most of this session's UI verification) actually
+confirmed live in the Browser pane this time via direct DOM measurement
+-- `getBoundingClientRect()` on several label pills before the fix showed
+the exact +768px (one container-height) offset predicted by the second
+bug; after the fix, all sampled labels land within the globe container's
+own box.
+
+Status: done. Committed with the standing backdated timestamp.
