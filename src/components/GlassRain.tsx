@@ -132,7 +132,13 @@ void main() {
   vec2 UV = gl_FragCoord.xy / u_resolution.xy;
   float t = u_time * .2 * u_speed;
 
-  uv *= .7;
+  // The reference multiplies by (.7 + zoom * .3) * u_zoom, where u_zoom
+  // defaults to 2.61 (js/script.js's dat.gui init) — this port dropped
+  // u_panning/zoom (no wallpaper to pan) but silently left u_zoom at an
+  // implicit 1 instead of baking in its real default, leaving droplets
+  // 2.61x oversized linearly (~6.8x in area) since the original port. See
+  // PROGRESS.md, "GlassRain: fix oversized droplets (dropped u_zoom)".
+  uv *= .7 * 2.61;
 
   float staticWeight = S(-.5, 1., u_intensity) * 2.;
   float fallWeight1 = S(.25, .75, u_intensity);
@@ -180,7 +186,7 @@ const CAPTURE_SCALE = 0.5
 // this doesn't need 60fps freshness to read as smooth.
 const CAPTURE_UPDATE_EVERY_N_FRAMES = 2
 
-// Tuned by eye for a genuine heavy-rain-on-a-window read (superseding this
+// Tuned for a genuine heavy-rain-on-a-window read (superseding this
 // project's original "medium fidelity, occasional drips" design — see
 // PROGRESS.md, "GlassRain: heavy rain", for why): high u_intensity pushes
 // BOTH falling-layer weights (fallWeight1/fallWeight2 in the shader) up
@@ -189,16 +195,19 @@ const CAPTURE_UPDATE_EVERY_N_FRAMES = 2
 // is specifically what the reference shader relies on to read as a
 // downpour rather than scattered drips.
 //
-// u_speed is well above 1 here for a fast, continuous fall: a standalone
-// JS port of this shader's exact math (see PROGRESS.md, "GlassRain: sped
-// up droplet motion") confirmed the droplet heightfield completes a full
-// cycle in ~5 real seconds at u_speed=1, because the shader's own
-// `t = u_time * .2 * u_speed` line already bakes in a 0.2x slowdown before
-// u_speed is even applied — so reaching a "falling quickly" read (closer
-// to a ~1-2s cycle) needs u_speed well north of 1, not a fraction of it.
-const DEFAULT_INTENSITY = 0.8
-const DEFAULT_NORMAL_STRENGTH = 1.0
-const DEFAULT_SPEED = 3.5
+// u_speed re-tuned alongside the uv-zoom fix above (see PROGRESS.md,
+// "GlassRain: fix oversized droplets") — with droplets correctly sized,
+// the previous 3.5 (tuned against the oversized/mis-scaled droplet field)
+// read too fast; 2.5 gives a ~2s fall cycle, fast and continuous without
+// strobing the static layer's own repopulation cycle.
+//
+// u_normal (refraction displacement strength) also scales with the uv
+// zoom — left at the pre-fix 1.0 it would refract 2.61x more strongly
+// than the reference's own tuning intended; 0.5 matches the reference's
+// own u_normal default.
+const DEFAULT_INTENSITY = 0.75
+const DEFAULT_NORMAL_STRENGTH = 0.5
+const DEFAULT_SPEED = 2.5
 const DEFAULT_TINT_STRENGTH = 0.06
 
 // Duplicated from resolveAccentColor.ts on purpose, not imported — see

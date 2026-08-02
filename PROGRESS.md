@@ -2871,3 +2871,45 @@ Build/`oxlint` clean. Could not visually confirm in this sandbox (same
 
 Status: done, pending live visual confirmation. Commit backdated to
 2026-07-31T19:00:00 per standing instruction.
+
+## 2026-08-04 — GlassRain: fix oversized droplets (dropped u_zoom) [agent: opus + inline]
+
+User shared a screenshot of the "heavy rain" tuning: droplets were huge (blobby
+shapes spanning roughly 5-10% of viewport width, fused streaky smears), "way too
+big and fast." Asked for an Opus evaluation of what would look best/natural,
+implemented by Sonnet.
+
+Opus root-caused it precisely: the original port's `## Design` section said
+`u_zoom` would be "baked as a constant," but the actual GLSL only kept the
+reference's `.7` term and silently dropped the reference's own `u_zoom` default
+(2.61, from the reference project's `js/script.js` dat.gui init) — leaving
+droplets 2.61x oversized linearly (~6.8x in area) since the very first GlassRain
+commit. This was never an intensity/speed tuning problem; neither uniform
+appears in the droplet-size math at all.
+
+Fixed in `src/components/GlassRain.tsx`:
+- `uv *= .7;` -> `uv *= .7 * 2.61;` (restores the dropped u_zoom default).
+- `DEFAULT_NORMAL_STRENGTH` 1.0 -> 0.5 (refraction displacement also scales with
+  zoom; left alone it would over-refract by the same 2.61x).
+- `DEFAULT_SPEED` 3.5 -> 2.5 (re-tuned for the corrected pixel scale — the
+  previous value was tuned against oversized droplets and reads too fast once
+  they're the right size).
+- `DEFAULT_INTENSITY` 0.8 -> 0.75 (minor secondary adjustment per Opus's
+  analysis — density/fusion was a much smaller factor than raw size).
+
+Verified via pixel-size math (not the shader running, since this sandbox can't
+render): falling-drop L1 diameter drops from ~90px (matches the screenshot's
+"5-10% of viewport width") to ~35px at a ~1850px-wide viewport; the vertical
+trail streak drops from ~407px to ~156px. Build/`oxlint` clean.
+
+**A repeat mistake, caught before commit**: introduced the exact same bug as
+the "stray backtick inside a GLSL comment closes the FRAGMENT_SHADER template
+literal early" issue from the original GlassRain commit — this time in a new
+comment explaining the u_zoom fix. Caught by `npm run build` (real TS errors,
+not just oxlint this time — the broken parse cascaded further), fixed by
+dropping the inner backticks from the comment. Worth remembering going
+forward: never put a backtick inside a comment living inside a template-string
+GLSL block in this file.
+
+Status: done, pending live visual confirmation. Commit backdated to
+2026-07-31T19:00:00 per standing instruction.
