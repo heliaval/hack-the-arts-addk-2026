@@ -216,6 +216,132 @@ const BEAD_ENV_RESOLUTION = 256
 // this material was always meant to have.
 const BEAD_ENV_INTENSITY = { light: 0.45, dark: 0.12 } as const
 
+// --- Cursor-lit warm refraction, birth beads only -------------------------
+//
+// "when red beads refract cursor light, let the refraction have a slight
+// red hue." This is NOT achievable by tuning MeshPhysicalMaterial from the
+// outside, and it is worth writing down why:
+//
+//  - attenuationColor / Beer-Lambert (BEAD_ATTENUATION_DISTANCE) DOES tint
+//    the transmitted sample, but it is static -- it knows nothing about
+//    where MouseLight is, so it produces a permanent tint, which is
+//    explicitly not the ask.
+//  - MouseLight's own contribution reaches the fragment through the
+//    ordinary Lambert/specular terms, which in three are summed into
+//    totalDiffuse/totalSpecular (meshphysical.glsl.js:192) and never touch
+//    the transmitted sample at all.
+//  - sheen/sheenColor was considered and rejected: sheenSpecularIndirect
+//    (lights_physical_pars_fragment.glsl.js:589) is IBL-driven and always
+//    present, so a tinted sheen is a permanent rim, not a cursor effect --
+//    and USE_SHEEN adds BRDF_Sheen plus three IBLSheenBRDF/energy-comp
+//    multiplies per fragment, far more than the patch below costs.
+//
+// So this couples the two directly, in the one place they meet. three's
+// transmission chunk multiplies the refracted background sample by
+// material.diffuseContribution (transmission_pars_fragment.glsl.js:218:
+// transmittance = diffuseColor * volumeAttenuation(...)), and
+// <transmission_fragment> is included at meshphysical.glsl.js:196, i.e.
+// AFTER every lighting chunk has already consumed diffuseContribution and
+// after totalDiffuse/totalSpecular are summed. Nothing downstream reads it.
+// That makes it a safe, single-multiply hook that affects the REFRACTION
+// and only the refraction.
+//
+// Honest about what this is: a stylisation, not physics. A real "the
+// cursor light picked up the glass's colour on the way through" would need
+// the light BEHIND the bead. This is "the closer the cursor light is, the
+// warmer this bead's refraction reads" -- which is the perceptual effect
+// asked for, and is genuinely cursor-driven rather than a static tint.
+//
+// Footprint matches WaterSurface.tsx's SHEEN_RADIUS_PX (340) rather than
+// MOUSE_LIGHT_DISTANCE (408) on purpose: the water's own cursor-local
+// terms, the DOM sheen, and now this all share one 340px radius, so the
+// three read as one light rather than three overlapping ones. Measured in
+// XY only -- MOUSE_LIGHT_Z is a constant offset for every bead, so
+// including it would only add a fixed pedestal to every distance.
+const WARM_REFRACTION_INNER_PX = 60
+const WARM_REFRACTION_OUTER_PX = 340
+// How far toward the (hue-normalised) accent the transmitted sample is
+// pulled at the cursor's own position. 1.0 would be the full normalised
+// accent, which reads as a red gel over the bead; 0.55 reads as "warm".
+const WARM_REFRACTION_GAIN = 0.55
+
+// Shared VALUE OBJECTS, one per scene, exactly the discipline
+// useWaterUniforms documents: every birth material's patched shader points
+// at these same THREE.IUniform objects, so MouseLight's single per-frame
+// write drives all MARBLE_VARIANTS of them.
+const WARM_REFRACTION_UNIFORMS = {
+  // Written by MouseLight's useFrame. Starts far off-screen so a page that
+  // has never seen a pointermove shows no tint at all.
+  u_mouseWorld: { value: new THREE.Vector3(-99999, -99999, 0) },
+  u_warmTint: { value: new THREE.Vector3(1, 1, 1) },
+}
+
+// The accent normalised so its DOMINANT channel is 1.0, then lerped from
+// white by `gain`. Multiplying the transmitted sample by the raw accent
+// (light #912f40 -> 0.57, 0.18, 0.25) would darken the bead by ~65%, which
+// reads as "the bead went dim near the cursor", not "the refraction went
+// warm". Normalising makes this a pure hue rotation with no luminance loss
+// on the dominant channel.
+function warmTintFromAccent(accentHex: string, gain: number): [number, number, number] {
+  const c = new THREE.Color(accentHex)
+  const peak = Math.max(c.r, c.g, c.b, 1e-4)
+  const lerp = (v: number) => THREE.MathUtils.lerp(1, v / peak, gain)
+  return [lerp(c.r), lerp(c.g), lerp(c.b)]
+}
+
+// MODULE SCOPE, ONE INSTANCE, SHARED BY REFERENCE across every birth
+// material -- this is load-bearing, not hygiene. three's
+// WebGLPrograms.getProgramCacheKey does NOT hash shader source; the only
+// thing distinguishing a patched program from an unpatched one is
+// parameters.customProgramCacheKey, which Material.js defaults to
+// `this.onBeforeCompile.toString()`. One shared function reference means
+// all MARBLE_VARIANTS birth materials hash identically and share a single
+// compiled program, while the death materials (base-class no-op
+// onBeforeCompile) hash differently and keep the stock program. Two
+// programs total, up from one. Draw calls are unchanged at one per bead,
+// and renderTransmissionPass still runs exactly once per frame.
+//
+// The two anchors are #include <...> LINES, not chunk bodies:
+// WebGLRenderer calls onBeforeCompile before WebGLProgram runs
+// resolveIncludes, so the includes are still unexpanded at patch time.
+function patchWarmRefraction(shader: {
+  fragmentShader: string
+  uniforms: Record<string, THREE.IUniform>
+}) {
+  shader.uniforms.u_mouseWorld = WARM_REFRACTION_UNIFORMS.u_mouseWorld
+  shader.uniforms.u_warmTint = WARM_REFRACTION_UNIFORMS.u_warmTint
+  shader.fragmentShader = shader.fragmentShader
+    .replace(
+      '#include <transmission_pars_fragment>',
+      `#include <transmission_pars_fragment>
+#ifdef USE_TRANSMISSION
+uniform vec3 u_mouseWorld;
+uniform vec3 u_warmTint;
+const float WARM_INNER_PX = ${WARM_REFRACTION_INNER_PX.toFixed(1)};
+const float WARM_OUTER_PX = ${WARM_REFRACTION_OUTER_PX.toFixed(1)};
+#endif`,
+    )
+    .replace(
+      '#include <transmission_fragment>',
+      `#ifdef USE_TRANSMISSION
+{
+  // vWorldPosition is declared by transmission_pars_fragment itself and is
+  // already in scope here -- transmission_fragment reads it on its very
+  // next line, so this costs no new varying and no new interpolator.
+  float warmDist = length( vWorldPosition.xy - u_mouseWorld.xy );
+  float warmProx = 1.0 - smoothstep( WARM_INNER_PX, WARM_OUTER_PX, warmDist );
+  // The ONE line that does the work. diffuseContribution is what
+  // transmission_pars_fragment multiplies the refracted background sample
+  // by; every lighting chunk that reads it has already run and nothing
+  // reads it after this, so this recolours the refraction and strictly
+  // nothing else.
+  material.diffuseContribution *= mix( vec3( 1.0 ), u_warmTint, warmProx );
+}
+#endif
+#include <transmission_fragment>`,
+    )
+}
+
 // One geometry for every bead, built once at module scope. Phase 1 gave
 // each bead its own <sphereGeometry> element, i.e. up to a full batch's
 // worth of byte-identical vertex buffers uploaded to the GPU. App renders
@@ -394,7 +520,7 @@ function createLensTexture(tint: string): THREE.CanvasTexture | null {
 function useBeadMaterials(colors: BeadColors, theme: 'light' | 'dark') {
   const materials = useMemo(() => {
     const envMapIntensity = BEAD_ENV_INTENSITY[theme]
-    function glass(tint: string, map: THREE.CanvasTexture | null) {
+    function glass(tint: string, map: THREE.CanvasTexture | null, warmRefraction: boolean) {
       const material = new THREE.MeshPhysicalMaterial({
         // White where a marble texture exists: the map already carries
         // every colour in the bead, including the tint it was derived
@@ -427,6 +553,10 @@ function useBeadMaterials(colors: BeadColors, theme: 'light' | 'dark') {
       // behind the runtime three version and reject `dispersion` there even
       // though the runtime property exists (three 0.185+).
       material.dispersion = BEAD_DISPERSION
+      // Birth beads only -- the ask is specifically about the accent-
+      // coloured beads, and giving the death material the same patch would
+      // both contradict that and fork a second program for nothing.
+      if (warmRefraction) material.onBeforeCompile = patchWarmRefraction
       return material
     }
     // One lens texture per kind (birth, death), reused across all
@@ -435,8 +565,8 @@ function useBeadMaterials(colors: BeadColors, theme: 'light' | 'dark') {
     const birthMap = createLensTexture(colors.birth)
     const deathMap = createLensTexture(colors.death)
     return {
-      birth: Array.from({ length: MARBLE_VARIANTS }, () => glass(colors.birth, birthMap)),
-      death: Array.from({ length: MARBLE_VARIANTS }, () => glass(colors.death, deathMap)),
+      birth: Array.from({ length: MARBLE_VARIANTS }, () => glass(colors.birth, birthMap, true)),
+      death: Array.from({ length: MARBLE_VARIANTS }, () => glass(colors.death, deathMap, false)),
       textures: [birthMap, deathMap].filter((t): t is THREE.CanvasTexture => t !== null),
     }
     // colors alone already changes identity on every theme flip (see
@@ -454,6 +584,15 @@ function useBeadMaterials(colors: BeadColors, theme: 'light' | 'dark') {
     },
     [materials],
   )
+
+  // The warm-refraction tint follows --accent, so it re-resolves on the
+  // same theme flip that recreates the materials. Written into the shared
+  // uniform VALUE OBJECT rather than passed at construction, so a flip does
+  // not have to recompile anything.
+  useEffect(() => {
+    const [r, g, b] = warmTintFromAccent(colors.birth, WARM_REFRACTION_GAIN)
+    ;(WARM_REFRACTION_UNIFORMS.u_warmTint.value as THREE.Vector3).set(r, g, b)
+  }, [colors.birth])
 
   return materials
 }
@@ -611,23 +750,41 @@ const BACKDROP_COLORS = {
 // i.e. this backdrop specifically, not the DOM overlay
 // (DotMatrixAtmosphere) that already sits above the beads.
 //
-// Contrast and opacity were originally kept LOWER here than the DOM
-// layer's 1.5/0.23, on the reasoning that this plane has no cursor-reveal
-// mask (unlike the DOM layer, which only ever shows a localized 340px
-// patch) and so is permanently visible across the WHOLE backdrop -- the
-// same contrast/opacity that read as a subtle patch under the cursor read
-// as a bold, obviously-a-photo pattern spread across the entire scene.
-// Raised again per explicit request ("make the bg texture quite more
-// apparent"): 0.1/1.15 had been toned down far enough that the grain was
-// barely legible at all, particularly now that the much larger live bead
-// count covers more of the backdrop and what's left visible needs to carry
-// more weight to read as textured rather than flat. Still below the DOM
-// layer's own values -- this plane really is permanently visible with no
-// reveal mask, so full parity would still be the "bold photo" look that
-// reasoning above was written to avoid.
+// History, and this paragraph now REVERSES the two rounds above it, so read
+// it before re-tuning: contrast/opacity were first kept below the DOM
+// layer's 1.5/0.23 because this plane has no cursor-reveal mask and so was
+// permanently visible across the WHOLE backdrop; then raised to 0.2/1.3
+// ("make the bg texture quite more apparent"). Both of those rounds were
+// solving the wrong problem -- they were trying to find a single opacity
+// that is simultaneously subtle enough everywhere and legible somewhere.
+// The ask now is the actual fix: the brick should be visible ONLY where the
+// cursor light falls.
+//
+// That is NOT implemented here. It is implemented by WaterSurface.tsx's
+// TEX_REVEAL_GAIN, which was always the cursor-reveal mask this plane was
+// said not to have -- col += (col - u_pivot) * (GAIN * sheenFall)
+// amplifies exactly this bake, inside the 340px sheen footprint only.
+//
+// So this opacity is NOT zero, and must not be "simplified" to zero: the
+// reveal is MULTIPLICATIVE about u_pivot. Zero deviation in u_base times
+// any gain is still zero -- deleting the draw deletes the effect. 0.06 is a
+// deliberate near-invisible SEED: below the 0.1 this file already recorded
+// as "barely legible at all", so it reads as absent on bare backdrop, while
+// still giving TEX_REVEAL_GAIN = 4.6 something to multiply back up to the
+// same grain strength today's 0.2 bake reached at the cursor.
+//
+// Contrast 1.3 -> 1.6, and this is not the same knob as opacity even though
+// both "make the brick stronger". contrast() pivots the grayscale image
+// about 0.5, so it widens the per-pixel DEVIATION the soft-light blend
+// writes into u_base -- which is precisely the term TEX_REVEAL_GAIN
+// multiplies -- while barely moving the flat-field average, which is the
+// term that has to vanish. It buys legibility at the cursor almost for free
+// in the away-from-cursor budget. Now above the DOM layer's own 1.5, which
+// is fine and no longer contradicts the reasoning above: that reasoning was
+// about a permanently-visible plane, and this one no longer is.
 const BACKDROP_TEXTURE_URL = '/textures/brick.jpg'
-const BACKDROP_TEXTURE_FILTER = 'grayscale(1) contrast(1.3) brightness(1.05)'
-const BACKDROP_TEXTURE_OPACITY = 0.2
+const BACKDROP_TEXTURE_FILTER = 'grayscale(1) contrast(1.6) brightness(1.05)'
+const BACKDROP_TEXTURE_OPACITY = 0.06
 
 // Module-level singleton, not per-component-instance: the image only
 // ever needs to be fetched/decoded once for the whole app lifetime, and
@@ -1109,6 +1266,13 @@ function MouseLight() {
     if (!light) return
     light.position.x = THREE.MathUtils.lerp(light.position.x, targetRef.current.x, MOUSE_LIGHT_LERP)
     light.position.y = THREE.MathUtils.lerp(light.position.y, targetRef.current.y, MOUSE_LIGHT_LERP)
+    // The birth material's warm-refraction patch (patchWarmRefraction)
+    // reads this. light.position IS the world position: this pointLight is
+    // a direct child of the scene, with no parent transform to compose.
+    // Deliberately the LERPED position, not targetRef -- the tint has to
+    // track the same smoothed light the highlight does, or the two visibly
+    // disagree during a fast pointer sweep. One Vector3 copy per frame.
+    ;(WARM_REFRACTION_UNIFORMS.u_mouseWorld.value as THREE.Vector3).copy(light.position)
   })
 
   return (

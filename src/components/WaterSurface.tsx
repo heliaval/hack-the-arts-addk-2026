@@ -52,7 +52,7 @@ void main() {
 
 // Must match the shader's own RIPPLE_LIFE_S (WATER_COMMON_GLSL) and is
 // injected into WATER_UNIFORMS_GLSL below, so the two can never drift.
-export const MAX_RIPPLES = 14
+export const MAX_RIPPLES = 44
 const RIPPLE_LIFE_S = 2.6
 
 // Every length here is in CSS pixels, matching the rest of BeadScene (see
@@ -100,7 +100,29 @@ uniform vec3 u_sheen;
 export const WATER_COMMON_GLSL = `
 const float RIPPLE_LIFE_S = 2.6;
 const float RIPPLE_SPEED_PX_S = 165.0;
-const float PACKET_PX = 90.0;
+// Per-ripple wavefront envelope width, replacing the old flat
+// PACKET_PX = 90.0 ("a 90px-thick annulus"). Drawn per ripple from the
+// skewed distribution in the loop below: most ripples land THIN, a minority
+// land thick.
+//
+// PACKET_MAX_PX doubles as the loop's conservative early-out bound, which
+// is what keeps the width hash off the rejection path -- see the two-stage
+// test in the loop.
+//
+// The floor is set by WAVELENGTH_PX: at 26px a 30px carrier completes 0.87
+// of a cycle inside the envelope, i.e. exactly one crest and the beginning
+// of its trough, which is the thinnest thing that still reads as a RING
+// rather than as a smear. Below ~20px the envelope would clip the crest
+// itself and the ripple would lose its shape.
+//
+// WAVELENGTH_PX deliberately does NOT scale with this. Scaling it would
+// make every ripple a similar-shaped object at a different size ("a smaller
+// ripple"); holding it fixed means a thin packet holds ONE crest and a fat
+// one holds four ("a thinner ripple"), which is both the ask and what a
+// small vs. large drop actually does.
+const float PACKET_MIN_PX = 26.0;
+const float PACKET_MAX_PX = 130.0;
+const float PACKET_SPAN_PX = 104.0; // PACKET_MAX_PX - PACKET_MIN_PX
 const float WAVELENGTH_PX = 30.0;
 const float ATTEN_FALLOFF_PX = 300.0;
 const float REFRACT_PX = 26.0;
@@ -151,7 +173,34 @@ const float SWELL_AMP = 0.007;
 // which amplifies exactly the brick grain + dot lattice that
 // useBackdropBase already painted into u_base. Because it reads the
 // ALREADY-REFRACTED sample, the revealed grain warps with the ripples.
-const float TEX_REVEAL_GAIN = 1.1;
+//
+// 1.1 -> 4.6. This is now THE brick-visibility control, not a local boost
+// on an already-visible bake: BeadScene.tsx's BACKDROP_TEXTURE_OPACITY
+// dropped 0.2 -> 0.06 in the same pass (see its own comment) per explicit
+// request ("the 2nd texture isn't visible unless the cursor light is
+// shining on it"), so away from the cursor there is effectively no brick,
+// and this is what puts it back where the cursor light is. 0.06 * (1 + 4.6)
+// * 1.23 (the raised BACKDROP_TEXTURE_FILTER contrast) = 0.41 at the
+// cursor's own position, i.e. the same grain strength the old permanently-
+// visible 0.2 bake reached under the cursor.
+//
+// COST: exactly zero new work. Same instruction, same sheenFall term the
+// specular lobe below already computes and this line already consumed --
+// one changed float literal.
+//
+// KNOWN, MEASURED SIDE EFFECT, and it is unavoidable at any gain above
+// ~1.4: this amplifies the DOT LATTICE too, and the lattice already sits at
+// 30% of full contrast. Light theme, a dot's centre pixel is
+// 0.994*0.68 + 0.086*0.32 = 0.701, deviation -0.293 from u_pivot, so it
+// bottoms out at black once 0.293 * (1 + 4.6*sheenFall) >= 0.994, i.e.
+// sheenFall >= 0.303, i.e. within r = 340*(1-sqrt(0.303)) = 153px of the
+// cursor. Dark theme is symmetric (dot 0.333, deviation +0.282, clips to
+// white on the same schedule). Accepted: it affects the ~1px dot in each
+// 24px cell only, it reads as the lattice sharpening under the light rather
+// than as an artefact, and it is a transient shader-side effect on an
+// UNCHANGED bake -- BACKDROP_DOT_OPACITY stays 0.32, so TileTransition's
+// dot-for-dot parity at the moment of reveal is untouched.
+const float TEX_REVEAL_GAIN = 4.6;
 
 // --- Non-linear crest response --------------------------------------------
 // Ripples already sum LINEARLY into the gradient above, which is correct
@@ -172,21 +221,30 @@ const float TEX_REVEAL_GAIN = 1.1;
 // Thresholds are measured against what a lone packet can produce. Peak
 // |dhdr| = weight * ~0.22 where weight = ripple.w * decay * atten, so a
 // mid-life crest sits near 0.15 and the strongest possible fresh crest
-// (w=1.3, decay~0.99, atten~0.98) near 0.28. CREST_SOLO = 0.26 therefore
-// leaves even the strongest single ripple essentially untouched (+2%),
-// while two crossing crests around 0.40 get roughly +60% and a full
-// constructive pile-up saturates at +85% -- steeper slope, deeper
-// refraction of the dot lattice, brighter shade lobe. That is what shallow
-// water actually does where two wavefronts meet, and what "ripples
-// interacting" looks like. Destructive interference needs no term of its
-// own: the linear sum already cancels there, and the lowered SPEC_GATE
-// above is what lets the cancelled region read as a genuinely dark null
-// instead of a still-saturated highlight.
+// (w=1.3, decay~0.99, atten~0.98) near 0.28 -- against the OLD flat 90px
+// packet. Destructive interference needs no term of its own: the linear sum
+// already cancels there, and the lowered SPEC_GATE above is what lets the
+// cancelled region read as a genuinely dark null instead of a still-
+// saturated highlight.
 //
-// The ambient swell can never trip this: its |grad| tops out near 0.015,
-// two orders of magnitude below CREST_SOLO.
-const float CREST_SOLO = 0.26;
-const float CREST_CROSS = 0.48;
+// 0.26 -> 0.32 and 0.48 -> 0.55, re-derived for two changes that both
+// invalidate the 0.28 measurement above:
+//   (1) per-ripple packet width (PACKET_MIN_PX/MAX_PX): the thinnest 26px
+//       envelopes have envDeriv maxing at PI/26 = 0.121 instead of
+//       PI/90 = 0.035, raising a lone packet's peak |dhdr| from
+//       weight*0.22 to weight*0.24, so the strongest single fresh ripple
+//       now reaches ~0.30 -- above the old 0.26, which would have made
+//       "one crest" and "two crossing crests" look alike again, the exact
+//       regression this threshold exists to prevent.
+//   (2) a much higher live ripple population (see SPAWN_MEAN_MS below): the
+//       mean simultaneously-in-band count rises well past 1, so a threshold
+//       tuned to fire on genuine crossings would otherwise fire almost
+//       always instead.
+// 0.32 restores the original intent (the strongest lone ripple sits just
+// under the toe), and 0.55 keeps the same ~1.7x solo-to-saturation span the
+// pair always had.
+const float CREST_SOLO = 0.32;
+const float CREST_CROSS = 0.55;
 const float INTERFERE_GAIN = 0.85;
 
 // normalize(vec3(-0.6, 0.8, 0.35)) -- upper-left key light, in SCREEN space
@@ -246,13 +304,15 @@ vec3 waterColor(vec2 p) {
     vec2 delta = p - ripple.xy;
     float dist = length(delta);
 
-    // Distance BEHIND the expanding leading edge. The two rejects (this one
-    // and the one after the envelope/wavelength hash below) are what keep
-    // the real cost far under the worst case: a fragment only pays for the
-    // sin/cos work of ripples whose 90px-thick wavefront is currently
-    // crossing it.
+    // Distance BEHIND the expanding leading edge, now tested in TWO stages.
+    // The first bound is the compile-time PACKET_MAX_PX, so it is as cheap
+    // as the old single test was and rejects on exactly the same terms; the
+    // second is the ripple's own width and only runs for the survivors it
+    // will keep. Splitting it this way is what keeps the width hash below
+    // OFF the rejection path -- hashing before the first test would charge
+    // every occupied slot ~7 ops it does not need.
     float d = age * speed - dist;
-    if (d < 0.0 || d > PACKET_PX) continue;
+    if (d < 0.0 || d > PACKET_MAX_PX) continue;
 
     // Per-ripple wavelength hash, off the two independent random fields the
     // slot already carries (birth time, amplitude) -- a fract() product
@@ -260,20 +320,52 @@ vec3 waterColor(vec2 p) {
     // and the quality bar here is "ripples don't share a wavelength", not
     // statistical soundness. Ripples stay CIRCULAR (no per-ripple
     // elongation/orientation) -- wavefronts are perfect expanding rings,
-    // varied only in speed, amplitude and this wavelength jitter.
+    // varied only in speed, amplitude, this wavelength jitter, and the
+    // envelope width below.
     float wobble = fract(ripple.z * 12.9898 + ripple.w * 78.233);
+
+    // A SECOND, independent hash off the SAME two fields -- still no new
+    // uniform data, still no transcendental, ~4 ops. Reusing wobble for
+    // both would correlate them perfectly and in the worst direction: the
+    // thinnest packets would always draw the longest wavelength (the 0.90
+    // factor), so a thin ripple would invariably hold ~0.8 of a cycle and a
+    // fat one ~4.8, an exceptionless rule the eye picks up as a pattern.
+    // The two multiplier pairs generate very differently conditioned
+    // lattices (12.99/78.23 = 0.166 against 45.16/21.32 = 2.118), so the
+    // two scalars are visually independent.
+    float widthHash = fract(ripple.z * 45.164 + ripple.w * 21.317);
+
+    // Cubic skew, not a uniform spread -- "usually thin, sometimes
+    // thicker". E[u^3] = 1/4, so the mean lands at 26 + 104/4 = 52px, the
+    // MEDIAN at 26 + 104*0.125 = 36.8px, 51% of ripples come out under
+    // 40px (a single clean ring), 14.9% exceed the old flat 90px, and 6.9%
+    // exceed 110px. A uniform draw would put the median at 78px and read as
+    // "every ripple is an arbitrary width" rather than "thin, with the
+    // occasional fat one".
+    //
+    // Written as u*u*u, not pow(u, 3.0): pow() is a transcendental and this
+    // is inside the ripple loop. Two multiplies, exactly equal.
+    float packet = PACKET_MIN_PX + PACKET_SPAN_PX * (widthHash * widthHash * widthHash);
+    if (d > packet) continue;
 
     float decay = 1.0 - age / RIPPLE_LIFE_S;
     decay *= decay;
     float atten = 1.0 / (1.0 + dist / ATTEN_FALLOFF_PX);
     float weight = ripple.w * decay * atten;
 
-    float envRoot = sin(PI * d / PACKET_PX);
+    // PI/PACKET_PX used to be constant-folded by the compiler; packet is
+    // per-ripple, so it is a real divide now -- hoisted so the envelope and
+    // its derivative share the one division and the one sin/cos argument.
+    float invPacket = PI / packet;
+    float envPhase = d * invPacket;
+    float envRoot = sin(envPhase);
     float env = envRoot * envRoot;
-    float envDeriv = 2.0 * envRoot * cos(PI * d / PACKET_PX) * (PI / PACKET_PX);
+    float envDeriv = 2.0 * envRoot * cos(envPhase) * invPacket;
 
-    // Per-ripple wavelength, +/-10%: 2.7..3.3 crests inside the same 90px
-    // packet instead of exactly 3 every time.
+    // Per-ripple wavelength, +/-10%: 27..33px, held FIXED against the
+    // envelope width above, so the number of crests inside the packet is
+    // what varies -- roughly 0.9 crests in the thinnest 26px envelope, 3 in
+    // a 90px one, 4.3 in the fattest 130px one.
     float k = (2.0 * PI / WAVELENGTH_PX) * (0.90 + 0.20 * wobble);
     float carrier = cos(k * d);
     float carrierDeriv = sin(k * d);
@@ -390,23 +482,57 @@ void main() {
 // short lulls, where a uniform window with jitter reads as a metronome. The
 // clamps only trim the distribution's two tails: without SPAWN_MIN_MS the
 // shortest gaps land inside a single frame and waste a slot, and without
-// SPAWN_MAX_MS a rare long tail leaves the water visibly empty. The lower
-// clamp is what makes the EFFECTIVE mean 273.9ms rather than the nominal
-// 260: E[max(90, Exp(260))] = 90*(1-e^-90/260) + 350*e^-90/260 = 273.9,
-// less a negligible 1.2ms correction from the upper clamp.
+// SPAWN_MAX_MS a rare long tail leaves the water visibly empty.
 //
-// 260, down from 340, is the "slightly more frequent" ask -- roughly 24%
-// more drops. That pushes the steady-state population from ~7.6 to
-// 2600/273.9 ~= 9.5 live (sigma ~= 3.1), which is why MAX_RIPPLES went
-// 10 -> 14 alongside it: at a mean that close to the old cap, the pool
-// would sit at capacity a large fraction of the time. 14 sits at
-// mean+1.45sigma; above it the evicted ripple is the oldest of fourteen
-// spread over RIPPLE_LIFE_S, i.e. age ~2.4s, where decay = (1-2.4/2.6)^2
-// ~= 0.006 -- there is nothing left to cut off. Empty ripple slots cost one
-// scalar compare each in the fragment loop, so headroom above the typical
-// count is close to free.
-const SPAWN_MEAN_MS = 260
-const SPAWN_MIN_MS = 90
+// The lower clamp is what makes the EFFECTIVE mean 82.0ms rather than the
+// nominal 75: E[max(35, Exp(75))] = 35*(1-e^-35/75) + 110*e^-35/75
+// = 35*0.3729 + 110*0.6271 = 82.0, less a correction from the upper clamp
+// that is now truly negligible (P(Exp(75) > 1400) = e^-18.7 = 8e-9).
+//
+// 260 -> 75, i.e. "drastically more rain", not another modest bump. Steady-
+// state population goes 2600/273.9 = 9.5 live to RIPPLE_LIFE_S /
+// effective_mean_gap = 2600/82.0 = 31.7 live, a 3.3x increase, at 12.2
+// drops/second.
+//
+// SPAWN_MIN_MS 90 -> 35 is NOT cosmetic and must move with the mean. At a
+// 75ms mean, P(Exp(75) < 90) = 70%, so a 90ms floor would clamp seven gaps
+// in ten to the identical value and turn a Poisson arrival process into a
+// literal metronome -- destroying the "drops genuinely cluster and leave
+// short lulls" property this whole distribution exists for, at exactly the
+// density where clustering is most visible. 35ms is ~2 frames at 60fps, and
+// its original justification (a sub-frame gap "wastes a slot") has largely
+// lapsed: MAX_RIPPLES more than tripled below, so slots are no longer the
+// scarce resource, and two drops in one frame at two different
+// pickSpawnPoint()s read as two drops, not as one. At 35ms the clamp fires
+// on 37% of draws and the tail is otherwise intact.
+//
+// 14 -> 44. The standard is the one MAX_RIPPLES already used: enough
+// headroom that the evict-oldest rule is invisible. Population 31.7, an
+// upper bound sigma <= sqrt(31.7) = 5.6 (the min clamp makes the renewal
+// process sub-Poisson, so the true variance is lower), so 44 sits at
+// mean + 2.2 sigma, MORE conservative than the old 14's mean + 1.45 sigma.
+// And when it does evict, the victim is the oldest of forty-four spread
+// over RIPPLE_LIFE_S, i.e. age ~= 2.6 * 43/44 = 2.54s, where
+// decay = (1 - 2.54/2.6)^2 = 0.0005 -- an order of magnitude below the old
+// 0.006.
+//
+// PER-FRAGMENT COST, honestly. Two terms move in opposite directions: the
+// per-ripple sin/cos work an in-band ripple pays goes UP with population
+// but DOWN per-ripple thanks to PACKET_MIN_PX/MAX_PX's thinner mean
+// envelope (see that constant's own comment), landing around 1.9x today's
+// in-band cost; the ripple LOOP ITSELF (a compile-time-unrolled 44
+// iterations instead of 14, each occupied-but-off-band slot paying the age
+// test, speed multiply, delta subtract, length() and compares) is the
+// larger mover, at roughly 2.6x. Against the rest of this shader (three
+// cos() of ambient swell, one texture fetch, two pow(48) specular lobes, a
+// normalize) the whole water fragment lands around 2x its previous cost.
+// This is a FULL-VIEWPORT term that does not scale with the bead count,
+// unlike everything BeadScene.tsx's own perf comments are about. If it ever
+// needs trimming, cut MAX_RIPPLES before SPAWN_MEAN_MS -- the population is
+// what you see, the headroom is not (at 36 the evicted ripple's decay is
+// still only 0.001).
+const SPAWN_MEAN_MS = 75
+const SPAWN_MIN_MS = 35
 const SPAWN_MAX_MS = 1400
 const AMPLITUDE_MIN = 0.7
 const AMPLITUDE_MAX = 1.3
