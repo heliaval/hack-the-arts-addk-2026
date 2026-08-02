@@ -14,6 +14,25 @@ const MAX_WIDTH_PX = 3
 const MIN_LENGTH_PX = 18
 const MAX_LENGTH_PX = 34
 
+// How far around the globe's silhouette (in radians) a wrapping drop travels
+// before peeling back off into a straight fall. Randomized per drop, and
+// capped below π (the exact bottom pole) — without this every wrapping drop
+// would ride the curve all the way to the same (centerX, centerY + radius)
+// point and release from that single pixel, which is what made the effect
+// read as unnaturally synchronized rather than like independent rivulets.
+const MIN_WRAP_SPAN_RAD = Math.PI * 0.35
+const MAX_WRAP_SPAN_RAD = Math.PI * 0.95
+
+// Fraction of spawns pulled toward the globe's own horizontal band rather
+// than scattered uniformly across the full viewport width — otherwise, on a
+// wide viewport, only a small minority of drops ever cross the globe at all
+// and the "rain on the globe" read gets lost in ambient side-fall.
+const GLOBE_BAND_SPAWN_FRACTION = 0.65
+// How far past the globe's own radius that band extends, so drops still
+// visibly approach the silhouette from just outside it rather than only
+// ever spawning directly above it.
+const GLOBE_BAND_RADIUS_MULTIPLIER = 1.4
+
 function randomBetween(min: number, max: number): number {
   return min + Math.random() * (max - min)
 }
@@ -34,6 +53,12 @@ export interface Drop {
   /** Angle in [0, π] around the globe's center, 0 = top (north pole of the
    * visible silhouette), π = bottom. Only meaningful while phase === 'wrap'. */
   wrapAngle: number
+  /** The wrapAngle at which this drop peels back off the silhouette into a
+   * straight fall — randomized per drop (see MIN/MAX_WRAP_SPAN_RAD) so drops
+   * release at varied points along the bottom curve instead of all
+   * converging on the exact same pixel. Only meaningful while
+   * phase === 'wrap'. */
+  wrapExitAngle: number
   /** Which side of the globe's vertical centerline this drop entered on.
    * Only meaningful while phase === 'wrap'. */
   wrapSide: -1 | 1
@@ -48,27 +73,44 @@ function randomDrop(x: number, y: number): Drop {
     length: randomBetween(MIN_LENGTH_PX, MAX_LENGTH_PX),
     phase: 'fall',
     wrapAngle: 0,
+    wrapExitAngle: Math.PI,
     wrapSide: 1,
   }
+}
+
+/** Picks a spawn x biased toward the globe's own horizontal band (see
+ * GLOBE_BAND_SPAWN_FRACTION) so a majority of drops visibly cross its
+ * silhouette rather than scattering evenly across the full viewport. Falls
+ * back to a full-width uniform pick once no globe has been measured yet. */
+function randomSpawnX(viewportWidth: number, globe: GlobeCircleLike | null): number {
+  if (!globe || Math.random() >= GLOBE_BAND_SPAWN_FRACTION) return Math.random() * viewportWidth
+  const bandHalfWidth = globe.radius * GLOBE_BAND_RADIUS_MULTIPLIER
+  const min = Math.max(0, globe.centerX - bandHalfWidth)
+  const max = Math.min(viewportWidth, globe.centerX + bandHalfWidth)
+  return randomBetween(min, max)
 }
 
 /** A fresh drop above the viewport, ready to fall in. Used both for the
  * initial pool (see seedDrop) and to recycle a drop that has fallen past
  * the bottom of the viewport. */
-export function spawnDropAbove(viewportWidth: number): Drop {
-  const x = Math.random() * viewportWidth
+export function spawnDropAbove(viewportWidth: number, globe: GlobeCircleLike | null = null): Drop {
+  const x = randomSpawnX(viewportWidth, globe)
   const y = -RESPAWN_MARGIN_PX - Math.random() * RESPAWN_MARGIN_PX
   return randomDrop(x, y)
 }
 
 // Snaps a drop that has just crossed into the globe's circle into the
-// 'wrap' phase, deriving wrapAngle/wrapSide from the (x, y) it crossed at.
+// 'wrap' phase, deriving wrapAngle/wrapSide from the (x, y) it crossed at,
+// and picks a randomized wrapExitAngle (see its field comment) at least as
+// far around as the entry angle, so the drop always makes forward progress.
 // y = centerY - radius*cos(angle)  =>  cos(angle) = (centerY - y) / radius
 function enterWrap(drop: Drop, x: number, y: number, globe: GlobeCircleLike): void {
   const side: -1 | 1 = x >= globe.centerX ? 1 : -1
   const cosAngle = Math.min(1, Math.max(-1, (globe.centerY - y) / globe.radius))
+  const entryAngle = Math.acos(cosAngle)
   drop.phase = 'wrap'
-  drop.wrapAngle = Math.acos(cosAngle)
+  drop.wrapAngle = entryAngle
+  drop.wrapExitAngle = Math.min(Math.PI, entryAngle + randomBetween(MIN_WRAP_SPAN_RAD, MAX_WRAP_SPAN_RAD))
   drop.wrapSide = side
 }
 
@@ -84,7 +126,7 @@ function isInsideGlobe(x: number, y: number, globe: GlobeCircleLike): boolean {
  * that random position happens to already be inside the globe's
  * silhouette, the drop starts directly in the 'wrap' phase. */
 export function seedDrop(viewportWidth: number, viewportHeight: number, globe: GlobeCircleLike | null): Drop {
-  const x = Math.random() * viewportWidth
+  const x = randomSpawnX(viewportWidth, globe)
   const y = randomBetween(-RESPAWN_MARGIN_PX, viewportHeight + RESPAWN_MARGIN_PX)
   const drop = randomDrop(x, y)
   if (globe && isInsideGlobe(x, y, globe)) enterWrap(drop, x, y, globe)
@@ -118,10 +160,11 @@ export function updateDrop(
         break
       }
       drop.wrapAngle += (drop.speed * dt) / globe.radius
-      if (drop.wrapAngle >= Math.PI) {
-        drop.wrapAngle = Math.PI
-        drop.x = globe.centerX
-        drop.y = globe.centerY + globe.radius
+      if (drop.wrapAngle >= drop.wrapExitAngle) {
+        drop.wrapAngle = drop.wrapExitAngle
+        const exitPosition = dropPosition(drop, globe)
+        drop.x = exitPosition.x
+        drop.y = exitPosition.y
         drop.phase = 'release'
       }
       break
@@ -134,7 +177,7 @@ export function updateDrop(
 
   const { y } = dropPosition(drop, globe)
   if (y - drop.length > viewportHeight + RESPAWN_MARGIN_PX) {
-    Object.assign(drop, spawnDropAbove(viewportWidth))
+    Object.assign(drop, spawnDropAbove(viewportWidth, globe))
   }
 }
 
@@ -198,7 +241,7 @@ function resolveRainColors(): RainColors {
   }
 }
 
-const DROP_COUNT = 30
+const DROP_COUNT = 55
 // Capped like BeadScene's Canvas dpr (see BeadScene.tsx's <Canvas dpr={[1, 1.5]}>)
 // for the same reason: crisp lines without paying for a full 2-3x device
 // pixel ratio's worth of fragments on every frame.
