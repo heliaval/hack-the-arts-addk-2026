@@ -466,33 +466,17 @@ const BeadEnvironment = memo(function BeadEnvironment({
 // Lightformer rig (BeadEnvironment) and no longer scale with it.
 const BACKDROP_SCALE = 1
 
-// Static base only (a flat opaque fill) — memoized on theme/viewport size
+// Static base only (gradient) — memoized on theme/viewport size
 // alone, so it is NOT rebuilt every time the globe rotates or the circle
 // moves a pixel during layout. The live globe is composited on top of a
 // copy of this each frame in Backdrop's useFrame, below.
 //
-// Was a vertical light-to-dark linear gradient (#4a4a4a -> #262626 ->
-// #0d0d0d dark, #ffffff -> #dcdcdc -> #b0b0b0 light). Removed per explicit
-// request: the top-to-bottom lightness falloff was directly visible behind
-// the globe as banded polygonal shapes and read as unnatural. Pure black in
-// BOTH themes, deliberately -- the request was for a look, not a theme
-// token; `theme` stays a parameter/dependency so the per-theme hook
-// signature stays intact for whatever real artwork eventually replaces
-// this (swapping back to a theme-conditional fill is a one-line change
-// here and nowhere else).
-//
-// What must NOT change: this fill has to stay fully OPAQUE. three's
-// transmission pass only samples opaque geometry, and this canvas is
-// alpha-composited into the page -- see the long comment above for the
-// alpha-leak bug a transparent backdrop caused. '#000000' is opaque, so
-// both invariants hold.
-// `theme` is still accepted (call site passes it, and the signature stays
-// ready for whenever a theme-conditional fill or real artwork replaces
-// this) but deliberately isn't in the memo's own dependency array below --
-// the fill is unconditionally black now, so it genuinely doesn't affect
-// the output, and oxlint's exhaustive-deps rightly flags an unused dep.
+// Round-tripped 2026-08-06: this was briefly swapped to a flat pure-black
+// fill, then explicitly reverted back to this exact gradient the same day
+// -- "implement exactly the same texture as before... we will change it
+// in a bit". Treat this as still-temporary placeholder art, not a
+// settled decision either way.
 function useBackdropBase(theme: 'light' | 'dark', width: number, height: number) {
-  void theme
   return useMemo(() => {
     if (width <= 0 || height <= 0) return null
     const canvas = document.createElement('canvas')
@@ -502,14 +486,24 @@ function useBackdropBase(theme: 'light' | 'dark', width: number, height: number)
     canvas.height = h
     const ctx = canvas.getContext('2d')
     if (!ctx) return null
-    ctx.fillStyle = '#000000'
+    const gradient = ctx.createLinearGradient(0, 0, 0, h)
+    if (theme === 'dark') {
+      gradient.addColorStop(0, '#4a4a4a')
+      gradient.addColorStop(0.55, '#262626')
+      gradient.addColorStop(1, '#0d0d0d')
+    } else {
+      gradient.addColorStop(0, '#ffffff')
+      gradient.addColorStop(0.55, '#dcdcdc')
+      gradient.addColorStop(1, '#b0b0b0')
+    }
+    ctx.fillStyle = gradient
     ctx.fillRect(0, 0, w, h)
     // The bokeh highlights that used to live here now live in the
     // Lightformer rig (BeadEnvironment) instead — same illuminating effect
     // on the beads, but no longer a shape visible directly in this backdrop.
     // See docs/superpowers/specs/2026-08-01-hidden-backdrop-glow-design.md.
     return canvas
-  }, [width, height])
+  }, [theme, width, height])
 }
 
 // Every other frame only (~30fps at a 60fps display) — the globe rotates
@@ -522,17 +516,17 @@ function useBackdropBase(theme: 'light' | 'dark', width: number, height: number)
 // rate halves this cost without touching resolution or reverting that fix.
 const BACKDROP_UPDATE_EVERY_N_FRAMES = 2
 
-// Only the globe-sized region needs a per-frame update -- the base fill
+// Only the globe-sized region needs a per-frame update -- the gradient
 // behind it never changes once built (see useBackdropBase). Previously
 // this whole file's Backdrop was one full-viewport canvas, recomposited
 // AND re-uploaded every BACKDROP_UPDATE_EVERY_N_FRAMES frames even though
 // only the globe's own on-screen box (typically well under half the
 // viewport) ever actually changes. Split into two meshes: a full-viewport
-// base plane whose texture uploads exactly once (CanvasTexture uploads on
-// construction; nothing here ever sets needsUpdate on it again), and a
-// small globe-sized plane that gets the per-frame composite+upload
-// treatment, at its own boxSize x boxSize resolution instead of the full
-// viewport.
+// gradient plane whose texture uploads exactly once (CanvasTexture
+// uploads on construction; nothing here ever sets needsUpdate on it
+// again), and a small globe-sized plane that gets the per-frame
+// composite+upload treatment, at its own boxSize x boxSize resolution
+// instead of the full viewport.
 const Backdrop = memo(function Backdrop({
   theme,
   circle,
@@ -592,9 +586,8 @@ const Backdrop = memo(function Backdrop({
     // Coordinates are DOM/CSS pixels with a top-left origin, matching this
     // canvas's own 2D coordinate system directly (unlike GlobeCollider,
     // which has to flip into world-space for Rapier). Crop `base` at the
-    // same box the globe itself occupies, so the base fill stays
-    // continuous across the seam between the two planes (trivially now,
-    // since it's a flat colour rather than a gradient).
+    // same box the globe itself occupies, so the gradient stays
+    // continuous across the seam between the two planes.
     const cx = circle.centerX * BACKDROP_SCALE
     const cy = circle.centerY * BACKDROP_SCALE
     const sx = cx - boxSize / 2

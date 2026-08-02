@@ -4357,3 +4357,47 @@ this sandbox's Browser pane can't reliably trigger via synthetic canvas
 clicks (documented limitation, unchanged) -- user should confirm live.
 
 Status: done. Committed with the standing backdated timestamp.
+
+## 2026-08-06 (continued) — Dot contrast fix, backdrop reverted to gradient, transition fade-in/out + slower
+
+Four direct fixes from one message:
+
+1. **Dot texture invisible in light mode** (`TileTransition.tsx`): root
+   cause is contrast, not a logic bug -- `--foreground` is near-black in
+   light mode, and 18%-opacity near-black dots over a near-white
+   `bg-muted/55` blend to a barely-there light grey, unlike dark mode's
+   near-white dots over dark-grey `bg-muted/55` which stay legible at the
+   same alpha. Bumped `DOT_GRID_BASE_STYLE.opacity` 0.18 -> 0.32,
+   uniformly (not per-theme, since dark mode wasn't the reported problem).
+2. **BeadScene backdrop reverted to the gradient** (`BeadScene.tsx`): user
+   asked for pure white in light mode, then immediately reconsidered mid-
+   message and asked to put the ORIGINAL gradient back entirely ("we will
+   change it in a bit") -- reverted `useBackdropBase` back to the exact
+   theme-conditional linear gradient from before the pure-black change
+   two commits ago, restored `theme` to the memo's dependency array, and
+   restored the "gradient" wording in the two comments that had been
+   updated to say "flat fill"/"base fill".
+3. **Transition fade-in added, both fade edges slowed**
+   (`TileTransition.tsx`): user reported the sequence's start/end felt
+   "too intermittent" -- previously the grid POPPED to opacity 1 the
+   instant it mounted (no transition on a mount, since `transition-
+   opacity` only animates a style CHANGE) and only faded OUT. Added a new
+   `entering` state: a fresh cycle mounts at opacity 0, then a double-rAF
+   flips it to false so the 0->1 change is a real CSS transition (a
+   single rAF risks landing in the same paint as the initial commit,
+   producing the same instant pop it's meant to fix). New `FADE_IN_MS`
+   constant (260ms) mirrors `FADE_OUT_MS` (bumped 150ms -> 260ms).
+4. **Overall pacing slowed** per "could be slower": `LEAD_IN_FORWARD_MS`
+   220->280, `LEAD_IN_REVERSE_MS` 180->240, `TILE_FLIP_MS` 460->600,
+   `TRAILING_SLACK_MS` 80->100, `RETRIGGER_COVER_MS` 220->260. All
+   eyeball-tuned, not measured, consistent with every other timing
+   constant in this file.
+
+Verification: `npm run build` clean, `npx oxlint src` clean (same
+pre-existing unrelated warnings). No new console errors on a fresh load.
+The dot contrast, gradient revert, and fade-in/timing changes are only
+observable during/after an active transition, which this sandbox can't
+reliably trigger via synthetic canvas clicks (documented limitation,
+unchanged) -- user should confirm live.
+
+Status: done. Committed with the standing backdated timestamp.

@@ -34,26 +34,40 @@ const reducedMotionQuery =
 // the viewport's actual height/width so each cell works out to the same
 // pixel size on both axes.
 const COLUMNS = 6
-const LEAD_IN_FORWARD_MS = 220
-const LEAD_IN_REVERSE_MS = 180
-const TILE_FLIP_MS = 460
+// All timing below bumped slower per explicit request ("could be
+// slower") in the same pass that added the fade-in/out below -- values
+// are eyeball-tuned, not measured, same as before.
+const LEAD_IN_FORWARD_MS = 280
+const LEAD_IN_REVERSE_MS = 240
+const TILE_FLIP_MS = 600
 const TILE_PERSPECTIVE_PX = 900
+// How long the grid takes to fade in from nothing at the very start of a
+// fresh cycle (idle -> covering), mirroring FADE_OUT_MS below. Added per
+// explicit feedback that the sequence's start and end points felt
+// "intermittent" -- before this, the grid POPPED to full opacity the
+// instant it mounted (no transition on that first commit at all, since
+// `transition-opacity` only animates a style CHANGE, and mount is not a
+// change). See the `entering` state below for how this is actually
+// triggered (mounting at opacity 0 isn't enough by itself -- the browser
+// needs a painted frame at 0 before the flip to 1 is a transition rather
+// than the initial value).
+const FADE_IN_MS = 260
 // How long the grid takes to fade to nothing once every tile has finished
 // flipping. Without this the last frame is a fully-opaque grid removed in
 // a single commit -- fine with today's translucent placeholder tint, but
 // once real (opaque) artwork replaces it that pop reintroduces the exact
 // hard cut this component exists to soften.
-const FADE_OUT_MS = 150
+const FADE_OUT_MS = 260
 // The last tile to flip (delayMs === maxDelayMs) only finishes its own
 // CSS transition TILE_FLIP_MS after `revealing` actually commits+paints,
 // not at the nominal schedule instant -- this slack absorbs that so the
 // fade-out doesn't start while the slowest tile is still mid-turn.
-const TRAILING_SLACK_MS = 80
+const TRAILING_SLACK_MS = 100
 // A quicker, non-staggered return when the transition is re-triggered
 // mid-flight (e.g. beadSceneVisible flips again before a cycle finished)
 // -- snapping every tile back to flat uniformly reads better than
 // continuing to honor the forward sweep's per-tile delays in reverse.
-const RETRIGGER_COVER_MS = 220
+const RETRIGGER_COVER_MS = 260
 // Matches cube-flip-toggle's own overshoot easing, per explicit request to
 // make this read as the same mechanical "bounce" as that button. An
 // earlier version of this file used a symmetric ease-in-out instead,
@@ -79,25 +93,36 @@ const FALLBACK_ROWS = 4
 // Applied to front and back faces so lighting reads on whichever one is
 // currently facing the viewer.
 const FACE_LIGHT_SHADOW = 'inset 0 1px 0 oklch(1 0 0 / 14%), inset 0 -10px 14px -10px oklch(0 0 0 / 35%)'
-// Copied verbatim from dot-matrix-background.tsx's dot-grid layer (same
-// radial-gradient, same 24px cell, same 0.18 opacity) so the resting front
-// face reads as the app's own background rather than an approximation of
-// it. Only the base grid is replicated here -- that component's
-// cursor-reveal mask, sheen and glass-photo layers are all driven by live
-// --mx/--my pointer tracking and have no meaning on a face that exists for
-// ~200ms and is about to rotate away.
+// Same radial-gradient/24px cell as dot-matrix-background.tsx's dot-grid
+// layer, so the resting front face reads as the app's own background
+// rather than an approximation of it. Only the base grid is replicated
+// here -- that component's cursor-reveal mask, sheen and glass-photo
+// layers are all driven by live --mx/--my pointer tracking and have no
+// meaning on a face that exists for ~200ms and is about to rotate away.
+//
+// Opacity bumped to 0.32 from that source layer's own 0.18 -- copied
+// verbatim at 0.18 first, then reported invisible in light mode. Root
+// cause is contrast, not a bug: --foreground is near-black in light mode
+// (oklch(0.2 0 0)) over a near-white bg-muted/55, and dots at 18% opacity
+// blend to a barely-there light grey there, versus near-white dots over
+// dark-grey bg-muted/55 in dark mode, which stays legible at the same
+// opacity -- the same alpha value does NOT read as equally visible in
+// both directions on this particular pairing. Raised uniformly (not
+// per-theme) since dark mode wasn't the reported problem and a single
+// value keeps this simple; if 0.32 reads as too strong in dark mode,
+// that's the number to walk back down.
 //
 // Its own layer (a child of the face) rather than a backgroundImage on the
-// face itself: the source's dot alpha comes from a layer `opacity: 0.18`,
-// and putting that directly on the face would also fade its bg-muted
-// tint, its border and FACE_LIGHT_SHADOW. Module-level constant, not an
-// inline object literal -- this component re-renders ~16x/sec mid-
-// transition (see the memo comment below), and a stable reference is one
-// fewer allocation per tile per render.
+// face itself: the dot alpha comes from a layer `opacity`, and putting
+// that directly on the face would also fade its bg-muted tint, its
+// border and FACE_LIGHT_SHADOW. Module-level constant, not an inline
+// object literal -- this component re-renders ~16x/sec mid-transition
+// (see the memo comment below), and a stable reference is one fewer
+// allocation per tile per render.
 const DOT_GRID_BASE_STYLE: CSSProperties = {
   backgroundImage: 'radial-gradient(circle at center, var(--foreground) 0 1px, transparent 1px)',
   backgroundSize: '24px 24px',
-  opacity: 0.18,
+  opacity: 0.32,
 }
 // Dots tile every 24px from their own box's origin, but a cell is
 // innerWidth/COLUMNS px wide -- almost never a multiple of 24 -- so an
@@ -187,6 +212,14 @@ export const TileTransition = memo(function TileTransition({ active, circle }: T
 
   const [phase, setPhase] = useState<Phase>('idle')
   const [retriggered, setRetriggered] = useState(false)
+  // Drives the fade-IN, symmetric to `phase === 'fadingOut'` driving the
+  // fade-out. Starts a fresh cycle true (grid mounts at opacity 0) then
+  // flips false a couple of frames later so the opacity change from 0->1
+  // is a real CSS transition, not the element's initial value (a mount
+  // has no "previous style" to transition FROM). Left false during a
+  // mid-flight retrigger -- the grid is already visible then, so there's
+  // nothing to fade in.
+  const [entering, setEntering] = useState(false)
   // Half of a real tile's rendered width, in px -- translateZ needs an
   // absolute length, and a mismatch here means the two cube faces don't
   // actually meet at a shared edge (a visible slit/overlap at every
@@ -222,6 +255,21 @@ export const TileTransition = memo(function TileTransition({ active, circle }: T
     setHalfWidthPx(cellPx / 2)
     setRows(nextRows)
     setPhase('covering')
+    // Double rAF, not a single one or a setTimeout(0): a single rAF's
+    // callback can still fire before the browser has actually painted the
+    // `entering: true` (opacity 0) commit above, in which case the flip
+    // to false lands in the SAME paint and there is no "0" frame to
+    // transition from -- back to an instant pop. Two rAFs guarantee at
+    // least one full paint happens in between (the standard "wait for the
+    // next frame after this one" idiom).
+    if (wasMidFlight) {
+      setEntering(false)
+    } else {
+      setEntering(true)
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => setEntering(false))
+      })
+    }
     // maxDelayMs computed as a LOCAL here (via buildTiles(nextRows), not
     // read from the `tiles`/state derived elsewhere) and deliberately kept
     // OUT of this effect's dependency array. Two reasons, found together
@@ -313,8 +361,11 @@ export const TileTransition = memo(function TileTransition({ active, circle }: T
         // viewport itself.
         gridTemplateColumns: `repeat(${COLUMNS}, ${halfWidthPx * 2}px)`,
         gridTemplateRows: `repeat(${rows}, ${halfWidthPx * 2}px)`,
-        opacity: phase === 'fadingOut' ? 0 : 1,
-        transitionDuration: `${FADE_OUT_MS}ms`,
+        // `entering` and `phase === 'fadingOut'` are mutually exclusive by
+        // construction (entering is always set false well before
+        // fadingOut is ever reached), so this can't fight itself.
+        opacity: entering || phase === 'fadingOut' ? 0 : 1,
+        transitionDuration: phase === 'fadingOut' ? `${FADE_OUT_MS}ms` : `${FADE_IN_MS}ms`,
         maskImage,
         WebkitMaskImage: maskImage,
       }}
