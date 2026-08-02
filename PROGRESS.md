@@ -2176,3 +2176,58 @@ Status: done for this round, pending final user confirmation on the
 mouse-light + restored-rig combination (screenshot-based, same sandbox
 compositing limitation as every prior phase). Deadline is 2026-08-01
 8:45pm PDT — same day as this entry.
+
+## 2026-08-01 — Perf audit: no duplicate-instance lag found, one minor per-frame allocation flagged
+
+Started: user (aware other instances/sessions may be touching this
+codebase in parallel) asked to identify any unnecessary code causing lag
+and log findings here. Read-only audit, no code changes.
+
+**Checked for the specific thing asked about — duplicate/redundant
+per-object instances (geometries, materials, globe instances, physics
+worlds, effect subscriptions) — and found none live in the current tree:**
+- `src/components/BeadScene.tsx`: one `THREE.SphereGeometry` at module
+  scope (`BEAD_GEOMETRY`) shared by every bead; a small fixed set of 8
+  materials (`useBeadMaterials`, one per marble variant × birth/death,
+  never one-per-bead); `BeadEnvironment` is `memo()`'d so the environment
+  cube map bakes once (`frames={1}`) instead of re-baking on every ~8/sec
+  bead-spawn re-render; `Boundaries` is `memo()`'d with no props so its 5
+  static colliders aren't reconciled on spawn re-renders either. All of
+  this matches the file's own extensive design comments — confirmed by
+  reading, not just trusting the comments.
+- `src/components/ui/cobe-globe.tsx`: the `createGlobe()` mount effect's
+  dependency array is deliberately trimmed to `[theta, diffuse,
+  mapSamples]` (none of which this app ever changes at runtime), so there
+  is exactly one globe instance and one `requestAnimationFrame` loop for
+  the lifetime of the component — confirmed no second `init()`/`animate()`
+  path exists and the effect cleanup (`cancelAnimationFrame` +
+  `globe.destroy()`) is the only teardown path.
+- `src/App.tsx` / `src/lib/useTheme.ts`: the two-disconnected-`useTheme()`-
+  instances bug (globe colors stuck on stale theme) that a previous
+  session found and fixed is still fixed — `theme` is lifted to `App` and
+  passed down as a prop; no component below it calls `useTheme()` a second
+  time.
+
+**One real, minor finding, not fixed (out of scope for a read-only
+audit):** `cobe-globe.tsx`'s `updateRipples` (inside the `animate()`
+rAF loop, so it runs every frame while any population pulse is active)
+does `liveProps.current.markers.find((m) => m.id === pulse.markerId)` —
+a linear scan of the markers array — for every active pulse, every frame,
+plus allocates a fresh `projected: {x,y}[]` array per pulse per frame for
+the ripple ring path. At the current scale (≤20 markers, pulses are
+short-lived population-tick events) this is not a measurable lag source —
+it's O(pulses × markers) with both factors small — but it's the one place
+in the animation loop that reallocates and re-scans per frame rather than
+reusing state, so it's the first thing to revisit if a future session
+adds many more markers or a higher pulse rate and lag reappears in that
+component specifically. Not changed here since nothing indicates it's
+currently a bottleneck and the task was to identify, not to speculatively
+optimize.
+
+**Conclusion**: no unnecessary/duplicate code instances found that would
+explain current lag. If lag is still being observed, it's more likely
+environmental (this sandbox's browser pane not compositing frames has
+repeatedly blocked FPS measurement across every phase — see the marbles
+phase-3 entry above) than a code-level regression from parallel work.
+
+Status: done (audit only, no code or dependency changes).
