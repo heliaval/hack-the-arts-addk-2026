@@ -4704,3 +4704,39 @@ rounds, just shifted a few lines by the edits above) -- reviewed and
 left unchanged for the same reason as before.
 
 Status: done. Committed with the standing backdated timestamp.
+
+## 2026-08-07 (continued) — Fix: DOM atmosphere layer still painting over the globe
+
+User's follow-up screenshot showed the texture patch still appearing
+"above the globe" -- the previous fix only addressed BeadScene's canvas
+backdrop (the plane drawn behind everything in the 3D scene). This one
+is a different layer entirely: `DotMatrixAtmosphere`, the DOM sheen/
+glass overlay added two rounds ago, which is deliberately stacked ABOVE
+BeadScene's whole `<Canvas>` (so its soft-light blend can actually see
+the beads) -- and that same stacking means it paints over the globe's
+on-screen representation too, unmasked, wherever the cursor-reveal
+circle happens to land.
+
+Fixed with the same hole-punch technique `TileTransition`'s mask already
+uses (a hard-edged transparent circle at the globe's live position/
+radius): `AtmosphereLayers` gained an optional `circle` prop, and when
+present, wraps its sheen+photo children in an outer div carrying that
+hole as its own `mask-image` -- rather than trying to chain a third
+composite operation into each layer's EXISTING cursor-reveal mask
+(`mask-composite` keyword semantics differ between standard and
+`-webkit-` prefixed forms, and the sheen layer doesn't even have a mask
+today, only the photo does), a wrapping element's mask clips whatever
+its descendants would have rendered, uniformly, no compositing
+ambiguity. `DotMatrixBackground` (idle view) does NOT pass `circle` --
+it doesn't need this, since `GlobeView`'s own DOM canvas already paints
+on top of it wherever the sphere is opaque, by the app's existing
+stacking order. `DotMatrixAtmosphere` now takes `circle: GlobeCircle |
+null` as a required prop, threaded from `App.tsx`'s existing
+`globeCircle` state.
+
+Verification: `npm run build` clean, `npx oxlint src` clean (same
+pre-existing unrelated warnings). No new console errors on a fresh load.
+Visual confirmation (texture no longer visible over the sphere itself,
+only in the surrounding margin) needs a live check.
+
+Status: done. Committed with the standing backdated timestamp.

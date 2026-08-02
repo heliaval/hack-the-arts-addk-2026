@@ -1,4 +1,5 @@
 import { useEffect, useRef, type RefObject } from 'react'
+import type { GlobeCircle } from '@/components/ui/cobe-globe'
 
 // Sheen's resting opacity between flicker bursts (src/index.css previously
 // hardcoded this same 0.06 into a CSS keyframes rule before the flicker
@@ -151,11 +152,41 @@ function useSheenFlicker(sheenRef: RefObject<HTMLDivElement | null>) {
 function AtmosphereLayers({
   sheenRef,
   photoUrl,
+  circle,
 }: {
   sheenRef: RefObject<HTMLDivElement | null>
   photoUrl: string
+  /** The globe's live on-screen circle, or null/omitted when this layer
+   * doesn't need to avoid it. Passed by DotMatrixAtmosphere (the
+   * bead-scene overlay), NOT DotMatrixBackground (the idle globe view) --
+   * in the idle view, GlobeView's own DOM canvas already paints ON TOP of
+   * this layer wherever the sphere is opaque (established stacking order,
+   * see App.tsx), so the sheen/photo are naturally hidden there already
+   * and no extra masking is needed. In the bead scene, DotMatrixAtmosphere
+   * deliberately sits ABOVE BeadScene's entire <Canvas> (so its soft-light
+   * blend can see the beads -- see that component's own comment), which
+   * means without this exclusion it paints over the globe's on-screen
+   * representation too, unmasked. */
+  circle?: GlobeCircle | null
 }) {
-  return (
+  // Same hole-punch technique TileTransition uses for its own tiles: a
+  // hard-edged transparent circle at the globe's exact live position/size,
+  // everything else opaque. Applied as an OUTER wrapper's mask (see below)
+  // rather than combined into each layer's own cursor-reveal mask-image --
+  // CSS mask-image layers composite via `mask-composite`, and chaining a
+  // third "subtract this circle" operation onto the sheen's un-masked
+  // radial-gradient background and the photo's ALREADY two-purpose mask
+  // would mean juggling composite keywords (add/subtract/intersect, with
+  // different names again under -webkit-) for three independent concerns
+  // in one property. A wrapping div's mask instead clips ALL of its
+  // descendants' final rendered output uniformly, whatever masks they
+  // already carry internally -- one hole, applied once, no compositing
+  // ambiguity.
+  const globeHoleMask = circle
+    ? `radial-gradient(circle at ${circle.centerX}px ${circle.centerY}px, transparent ${circle.radius}px, black ${circle.radius + 1}px)`
+    : undefined
+
+  const layers = (
     <>
       <div
         ref={sheenRef}
@@ -190,6 +221,17 @@ function AtmosphereLayers({
         }}
       />
     </>
+  )
+
+  if (!globeHoleMask) return layers
+
+  return (
+    <div
+      className="absolute inset-0"
+      style={{ maskImage: globeHoleMask, WebkitMaskImage: globeHoleMask }}
+    >
+      {layers}
+    </div>
   )
 }
 
@@ -270,7 +312,7 @@ export function DotMatrixBackground() {
 //    difference between "lit glass over the scene" and "grey film on top of
 //    it". Adding any z-index, `opacity < 1`, `filter`, `transform` or
 //    `isolation` here silently turns it back into the latter.
-export function DotMatrixAtmosphere() {
+export function DotMatrixAtmosphere({ circle }: { circle: GlobeCircle | null }) {
   const layerRef = useRef<HTMLDivElement>(null)
   const sheenRef = useRef<HTMLDivElement>(null)
   useCursorVars(layerRef)
@@ -282,7 +324,7 @@ export function DotMatrixAtmosphere() {
       className="pointer-events-none fixed inset-0"
       style={{ '--mx': '-9999px', '--my': '-9999px' } as React.CSSProperties}
     >
-      <AtmosphereLayers sheenRef={sheenRef} photoUrl="/textures/brick.jpg" />
+      <AtmosphereLayers sheenRef={sheenRef} photoUrl="/textures/brick.jpg" circle={circle} />
     </div>
   )
 }

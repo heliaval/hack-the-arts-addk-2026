@@ -599,7 +599,7 @@ function App() {
           the globe view never gets two stacked copies of the same glow.
           See DotMatrixAtmosphere's own comment for the full stacking
           rationale. */}
-      {beadSceneVisible && <DotMatrixAtmosphere />}
+      {beadSceneVisible && <DotMatrixAtmosphere circle={globeCircle} />}
       <LeafOverlay leaves={leaves} onLeafDone={handleLeafDone} />
       {!selected && <GlobeRain globeCircle={globeCircle} theme={theme} />}
       {beadSceneVisible && <YearCounters births={progress.births} deaths={progress.deaths} />}
