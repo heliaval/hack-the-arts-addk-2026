@@ -24,16 +24,38 @@ const WALL_THICKNESS = 40
 // (a 1280x800 viewport gives a 640px globe canvas => a 256px sphere) so
 // most beads land ON the globe rather than falling past it.
 export const SPAWN_JITTER_PX = 200
-// Live bead cap. Past this, the oldest bead is dropped as each new one
-// spawns, so performance stays bounded however long the scene stays open.
-// Bead area scales with the square of the radius, so 14 -> 34 makes each
-// bead 5.9x larger on screen; the old cap of 180 would bury the viewport.
-// The previous 180-at-r=14 pile covered ~12% of the screen — matching that
-// coverage would take only ~31 beads, which reads as a scatter, not a pile.
-// 70 covers roughly 28% of the area the (now permanently centered) globe
-// leaves free, filling the lanes either side of it without climbing back up
-// to the spawn point.
-export const MAX_BEADS = 70
+
+// The live-bead cap is now computed from the viewport instead of fixed, so
+// a bigger window fills with more beads instead of showing the same 70-bead
+// pile with more empty space around it — see
+// docs/superpowers/specs/2026-08-01-fast-fill-bead-burst-design.md.
+//
+// PACKING_FACTOR is well under 1: beads pile under gravity against a floor
+// and two side walls (see Boundaries below), so they never tile the full
+// viewport area the way a grid would — this is a deliberately conservative
+// estimate of how much of the screen a settled pile actually covers, not a
+// geometric packing constant. Tuned by eye (Task 3) alongside MAX_CAPACITY.
+const BEAD_DIAMETER = BEAD_RADIUS * 2
+const CAPACITY_PACKING_FACTOR = 0.35
+// Clamp guards: MIN_CAPACITY keeps a very narrow window from looking empty,
+// MAX_CAPACITY is a hard performance backstop so a very large monitor can't
+// push live bead count (and therefore live RigidBody + draw-call count) far
+// past what this scene has been shown to run smoothly at. See Task 3 for
+// how this was chosen.
+const MIN_CAPACITY = 40
+const MAX_CAPACITY = 110
+
+/** How many live beads the current viewport should hold before the spawn
+ * loop stops bursting and settles into normal demographic-paced spawning.
+ * Pure function of viewport CSS-pixel size — no DOM/React access — so it's
+ * trivial to sanity-check by hand (see Task 3, Step 1). */
+export function computeBeadCapacity(width: number, height: number): number {
+  if (width <= 0 || height <= 0) return MIN_CAPACITY
+  const raw = Math.floor(
+    ((width * height) / (BEAD_DIAMETER * BEAD_DIAMETER)) * CAPACITY_PACKING_FACTOR,
+  )
+  return Math.min(MAX_CAPACITY, Math.max(MIN_CAPACITY, raw))
+}
 
 // How long an evicted bead takes to shrink away before it is actually
 // removed from the array — and therefore from the physics world, since a
@@ -41,7 +63,7 @@ export const MAX_BEADS = 70
 //
 // Long enough to read as a deliberate exit, short enough that the pile's
 // collapse into the gap still feels causally connected to it. It also
-// bounds how far the array can exceed MAX_BEADS: the fastest spawn
+// bounds how far the array can exceed the live-bead cap: the fastest spawn
 // interval is 120ms per stream (src/lib/beadSpawnRate.ts) across two
 // streams, so at most ~7 beads are mid-exit at any moment.
 const BEAD_EXIT_MS = 420
@@ -122,7 +144,7 @@ const BEAD_ENV_RESOLUTION = 256
 const BEAD_ENV_INTENSITY = 0.45
 
 // One geometry for every bead, built once at module scope. Phase 1 gave
-// each bead its own <sphereGeometry> element, i.e. up to MAX_BEADS
+// each bead its own <sphereGeometry> element, i.e. up to MAX_CAPACITY
 // byte-identical vertex buffers uploaded to the GPU. App renders
 // <BeadScene key={selectedIso3} />, so the whole component remounts on
 // every country switch — module scope means this buffer survives those
@@ -138,7 +160,7 @@ interface Bead {
    * once at spawn and never changed, so a bead does not swap appearance
    * mid-fall. */
   variant: number
-  /** Set by the spawn loop when this bead is evicted at the MAX_BEADS cap.
+  /** Set by the spawn loop when this bead is evicted at the live-bead cap.
    * The bead stays in the array — and in the physics world — until
    * BeadFadeOut has shrunk it away and called onExpire. */
   dying: boolean
@@ -758,7 +780,7 @@ function BeadFadeOut({
 // declared as a child element — declaring it as a child is what would give
 // every bead its own copy. `dispose={null}` tells react-three-fiber not to
 // dispose these shared objects when an individual bead is culled by the
-// MAX_BEADS cap; their lifetimes are owned by the module and by
+// live-bead cap; their lifetimes are owned by the module and by
 // useBeadMaterials.
 //
 // RigidBody `position` is only read when the body is created, so stable
@@ -809,6 +831,26 @@ interface BeadSceneProps {
   globeElement: HTMLCanvasElement | null
 }
 
+// BeadScene owns spawn state and renders <Canvas> itself, so it sits
+// outside the R3F tree and can't use useThree() the way the components
+// rendered *inside* <Canvas> (Boundaries, Backdrop, MouseLight) do. The
+// canvas is `fixed inset-0` (full viewport, see BeadScene's returned JSX),
+// so window size is the same thing useThree's `size` would report.
+function useViewportSize() {
+  const [size, setSize] = useState(() => ({
+    width: window.innerWidth,
+    height: window.innerHeight,
+  }))
+  useEffect(() => {
+    function handleResize() {
+      setSize({ width: window.innerWidth, height: window.innerHeight })
+    }
+    window.addEventListener('resize', handleResize)
+    return () => window.removeEventListener('resize', handleResize)
+  }, [])
+  return size
+}
+
 export function BeadScene({ demographics, theme, globeCircle, globeElement }: BeadSceneProps) {
   // Re-resolved whenever the theme flips. Deliberately inside a rAF: the
   // `.dark` class is toggled by App's own useTheme effect, and child
@@ -821,6 +863,12 @@ export function BeadScene({ demographics, theme, globeCircle, globeElement }: Be
     return () => cancelAnimationFrame(id)
   }, [theme])
   const materials = useBeadMaterials(colors)
+
+  const { width: viewportWidth, height: viewportHeight } = useViewportSize()
+  const capacity = useMemo(
+    () => computeBeadCapacity(viewportWidth, viewportHeight),
+    [viewportWidth, viewportHeight],
+  )
 
   const [beads, setBeads] = useState<Bead[]>([])
   // Monotonic counter, not Math.random(): React keys must be stable and
@@ -855,12 +903,12 @@ export function BeadScene({ demographics, theme, globeCircle, globeElement }: Be
         // flagged `dying`; BeadFadeOut shrinks it over BEAD_EXIT_MS and
         // then calls expireBead, which is what finally removes it.
         //
-        // MAX_BEADS therefore caps live beads, not array length — a handful
+        // The computed capacity therefore caps live beads, not array length — a handful
         // of dying beads ride along for under half a second each (see the
         // bound in BEAD_EXIT_MS's comment).
         const live = prev.reduce((count, bead) => (bead.dying ? count : count + 1), 0)
         let next = prev
-        if (live >= MAX_BEADS) {
+        if (live >= capacity) {
           // find() returns the first non-dying entry, i.e. the oldest one,
           // because the array is append-ordered.
           const oldest = prev.find((bead) => !bead.dying)
@@ -884,7 +932,7 @@ export function BeadScene({ demographics, theme, globeCircle, globeElement }: Be
       window.clearInterval(birthTimer)
       window.clearInterval(deathTimer)
     }
-  }, [birthIntervalMs, deathIntervalMs])
+  }, [birthIntervalMs, deathIntervalMs, capacity])
 
   return (
     // pointer-events-none so the sliders and toggles underneath stay fully
