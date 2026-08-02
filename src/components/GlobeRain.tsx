@@ -9,10 +9,19 @@ const RESPAWN_MARGIN_PX = 60
 
 const MIN_SPEED_PX_S = 220
 const MAX_SPEED_PX_S = 420
-const MIN_WIDTH_PX = 1.5
-const MAX_WIDTH_PX = 3
-const MIN_LENGTH_PX = 18
-const MAX_LENGTH_PX = 34
+const MIN_FONT_SIZE_PX = 14
+const MAX_FONT_SIZE_PX = 26
+
+// Rendered as monospace glyphs rather than plain line strokes — plain
+// translucent lines read as generic "particle system" fill; a handful of
+// rain-shaped characters (weighted toward the two full-height bar glyphs, so
+// it still reads primarily as streaks rather than scattered punctuation)
+// gives the effect a deliberately drawn, ASCII-rain character instead.
+const GLYPHS = ['¦', '|', '¦', '|', "'", '`', ':', '.']
+
+function randomGlyph(): string {
+  return GLYPHS[Math.floor(Math.random() * GLYPHS.length)]
+}
 
 // How far around the globe's silhouette (in radians) a wrapping drop travels
 // before peeling back off into a straight fall. Randomized per drop, and
@@ -27,11 +36,13 @@ const MAX_WRAP_SPAN_RAD = Math.PI * 0.95
 // than scattered uniformly across the full viewport width — otherwise, on a
 // wide viewport, only a small minority of drops ever cross the globe at all
 // and the "rain on the globe" read gets lost in ambient side-fall.
-const GLOBE_BAND_SPAWN_FRACTION = 0.65
+const GLOBE_BAND_SPAWN_FRACTION = 0.82
 // How far past the globe's own radius that band extends, so drops still
 // visibly approach the silhouette from just outside it rather than only
-// ever spawning directly above it.
-const GLOBE_BAND_RADIUS_MULTIPLIER = 1.4
+// ever spawning directly above it. Tightened from 1.4 alongside the raised
+// spawn fraction above — a narrower band concentrates the extra density
+// directly over the globe instead of just widening the diffuse spread.
+const GLOBE_BAND_RADIUS_MULTIPLIER = 1.15
 
 function randomBetween(min: number, max: number): number {
   return min + Math.random() * (max - min)
@@ -47,8 +58,8 @@ export interface Drop {
   x: number
   y: number
   speed: number
-  width: number
-  length: number
+  fontSize: number
+  glyph: string
   phase: 'fall' | 'wrap' | 'release'
   /** Angle in [0, π] around the globe's center, 0 = top (north pole of the
    * visible silhouette), π = bottom. Only meaningful while phase === 'wrap'. */
@@ -69,8 +80,8 @@ function randomDrop(x: number, y: number): Drop {
     x,
     y,
     speed: randomBetween(MIN_SPEED_PX_S, MAX_SPEED_PX_S),
-    width: randomBetween(MIN_WIDTH_PX, MAX_WIDTH_PX),
-    length: randomBetween(MIN_LENGTH_PX, MAX_LENGTH_PX),
+    fontSize: randomBetween(MIN_FONT_SIZE_PX, MAX_FONT_SIZE_PX),
+    glyph: randomGlyph(),
     phase: 'fall',
     wrapAngle: 0,
     wrapExitAngle: Math.PI,
@@ -176,7 +187,7 @@ export function updateDrop(
   }
 
   const { y } = dropPosition(drop, globe)
-  if (y - drop.length > viewportHeight + RESPAWN_MARGIN_PX) {
+  if (y - drop.fontSize > viewportHeight + RESPAWN_MARGIN_PX) {
     Object.assign(drop, spawnDropAbove(viewportWidth, globe))
   }
 }
@@ -241,7 +252,7 @@ function resolveRainColors(): RainColors {
   }
 }
 
-const DROP_COUNT = 55
+const DROP_COUNT = 80
 // Capped like BeadScene's Canvas dpr (see BeadScene.tsx's <Canvas dpr={[1, 1.5]}>)
 // for the same reason: crisp lines without paying for a full 2-3x device
 // pixel ratio's worth of fragments on every frame.
@@ -262,27 +273,42 @@ function resizeCanvasToViewport(canvas: HTMLCanvasElement): void {
   ctx?.setTransform(dpr, 0, 0, dpr, 0, 0)
 }
 
+// Rotates the canvas so a glyph's own vertical axis (its natural, unrotated
+// orientation) points along `dir`. At dir = (0, 1) — straight down, the
+// 'fall'/'release' case — this is 0 (no rotation, glyph stays upright);
+// atan2(dir.x, dir.y) is exactly the angle between (0, 1) and dir, which is
+// what lets the same formula also orient a glyph along the wrap phase's
+// tangent as it curves around the globe.
+function glyphRotation(dir: { x: number; y: number }): number {
+  return Math.atan2(dir.x, dir.y)
+}
+
 function drawDrop(ctx: CanvasRenderingContext2D, drop: Drop, globe: GlobeCircleLike | null, colors: RainColors): void {
-  const head = dropPosition(drop, globe)
+  const pos = dropPosition(drop, globe)
   const dir = dropDirection(drop, globe)
-  const tail = { x: head.x - dir.x * drop.length, y: head.y - dir.y * drop.length }
 
-  ctx.lineCap = 'round'
-  ctx.strokeStyle = colors.body
-  ctx.lineWidth = drop.width
-  ctx.beginPath()
-  ctx.moveTo(tail.x, tail.y)
-  ctx.lineTo(head.x, head.y)
-  ctx.stroke()
+  ctx.save()
+  ctx.translate(pos.x, pos.y)
+  ctx.rotate(glyphRotation(dir))
+  ctx.font = `${drop.fontSize}px "Geist Mono Variable", ui-monospace, monospace`
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
 
-  // Highlight core: the leading third of the streak, thinner and brighter.
-  const coreStart = { x: head.x - dir.x * drop.length * 0.3, y: head.y - dir.y * drop.length * 0.3 }
-  ctx.strokeStyle = colors.highlight
-  ctx.lineWidth = Math.max(1, drop.width * 0.5)
-  ctx.beginPath()
-  ctx.moveTo(coreStart.x, coreStart.y)
-  ctx.lineTo(head.x, head.y)
-  ctx.stroke()
+  // Soft glow pass: a blurred, translucent halo behind the glyph — canvas
+  // shadowBlur is the cheapest way to get a glow on filled text, and reads
+  // as "wet" rather than "printed" the way a flat single fill would.
+  ctx.shadowColor = colors.body
+  ctx.shadowBlur = drop.fontSize * 0.6
+  ctx.fillStyle = colors.body
+  ctx.fillText(drop.glyph, 0, 0)
+
+  // Crisp bright core on top, no blur — the specular highlight a real
+  // droplet would show.
+  ctx.shadowBlur = 0
+  ctx.fillStyle = colors.highlight
+  ctx.fillText(drop.glyph, 0, 0)
+
+  ctx.restore()
 }
 
 export interface GlobeRainProps {
@@ -291,7 +317,7 @@ export interface GlobeRainProps {
 }
 
 // Plain 2D canvas, not a second react-three-fiber <Canvas>: this effect is
-// procedural curve math over ~30 drops, not physics, so a second WebGL
+// procedural curve math over ~80 drops, not physics, so a second WebGL
 // context (and its own render overhead, mirroring what BeadScene already
 // pays for the beads) would buy nothing. GlobeRain and BeadScene are
 // mount-exclusive (see App.tsx), so they never compete for a GPU context
