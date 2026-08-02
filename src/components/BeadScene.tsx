@@ -604,6 +604,7 @@ function useBackdropBase(
   width: number,
   height: number,
   textureImage: HTMLImageElement | null,
+  circle: GlobeCircle | null,
 ) {
   return useMemo(() => {
     if (width <= 0 || height <= 0) return null
@@ -659,8 +660,45 @@ function useBackdropBase(
     // are the Canvas 2D equivalents of the DOM layer's `filter` and
     // `mixBlendMode`; both are reset via save/restore immediately after,
     // same discipline as the globalAlpha reset above.
+    //
+    // Excludes the globe's own square box, clipped out BEFORE drawing --
+    // found live as "the texture is superimposed on the globe." Root
+    // cause: Backdrop's useFrame (below) composites the LIVE globe into
+    // that exact box each frame via `ctx.drawImage(globeElement, ...)`,
+    // but cobe's canvas is only opaque inside the sphere's circular
+    // silhouette -- transparent in the box's four corners (see
+    // cobe-globe.tsx). Ordinary source-over compositing means those
+    // transparent corners let whatever THIS canvas already painted there
+    // show through, every single frame. That was always true for the dot
+    // grid too, just subtle enough not to draw complaints; the higher-
+    // contrast texture photo made that same pre-existing seam obviously
+    // visible as a patterned patch hugging the sphere's edge. Clipping
+    // the texture draw to exclude that box removes the seam at the
+    // source rather than tuning contrast/opacity down further to try to
+    // hide it.
     if (textureImage) {
       ctx.save()
+      if (circle) {
+        // Same box-from-radius formula Backdrop's own boxSize uses
+        // below, so this clip and that composite target the identical
+        // region -- a mismatch here would just move the seam instead of
+        // removing it.
+        const boxSize = Math.max(
+          1,
+          Math.round((circle.radius / GLOBE_SURFACE_RADIUS_FRACTION) * BACKDROP_SCALE),
+        )
+        const boxX = circle.centerX * BACKDROP_SCALE - boxSize / 2
+        const boxY = circle.centerY * BACKDROP_SCALE - boxSize / 2
+        // evenodd, not the default nonzero: a plain outer rect plus an
+        // inner rect wound the same direction would just re-fill the
+        // whole canvas. evenodd makes overlapping subpaths punch a hole
+        // wherever they're nested an odd number of times, so the inner
+        // rect subtracts from the outer one regardless of winding order.
+        ctx.beginPath()
+        ctx.rect(0, 0, w, h)
+        ctx.rect(boxX, boxY, boxSize, boxSize)
+        ctx.clip('evenodd')
+      }
       ctx.filter = BACKDROP_TEXTURE_FILTER
       ctx.globalCompositeOperation = 'soft-light'
       ctx.globalAlpha = BACKDROP_TEXTURE_OPACITY
@@ -672,7 +710,7 @@ function useBackdropBase(
     // on the beads, but no longer a shape visible directly in this backdrop.
     // See docs/superpowers/specs/2026-08-01-hidden-backdrop-glow-design.md.
     return canvas
-  }, [theme, width, height, textureImage])
+  }, [theme, width, height, textureImage, circle])
 }
 
 // Every other frame only (~30fps at a 60fps display) — the globe rotates
@@ -707,7 +745,7 @@ const Backdrop = memo(function Backdrop({
 }) {
   const { width, height } = useThree((state) => state.size)
   const backdropTextureImage = useBackdropTextureImage()
-  const base = useBackdropBase(theme, width, height, backdropTextureImage)
+  const base = useBackdropBase(theme, width, height, backdropTextureImage, circle)
 
   const gradientTexture = useMemo(() => {
     if (!base) return null

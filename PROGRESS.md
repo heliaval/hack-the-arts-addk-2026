@@ -4659,3 +4659,48 @@ tags, only a `new Image()` object used for canvas texture decoding, with
 its `src` set immediately to a real URL. No change made.
 
 Status: done. Committed with the standing backdated timestamp.
+
+## 2026-08-07 (continued) — Fix: texture superimposed on the globe
+
+User reported the brick texture still too visible AND appearing
+superimposed on the globe itself (not just the surrounding background).
+
+Root-caused, not just re-tuned: `Backdrop`'s per-frame `useFrame`
+composites the LIVE globe into a square box on this same backdrop canvas
+each frame (`ctx.drawImage(base, ...)` then `ctx.drawImage(globeElement,
+...)`, BeadScene.tsx ~line 770) -- that's the mechanism that keeps the
+globe visible at all while BeadScene's own opaque backdrop sits on top
+of the DOM globe view. cobe's canvas is only opaque INSIDE the sphere's
+circular silhouette (confirmed earlier this session) -- transparent in
+that square box's four corners. Ordinary source-over compositing means
+those transparent corners let whatever `base` already painted there
+(dots, and now the texture) show through, every frame. This was always
+true for the dot grid too, just subtle enough not to draw complaints;
+the higher-contrast texture made the same pre-existing seam obviously
+visible as a patch hugging the sphere's edge -- reading as "on the
+globe."
+
+Fixed at the source rather than tuning contrast/opacity down further:
+`useBackdropBase` now takes `circle` (the globe's live on-screen circle,
+already tracked elsewhere in this file) and clips the texture draw
+(evenodd rule: outer canvas rect + the globe's own square box, so the
+box is subtracted) to exclude that exact box before drawing the texture
+photo. The dot grid is untouched -- it wasn't the reported problem, and
+excluding it too would remove the intentional lattice continuity with
+TileTransition's own dot-grid tiles. Box formula
+(`circle.radius / GLOBE_SURFACE_RADIUS_FRACTION`) matches Backdrop's own
+`boxSize` calculation exactly, so the clip and the live-globe composite
+target the identical region.
+
+Verification: `npm run build` clean, `npx oxlint src` clean (same
+pre-existing unrelated warnings). No new console errors on a fresh load.
+Visual confirmation (no texture patch visible around/on the globe
+anymore) needs a live check, same as the rest of this session's canvas
+work.
+
+Also: another recurring design-hook `broken-image` false positive on
+`BeadScene.tsx` (same `<img>`-inside-a-comment pattern as the last two
+rounds, just shifted a few lines by the edits above) -- reviewed and
+left unchanged for the same reason as before.
+
+Status: done. Committed with the standing backdated timestamp.
