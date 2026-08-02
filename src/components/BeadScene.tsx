@@ -695,8 +695,48 @@ function GlobeCollider({ circle }: { circle: GlobeCircle }) {
 // RigidBody `position` is only read when the body is created, so stable
 // React keys matter: a changing key would recreate the body and teleport a
 // settled bead back to the spawn point.
-const BeadBody = memo(function BeadBody({ bead, material }: { bead: Bead; material: THREE.Material }) {
-  const height = useThree((state) => state.size.height)
+//
+// There is no per-bead eviction in this file anymore (see the year-batch
+// spawn effect in BeadScene) — a marble's only way to "disappear" is the
+// whole scene unmounting, which happens when the selected country/year
+// changes (App's `key={selectedIso3}-${selectedYear}`) or the country is
+// deselected. `lastScreenPosRef` tracks this bead's most recent on-screen
+// position via useFrame (a plain ref write, not state — negligible cost per
+// bead per frame) purely so that the unmount cleanup below has a real
+// position to launch a departure leaf from, instead of guessing.
+const BeadBody = memo(function BeadBody({
+  bead,
+  material,
+  color,
+  onDeparture,
+}: {
+  bead: Bead
+  material: THREE.Material
+  color: string
+  onDeparture: (x: number, y: number, color: string) => void
+}) {
+  const { width, height } = useThree((state) => state.size)
+  const meshRef = useRef<THREE.Mesh>(null)
+  const lastScreenPosRef = useRef({ x: width / 2 + bead.x, y: height / 2 })
+
+  useFrame(() => {
+    const mesh = meshRef.current
+    if (!mesh) return
+    const worldPos = mesh.getWorldPosition(new THREE.Vector3())
+    // Orthographic camera, world units == CSS pixels, origin at viewport
+    // centre, +y up (see this file's top-of-file comment) — flip to DOM
+    // screen space (origin top-left, +y down) for LeafOverlay.
+    lastScreenPosRef.current = { x: width / 2 + worldPos.x, y: height / 2 - worldPos.y }
+  })
+
+  useEffect(() => {
+    return () => onDeparture(lastScreenPosRef.current.x, lastScreenPosRef.current.y, color)
+    // Only the unmount matters here — deps intentionally exclude
+    // lastScreenPosRef/onDeparture/color's per-render identity so this
+    // effect doesn't re-fire (and re-register a fresh cleanup) every frame.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   return (
     <RigidBody
       colliders="ball"
@@ -705,7 +745,7 @@ const BeadBody = memo(function BeadBody({ bead, material }: { bead: Bead; materi
       friction={0.6}
       linearDamping={0.1}
     >
-      <mesh geometry={BEAD_GEOMETRY} material={material} dispose={null} />
+      <mesh ref={meshRef} geometry={BEAD_GEOMETRY} material={material} dispose={null} />
     </RigidBody>
   )
 })
@@ -725,6 +765,11 @@ interface BeadSceneProps {
    * backdrop each frame (see Backdrop's comment for why). Null until
    * GlobeView's canvas has mounted. */
   globeElement: HTMLCanvasElement | null
+  /** Called once per marble, when it departs the scene — currently the
+   * scene's only departure path is the whole thing unmounting (see
+   * BeadBody's unmount cleanup), which happens on a country/year switch or
+   * deselect. Drives LeafOverlay (src/components/LeafOverlay.tsx). */
+  onDeparture: (x: number, y: number, color: string) => void
 }
 
 export function BeadScene({
@@ -736,6 +781,7 @@ export function BeadScene({
   theme,
   globeCircle,
   globeElement,
+  onDeparture,
 }: BeadSceneProps) {
   // Re-resolved whenever the theme flips. Deliberately inside a rAF: the
   // `.dark` class is toggled by App's own useTheme effect, and child
@@ -880,6 +926,8 @@ export function BeadScene({
                 key={bead.id}
                 bead={bead}
                 material={(bead.kind === 'birth' ? materials.birth : materials.death)[bead.variant]}
+                color={bead.kind === 'birth' ? colors.birth : colors.death}
+                onDeparture={onDeparture}
               />
             ))}
           </Physics>

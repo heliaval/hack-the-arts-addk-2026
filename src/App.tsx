@@ -4,6 +4,7 @@ import { Globe as GlobeIcon, Moon, Sun } from 'lucide-react'
 import { GlobeView } from '@/components/GlobeView'
 import { BeadScene } from '@/components/BeadScene'
 import { GlobeRain } from '@/components/GlobeRain'
+import { LeafOverlay, type Leaf } from '@/components/LeafOverlay'
 import type { GlobeCircle } from '@/components/ui/cobe-globe'
 import { useDemographics } from '@/lib/useDemographics'
 import { useHistoricalDemographics } from '@/lib/historicalDemographics'
@@ -385,6 +386,16 @@ function App() {
   const handleLanguageToggle = useCallback(() => setLang(nextLang), [])
   const handleProgress = useCallback((p: { births: number; deaths: number }) => setProgress(p), [])
 
+  const [leaves, setLeaves] = useState<Leaf[]>([])
+  const nextLeafIdRef = useRef(0)
+  const handleDeparture = useCallback((x: number, y: number, color: string) => {
+    const id = nextLeafIdRef.current++
+    setLeaves((prev) => [...prev, { id, x, y, color, seed: Math.floor(Math.random() * 10000) }])
+  }, [])
+  const handleLeafDone = useCallback((id: number) => {
+    setLeaves((prev) => prev.filter((leaf) => leaf.id !== id))
+  }, [])
+
   // Resets the counters whenever a fresh batch starts, mirroring
   // BeadScene's own remount on selectedIso3/selectedYear.
   useEffect(() => {
@@ -445,8 +456,10 @@ function App() {
           theme={theme}
           globeCircle={globeCircle}
           globeElement={globeElement}
+          onDeparture={handleDeparture}
         />
       )}
+      <LeafOverlay leaves={leaves} onLeafDone={handleLeafDone} />
       {!selected && <GlobeRain globeCircle={globeCircle} theme={theme} />}
       {selected && yearTotals && <YearCounters births={progress.births} deaths={progress.deaths} />}
       <div className="absolute right-4 top-4 z-10 flex gap-2">

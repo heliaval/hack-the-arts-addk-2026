@@ -63,6 +63,26 @@
   --sidebar-ring: #912f40;
 }
 
+/* Drives LeafOverlay's per-leaf drift (src/components/LeafOverlay.tsx).
+   --leaf-dx/--leaf-sway/--leaf-rot are set per-leaf via inline style so one
+   keyframes rule produces varied motion instead of identical clones. */
+@keyframes leaf-drift {
+  0% {
+    transform: translate(-50%, -50%) translate(0, 0) rotate(0deg);
+    opacity: 1;
+  }
+  50% {
+    transform: translate(-50%, -50%)
+      translate(calc(var(--leaf-dx) * 0.5 + var(--leaf-sway)), 60px)
+      rotate(calc(var(--leaf-rot) * 0.5));
+    opacity: 1;
+  }
+  100% {
+    transform: translate(-50%, -50%) translate(var(--leaf-dx), 160px) rotate(var(--leaf-rot));
+    opacity: 0;
+  }
+}
+
 html,
 body,
 #root {
