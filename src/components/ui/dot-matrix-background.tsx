@@ -42,9 +42,9 @@ export function DotMatrixBackground() {
       <div
         className="absolute inset-0"
         style={{
-          backgroundImage: 'radial-gradient(circle at center, var(--border) 0 1px, transparent 1px)',
+          backgroundImage: 'radial-gradient(circle at center, var(--foreground) 0 1px, transparent 1px)',
           backgroundSize: '24px 24px',
-          opacity: 0.35,
+          opacity: 0.18,
           maskImage: [
             'radial-gradient(circle 140px at var(--mx) var(--my), #000 0%, #000 40%, transparent 100%)',
             'radial-gradient(circle 320px at var(--mx) var(--my), rgba(0,0,0,0.5) 0%, transparent 100%)',
@@ -61,8 +61,8 @@ export function DotMatrixBackground() {
         className="absolute inset-0"
         style={{
           background:
-            'radial-gradient(ellipse 420px 260px at calc(var(--mx) - 70px) calc(var(--my) - 50px), var(--foreground), transparent 70%)',
-          opacity: 0.04,
+            'radial-gradient(ellipse 420px 260px at calc(var(--mx) - 70px) calc(var(--my) - 50px), var(--sheen), transparent 70%)',
+          opacity: 0.06,
         }}
       />
     </div>

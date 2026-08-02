@@ -43,6 +43,11 @@
   --accent: #912f40;
   --accent-hover: #702632;
   --accent-foreground: #ffffff;
+  /* Warm-tinted highlight for the dot-matrix background's cursor sheen
+     (src/components/ui/dot-matrix-background.tsx) — deliberately not
+     --foreground (too cold/neutral) or --accent (reserved for selection
+     meaning), a dedicated low-chroma warm tone instead. */
+  --sheen: oklch(0.62 0.06 55);
   --destructive: oklch(0.55 0.21 27);
   --border: oklch(0.5 0 0 / 16%);
   --input: oklch(0.5 0 0 / 24%);
@@ -157,6 +162,7 @@ body {
   --accent: #c17b8a;
   --accent-hover: #d99aa6;
   --accent-foreground: #2a0f14;
+  --sheen: oklch(0.88 0.06 65);
   --destructive: oklch(0.65 0.2 27);
   --border: oklch(0.9 0 0 / 12%);
   --input: oklch(0.9 0 0 / 16%);

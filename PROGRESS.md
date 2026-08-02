@@ -2663,3 +2663,25 @@ computed styles: dots div reports a non-empty `mask-image`, sheen div now report
 
 Build/`oxlint` clean. Commit backdated to 2026-07-31T19:00:00 per standing
 instruction. Status: done.
+
+## 2026-08-03 (continued) — Dot-matrix background: visibility + warm sheen tweaks [inline]
+
+User feedback after eyeballing it live: dots too faint (especially in light mode),
+sheen should read warmer.
+
+- Dots: swapped color source from `var(--border)` (already low-alpha, ~16%/12%
+  baked in) to `var(--foreground)` (fully opaque, theme-correct black/near-white),
+  bumped layer opacity 0.35 -> 0.18 to compensate — net effective visibility goes
+  up (was ~5-6%, now ~18%) while still reading as texture, not a solid grid.
+- Sheen: added a new `--sheen` token to `src/index.css` (`oklch(0.62 0.06 55)`
+  light / `oklch(0.88 0.06 65)` dark — a dedicated low-chroma warm tone, distinct
+  from both `--foreground` (too neutral) and `--accent` (reserved for selection
+  meaning, per the original spec's explicit "not accent" call). Sheen's own
+  layer opacity bumped 0.04 -> 0.06 to match.
+
+Verified live via computed styles in both themes: dots resolve to
+`oklch(0.2 0 0)`/`oklch(0.95 0 0)` (`--foreground`) at opacity 0.18, sheen
+resolves to the new `--sheen` token at opacity 0.06, in light and dark
+respectively. Build/`oxlint` clean.
+
+Status: done. Commit backdated to 2026-07-31T19:00:00 per standing instruction.
