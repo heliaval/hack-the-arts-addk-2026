@@ -12,9 +12,12 @@ import { resolveAccentColor } from '@/lib/resolveAccentColor'
 // of an opaque fullscreen fill, since this sits on top of the live globe
 // rather than being the whole picture, and (c) drop every reference-project
 // feature irrelevant to this app (lightning, panning, blur passes, colour
-// grading, vignette, the second falling-drop layer — see
-// docs/superpowers/specs/2026-08-03-glass-rain-design.md for the full
-// rationale on each cut).
+// grading, vignette) — see
+// docs/superpowers/specs/2026-08-03-glass-rain-design.md for the original
+// "medium fidelity" rationale. Both falling-drop layers are kept (unlike
+// that original design) per explicit follow-up feedback wanting a genuine
+// heavy-rain-on-a-window read rather than occasional drips — see
+// PROGRESS.md, "GlassRain: heavy rain".
 const VERTEX_SHADER = `
 void main() {
   gl_Position = vec4(position, 1.0);
@@ -51,9 +54,8 @@ float Saw(float b, float t) {
 }
 
 // The falling-drop layer: hangs, slides under a gravity sawtooth, wiggles
-// side to side, and leaves a fading trail behind it as it falls. The
-// reference stacks two of these at different scales for a downpour look;
-// this app's medium-fidelity tier only ever calls this once.
+// side to side, and leaves a fading trail behind it as it falls. Called
+// twice at different scales (see Drops, below) for the heavy-downpour look.
 vec2 DropLayer2(vec2 uv, float t) {
   vec2 UV = uv;
 
@@ -100,8 +102,7 @@ vec2 DropLayer2(vec2 uv, float t) {
 }
 
 // Droplets clinging to the glass, each individually fading in and out on
-// its own short cycle rather than falling — the dominant layer at this
-// app's medium-fidelity tier.
+// its own short cycle rather than falling.
 float StaticDrops(vec2 uv, float t) {
   uv *= 40.;
   vec2 id = floor(uv);
@@ -113,18 +114,17 @@ float StaticDrops(vec2 uv, float t) {
   return S(.3, 0., d) * fract(n.z * 10.) * fade;
 }
 
-// Composites the static layer with the one falling layer into a single
-// heightfield (x) plus a trail-alpha channel (y).
-vec2 Drops(vec2 uv, float t, float staticWeight, float fallWeight) {
+// Composites the static layer with BOTH falling layers (the second sampled
+// at 1.85x scale, exactly as the reference does) into a single heightfield
+// (x) plus a trail-alpha channel (y) — two overlapping falling layers at
+// different scales is what makes this read as a downpour rather than
+// occasional drips.
+vec2 Drops(vec2 uv, float t, float staticWeight, float fallWeight1, float fallWeight2) {
   float s = StaticDrops(uv, t) * staticWeight;
-  vec2 fall = DropLayer2(uv, t) * fallWeight;
-  float c = S(.3, 1., s + fall.x);
-  // Trail gated by the falling layer's OWN weight — the reference's
-  // max(m1.y * l0, m2.y * l1) mixes both falling layers' weights because
-  // it has two to arbitrate between; with only one, gating its trail on its
-  // own intensity (not the unrelated static-layer weight) is the sensible
-  // reading, not a literal copy of that expression.
-  return vec2(c, fall.y * fallWeight);
+  vec2 fall1 = DropLayer2(uv, t) * fallWeight1;
+  vec2 fall2 = DropLayer2(uv * 1.85, t) * fallWeight2;
+  float c = S(.3, 1., s + fall1.x + fall2.x);
+  return vec2(c, max(fall1.y * fallWeight1, fall2.y * fallWeight2));
 }
 
 void main() {
@@ -135,13 +135,14 @@ void main() {
   uv *= .7;
 
   float staticWeight = S(-.5, 1., u_intensity) * 2.;
-  float fallWeight = S(.25, .75, u_intensity);
+  float fallWeight1 = S(.25, .75, u_intensity);
+  float fallWeight2 = S(.0, .5, u_intensity);
 
-  vec2 c = Drops(uv, t, staticWeight, fallWeight);
+  vec2 c = Drops(uv, t, staticWeight, fallWeight1, fallWeight2);
 
   vec2 e = vec2(.001, 0.) * u_normal;
-  float cx = Drops(uv + e, t, staticWeight, fallWeight).x;
-  float cy = Drops(uv + e.yx, t, staticWeight, fallWeight).x;
+  float cx = Drops(uv + e, t, staticWeight, fallWeight1, fallWeight2).x;
+  float cy = Drops(uv + e.yx, t, staticWeight, fallWeight1, fallWeight2).x;
   vec2 n = vec2(cx - c.x, cy - c.x);
 
   vec3 col = texture2D(u_tex0, UV + n).rgb;
@@ -179,25 +180,25 @@ const CAPTURE_SCALE = 0.5
 // this doesn't need 60fps freshness to read as smooth.
 const CAPTURE_UPDATE_EVERY_N_FRAMES = 2
 
-// Tuned by eye per the spec's "medium fidelity" tier: mostly static
-// droplets (high staticWeight via u_intensity), one falling layer whose
-// weight (fallWeight, derived from u_intensity) keeps it sparse so it reads
-// as occasional drips rather than a downpour, moderate refraction strength,
-// and a faint accent tint so droplets read as tied to this app's palette
-// without looking tinted rather than clear.
+// Tuned by eye for a genuine heavy-rain-on-a-window read (superseding this
+// project's original "medium fidelity, occasional drips" design — see
+// PROGRESS.md, "GlassRain: heavy rain", for why): high u_intensity pushes
+// BOTH falling-layer weights (fallWeight1/fallWeight2 in the shader) up
+// together with the static layer, and both DropLayer2 calls are active
+// (see Drops, above) — two overlapping falling layers at different scales
+// is specifically what the reference shader relies on to read as a
+// downpour rather than scattered drips.
 //
-// u_speed=1 here, NOT a fraction of it: a standalone JS port of this
-// shader's math (see PROGRESS.md, "GlassRain: sped up droplet motion")
-// confirmed the droplet heightfield already completes a full cycle in
-// ~5 real seconds at u_speed=1, because the shader's own `t = u_time * .2
-// * u_speed` line already bakes in a 0.2x slowdown before u_speed is even
-// applied. An earlier attempt at u_speed=0.25 (quartering it again on top
-// of that) stretched a cycle to ~20s — motion so slow it read as
-// completely frozen on a normal glance. "Occasional drip, not a downpour"
-// is achieved by fallWeight being sparse, not by slowing time itself.
-const DEFAULT_INTENSITY = 0.4
+// u_speed is well above 1 here for a fast, continuous fall: a standalone
+// JS port of this shader's exact math (see PROGRESS.md, "GlassRain: sped
+// up droplet motion") confirmed the droplet heightfield completes a full
+// cycle in ~5 real seconds at u_speed=1, because the shader's own
+// `t = u_time * .2 * u_speed` line already bakes in a 0.2x slowdown before
+// u_speed is even applied — so reaching a "falling quickly" read (closer
+// to a ~1-2s cycle) needs u_speed well north of 1, not a fraction of it.
+const DEFAULT_INTENSITY = 0.8
 const DEFAULT_NORMAL_STRENGTH = 1.0
-const DEFAULT_SPEED = 1.0
+const DEFAULT_SPEED = 3.5
 const DEFAULT_TINT_STRENGTH = 0.06
 
 // Duplicated from resolveAccentColor.ts on purpose, not imported — see

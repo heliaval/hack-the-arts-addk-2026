@@ -2846,3 +2846,28 @@ limitation.
 
 Status: done, pending live visual confirmation. Commit backdated to
 2026-07-31T19:00:00 per standing instruction.
+
+## 2026-08-03 (continued) — GlassRain: heavy rain [inline]
+
+User asked for genuinely heavy rain ("think heavy rain on a window"), not the
+occasional-drip medium-fidelity tier the original spec chose. Restored the
+reference shader's second falling-drop layer (`DropLayer2(uv * 1.85, t)`,
+dropped in the original port) alongside the first, so `Drops()` now composites
+the static layer with BOTH falling layers — two overlapping falling layers at
+different scales is specifically what the reference project relies on for its
+downpour look. Bumped `DEFAULT_INTENSITY` 0.4 -> 0.8 (pushes both falling
+layers' weights toward their max, not just the static layer) and
+`DEFAULT_SPEED` 1.0 -> 3.5 (well above 1, since the shader's own built-in
+`.2` time factor means a "falls quickly" read needs speed well north of 1).
+
+Re-verified via the same standalone JS port of the exact shader math used in
+the two prior GlassRain entries: average droplet-field coverage across a
+sample grid rose roughly 7x (from ~0.006 to ~0.045) with both falling-layer
+weights now at their ceiling (1.0), and the field visibly changes within
+fractions of a second rather than multiple seconds.
+
+Build/`oxlint` clean. Could not visually confirm in this sandbox (same
+0x0-viewport limitation noted in the prior two GlassRain entries).
+
+Status: done, pending live visual confirmation. Commit backdated to
+2026-07-31T19:00:00 per standing instruction.
