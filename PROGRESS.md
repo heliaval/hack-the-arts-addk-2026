@@ -3065,3 +3065,47 @@ verified the fade math directly instead, as above.
 
 Status: done, pending live visual confirmation. Commit backdated to
 2026-07-31T19:00:00 per standing instruction.
+
+## 2026-08-04 (continued) — GlobeRain: plan for visual overhaul (4 asks) [agent: opus]
+
+Planning only, no code touched. User gave four asks on the current teardrop
+rain: (1) "can it more gradually disappear", (2) "think this kind of rain"
+(reference photo: thin uniform-width motion-blurred diagonal streaks, soft
+brightness fade at BOTH ends, no head bulb, no highlight dot, brightness the
+only variation), (3) "it's seems to be very dominant toward the middle which
+looks off", (4) "can the lighting affect the raindrops?".
+
+Wrote `docs/superpowers/plans/2026-08-04-globerain-visual-overhaul.md` (6 tasks,
+full code for every function/constant touched, per this repo's plan format).
+Key decisions, recorded here so they aren't re-litigated during execution:
+
+- **Batching key changes from `(tier x colorVariant)` to `(tier x quantized
+  alpha level)`.** Tier keeps owning geometry; a single per-frame quantized
+  alpha (`ALPHA_LEVELS = 8`) absorbs per-drop brightness variant + bottom fade
+  + cursor light + fixed-light shading. That is what makes asks 1 and 4 cost
+  zero extra buckets and lets `drawSingleFadingDrop` be deleted outright.
+- **Per-drop `createLinearGradient` explicitly rejected** for the soft-ends
+  look — gradient coords are per-shape, so it means 130 gradient objects and
+  130 stroke calls rebuilt every frame. Approximated instead by 3 overlapping
+  stroke passes per bucket at decreasing width/increasing end-inset, giving an
+  alpha profile of ~0.32/0.66/0.89/0.66/0.32 tail-to-head. Draw-call ceiling
+  3x8x3 = 72 strokes, vs today's 27 batched + up to 3-per-fading-drop (390
+  worst case) and the 260 pre-batching baseline.
+- **Spawn bias retuned, not removed**: `GLOBE_BAND_SPAWN_FRACTION` 0.82 -> 0.35
+  and `GLOBE_BAND_RADIUS_MULTIPLIER` 1.15 -> 1.6, taking in-band density from
+  ~10.4x out-of-band to ~1.8x on a 1440px viewport. Rationale: the 0.82 bias
+  was tuned for thin abstract lines, and the globe-crossing read is now also
+  carried by the entry ripple + wrap trail, which are per-crossing cues that
+  survive a much lower crossing rate.
+- **Uniform wind angle** (~16 deg) added as its own task, with wind-compensated
+  spawn overhang and a new sideways recycle test.
+- **Lighting = cursor light (MouseLight/DotMatrixBackground precedent, ref not
+  React state) + one fixed scene light direction**, the latter replacing the
+  old arbitrary -0.65pi highlight-dot offset with a real shared light source;
+  its payoff is on wrap-phase drops, whose direction sweeps around the globe.
+- Stays plain 2D canvas (no WebGL — GlassRain precedent), `DROP_COUNT` 130 and
+  `MAX_DEVICE_PIXEL_RATIO` 1.5 unchanged, `App.tsx` untouched.
+
+Status: done (plan only). Execution deferred to a Sonnet session per the
+model-tiering rule. Commit backdated to 2026-07-31T19:00:00 per standing
+instruction.
