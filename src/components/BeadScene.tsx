@@ -378,6 +378,23 @@ function useBeadMaterials(colors: BeadColors) {
 //
 // Positions are CSS pixels from the viewport centre; drei's Lightformer
 // geometries are unit-sized, so `scale` is the light's size in pixels.
+//
+// The six BOKEH_SPOTS below stand in for the bokeh circles the backdrop
+// used to paint directly into the visible plane (useBackdropBase). Moving
+// them here keeps the same illuminating effect on the beads' surface
+// highlights without ever drawing a shape the camera can see on its own —
+// see docs/superpowers/specs/2026-08-01-hidden-backdrop-glow-design.md.
+// Positions/sizes are carried over from the old normalised canvas spots,
+// scaled into this rig's pixel-from-centre space.
+const BOKEH_SPOTS: Array<{ position: [number, number, number]; scale: number }> = [
+  { position: [-230, 179, 260], scale: 200 },
+  { position: [158, 224, 260], scale: 144 },
+  { position: [252, -32, 260], scale: 230 },
+  { position: [-108, -115, 260], scale: 173 },
+  { position: [72, -205, 260], scale: 130 },
+  { position: [-288, -160, 260], scale: 115 },
+]
+
 const BeadEnvironment = memo(function BeadEnvironment({
   intensity,
   resolution,
@@ -399,6 +416,16 @@ const BeadEnvironment = memo(function BeadEnvironment({
         rotation={[0, 0.45, 0]}
         scale={[110, 190, 1]}
       />
+      {BOKEH_SPOTS.map((spot, i) => (
+        <Lightformer
+          key={i}
+          form="circle"
+          intensity={0.1}
+          color="#ffffff"
+          position={spot.position}
+          scale={[spot.scale, spot.scale, 1]}
+        />
+      ))}
     </Environment>
   )
 })
@@ -424,9 +451,18 @@ const BeadEnvironment = memo(function BeadEnvironment({
 // blend through, and the beads now refract the real rotating globe as
 // genuine in-scene content — the "actually see-through" look asked for
 // from the start of this pass, without the compositing bug.
-const BACKDROP_SCALE = 0.35
+// Was 0.35. That downsampled the crisp globe canvas into this compositing
+// canvas every frame, then a full-viewport plane stretched the low-res
+// result back up — a downsample immediately followed by an upsample, which
+// blurred the globe's fine dot-matrix landmasses (the flat gradient/bokeh
+// underneath was soft enough that the same loss never showed). 1.0 matches
+// the globe's own CSS-pixel resolution 1:1, so the plane no longer
+// magnifies it. Costs more per-frame texture upload than 0.35 did, but the
+// bokeh spots that originally justified keeping this low have moved to the
+// Lightformer rig (BeadEnvironment) and no longer scale with it.
+const BACKDROP_SCALE = 1
 
-// Static base only (gradient + bokeh) — memoized on theme/viewport size
+// Static base only (gradient) — memoized on theme/viewport size
 // alone, so it is NOT rebuilt every time the globe rotates or the circle
 // moves a pixel during layout. The live globe is composited on top of a
 // copy of this each frame in Backdrop's useFrame, below.
@@ -452,35 +488,10 @@ function useBackdropBase(theme: 'light' | 'dark', width: number, height: number)
     }
     ctx.fillStyle = gradient
     ctx.fillRect(0, 0, w, h)
-    // Soft round highlights (photographic bokeh), scattered so a bead
-    // rolling anywhere across the pile still refracts something with shape
-    // rather than a flat wash. Neutral greys/whites, not warm tones — the
-    // page's palette is black/white/wine-red, not gold.
-    const bokeh =
-      theme === 'dark'
-        ? ['#8a8a8a', '#6b6b6b', '#a8a8a8', '#4a4a4a']
-        : ['#ffffff', '#f2f2f2', '#e8e8e8', '#cfcfcf']
-    const spots: Array<[number, number, number]> = [
-      [0.18, 0.22, 0.14],
-      [0.72, 0.15, 0.1],
-      [0.85, 0.55, 0.16],
-      [0.35, 0.68, 0.12],
-      [0.6, 0.82, 0.09],
-      [0.1, 0.75, 0.08],
-    ]
-    spots.forEach(([nx, ny, nr], i) => {
-      const cx = nx * w
-      const cy = ny * h
-      const r = nr * Math.max(w, h)
-      const radial = ctx.createRadialGradient(cx, cy, 0, cx, cy, r)
-      const color = bokeh[i % bokeh.length]
-      radial.addColorStop(0, `${color}b0`)
-      radial.addColorStop(1, `${color}00`)
-      ctx.fillStyle = radial
-      ctx.beginPath()
-      ctx.arc(cx, cy, r, 0, Math.PI * 2)
-      ctx.fill()
-    })
+    // The bokeh highlights that used to live here now live in the
+    // Lightformer rig (BeadEnvironment) instead — same illuminating effect
+    // on the beads, but no longer a shape visible directly in this backdrop.
+    // See docs/superpowers/specs/2026-08-01-hidden-backdrop-glow-design.md.
     return canvas
   }, [theme, width, height])
 }
