@@ -51,12 +51,12 @@ export function DotMatrixBackground() {
           backgroundSize: '24px 24px',
           opacity: 0.18,
           maskImage: [
-            'radial-gradient(circle 140px at var(--mx) var(--my), #000 0%, #000 40%, transparent 100%)',
-            'radial-gradient(circle 320px at var(--mx) var(--my), rgba(0,0,0,0.5) 0%, transparent 100%)',
+            'radial-gradient(circle 200px at var(--mx) var(--my), #000 0%, #000 40%, transparent 100%)',
+            'radial-gradient(circle 460px at var(--mx) var(--my), rgba(0,0,0,0.5) 0%, transparent 100%)',
           ].join(','),
           WebkitMaskImage: [
-            'radial-gradient(circle 140px at var(--mx) var(--my), #000 0%, #000 40%, transparent 100%)',
-            'radial-gradient(circle 320px at var(--mx) var(--my), rgba(0,0,0,0.5) 0%, transparent 100%)',
+            'radial-gradient(circle 200px at var(--mx) var(--my), #000 0%, #000 40%, transparent 100%)',
+            'radial-gradient(circle 460px at var(--mx) var(--my), rgba(0,0,0,0.5) 0%, transparent 100%)',
           ].join(','),
           maskComposite: 'add',
           WebkitMaskComposite: 'source-over',
@@ -66,7 +66,7 @@ export function DotMatrixBackground() {
         className="absolute inset-0"
         style={{
           background:
-            'radial-gradient(circle 260px at var(--mx) var(--my), var(--sheen), transparent 70%)',
+            'radial-gradient(circle 340px at var(--mx) var(--my), var(--sheen), transparent 70%)',
           opacity: 0.06,
         }}
       />

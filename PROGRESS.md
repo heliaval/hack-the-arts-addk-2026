@@ -2734,3 +2734,13 @@ sandbox (Browser pane doesn't composite frames), but the fix addresses the
 actual coordinate-space mismatch directly.
 
 Status: done. Commit backdated to 2026-07-31T19:00:00 per standing instruction.
+
+## 2026-08-03 (continued) — Dot-matrix background: bigger reveal radius [inline]
+
+User said the illuminated area felt a little small. Bumped all three radii
+~40%: dot mask inner reveal 140px -> 200px, outer halo 320px -> 460px, sheen
+260px -> 340px (kept the same 40%/700% stop proportions on each gradient).
+
+Build/`oxlint` clean.
+
+Status: done. Commit backdated to 2026-07-31T19:00:00 per standing instruction.
