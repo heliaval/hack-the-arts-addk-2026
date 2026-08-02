@@ -43,6 +43,13 @@ interface GlobeProps {
   mapSamples?: number
   /** Which entry of each label's variant array is shown; animates the swap. */
   activeLabelIndex?: number
+  /** True when something opaque (BeadScene's backdrop) is covering this
+   * canvas's entire viewport, so none of its pixels are actually visible.
+   * Throttles the WebGL draw and skips label/ripple DOM updates entirely —
+   * see the comment above animate()'s obscured branch for the full
+   * rationale. Does not pause rotation state, so the globe is still in the
+   * right position whenever it becomes visible again. */
+  obscured?: boolean
 }
 
 export interface GlobeRef {
@@ -284,6 +291,7 @@ export const Globe = forwardRef<GlobeRef, GlobeProps>(function Globe({
   diffuse = 1.5,
   mapSamples = 16000,
   activeLabelIndex = 0,
+  obscured = false,
 }: GlobeProps, ref) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const labelRefs = useRef<Map<string, HTMLDivElement>>(new Map())
@@ -323,6 +331,7 @@ export const Globe = forwardRef<GlobeRef, GlobeProps>(function Globe({
     markers,
     arcs,
     pulses,
+    obscured,
     markerColor,
     baseColor,
     arcColor,
@@ -339,6 +348,7 @@ export const Globe = forwardRef<GlobeRef, GlobeProps>(function Globe({
     markers,
     arcs,
     pulses,
+    obscured,
     markerColor,
     baseColor,
     arcColor,
@@ -520,6 +530,19 @@ export const Globe = forwardRef<GlobeRef, GlobeProps>(function Globe({
 
       let lastMarkers: Marker[] | null = null
       let lastArcs: Arc[] | null = null
+      // While `obscured` (BeadScene's opaque backdrop is covering the
+      // entire viewport, so none of this canvas's pixels are visible),
+      // still advance rotation state every frame (cheap arithmetic, keeps
+      // the globe in the right position for when it's revealed again) but
+      // skip the two actually expensive per-frame operations: the WebGL
+      // draw itself (globe.update() — gl.clear + drawArrays at up to 2x
+      // DPR, roughly 16x the bead scene's own fragment count) and the
+      // label/ripple DOM writes (inline style + SVG path rebuilds).
+      // globe.update() is throttled rather than fully skipped so its
+      // (invisible) canvas still occasionally refreshes — matches
+      // BeadScene's own Backdrop update cadence, since that's the only
+      // thing that would ever read this canvas's pixels while obscured.
+      let obscuredFrameCount = 0
 
       function animate() {
         if (!isPausedRef.current) {
@@ -576,9 +599,15 @@ export const Globe = forwardRef<GlobeRef, GlobeProps>(function Globe({
           }))
           lastArcs = p.arcs
         }
-        globe!.update(updatePayload)
-        updateLabels(currentPhi, currentTheta, p.markerElevation, p.arcHeight)
-        updateRipples(currentPhi, currentTheta, p.markerElevation)
+        if (p.obscured) {
+          obscuredFrameCount++
+          if (obscuredFrameCount % 2 === 0) globe!.update(updatePayload)
+        } else {
+          obscuredFrameCount = 0
+          globe!.update(updatePayload)
+          updateLabels(currentPhi, currentTheta, p.markerElevation, p.arcHeight)
+          updateRipples(currentPhi, currentTheta, p.markerElevation)
+        }
         currentPhiRef.current = currentPhi
         currentThetaRef.current = currentTheta
         animationId = requestAnimationFrame(animate)

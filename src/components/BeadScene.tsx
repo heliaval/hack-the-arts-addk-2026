@@ -510,6 +510,17 @@ function useBackdropBase(theme: 'light' | 'dark', width: number, height: number)
 // rate halves this cost without touching resolution or reverting that fix.
 const BACKDROP_UPDATE_EVERY_N_FRAMES = 2
 
+// Only the globe-sized region needs a per-frame update -- the gradient
+// behind it never changes once built (see useBackdropBase). Previously
+// this whole file's Backdrop was one full-viewport canvas, recomposited
+// AND re-uploaded every BACKDROP_UPDATE_EVERY_N_FRAMES frames even though
+// only the globe's own on-screen box (typically well under half the
+// viewport) ever actually changes. Split into two meshes: a full-viewport
+// gradient plane whose texture uploads exactly once (CanvasTexture
+// uploads on construction; nothing here ever sets needsUpdate on it
+// again), and a small globe-sized plane that gets the per-frame
+// composite+upload treatment, at its own boxSize x boxSize resolution
+// instead of the full viewport.
 const Backdrop = memo(function Backdrop({
   theme,
   circle,
@@ -521,58 +532,76 @@ const Backdrop = memo(function Backdrop({
 }) {
   const { width, height } = useThree((state) => state.size)
   const base = useBackdropBase(theme, width, height)
-  const frameCountRef = useRef(0)
 
-  // The live composited canvas + its texture. Recreated only when the base
-  // (theme/size) changes — circle and globeElement are read fresh every
-  // frame in useFrame instead of triggering a recreate, since the globe
-  // rotates continuously and a circle-keyed useMemo would thrash.
+  const gradientTexture = useMemo(() => {
+    if (!base) return null
+    const texture = new THREE.CanvasTexture(base)
+    texture.colorSpace = THREE.SRGBColorSpace
+    return texture
+  }, [base])
+  useEffect(() => () => gradientTexture?.dispose(), [gradientTexture])
+
+  // GLOBE_SURFACE_RADIUS_FRACTION (0.4) is already "sphere radius as a
+  // fraction of the FULL canvas box width" — dividing circle.radius by it
+  // yields the box width directly, not a radius that still needs doubling
+  // into a diameter. `circle` is stable between resizes (GlobeView only
+  // reports on an actual ResizeObserver/resize event with dedupe), so this
+  // stays stable too, same rarity as the canvas/texture memo below.
+  const boxSize = circle
+    ? Math.max(1, Math.round((circle.radius / GLOBE_SURFACE_RADIUS_FRACTION) * BACKDROP_SCALE))
+    : 0
+
+  // Recreated only when the base (theme/size) or the globe's on-screen
+  // size changes — globeElement is read fresh every frame in useFrame
+  // instead of triggering a recreate, since the globe rotates continuously.
   const { canvas, texture } = useMemo(() => {
-    if (!base) return { canvas: null, texture: null }
+    if (!base || boxSize <= 0) return { canvas: null, texture: null }
     const canvas = document.createElement('canvas')
-    canvas.width = base.width
-    canvas.height = base.height
+    canvas.width = boxSize
+    canvas.height = boxSize
     const texture = new THREE.CanvasTexture(canvas)
     texture.colorSpace = THREE.SRGBColorSpace
     return { canvas, texture }
-  }, [base])
+  }, [base, boxSize])
   useEffect(() => () => texture?.dispose(), [texture])
 
+  const frameCountRef = useRef(0)
+
   useFrame(() => {
-    if (!canvas || !base || !texture) return
+    if (!canvas || !base || !texture || !circle) return
     frameCountRef.current++
     if (frameCountRef.current % BACKDROP_UPDATE_EVERY_N_FRAMES !== 0) return
     const ctx = canvas.getContext('2d')
     if (!ctx) return
-    ctx.clearRect(0, 0, canvas.width, canvas.height)
-    ctx.drawImage(base, 0, 0)
-    // `circle` is the sphere's own on-screen radius, which is
-    // GLOBE_SURFACE_RADIUS_FRACTION of the globe canvas's full CSS box —
-    // there is a margin around the sphere within that canvas — so the
-    // destination rect has to be sized back up to the box, or the globe
-    // image gets drawn shrunk-in with its own margin visible as a seam.
     // Coordinates are DOM/CSS pixels with a top-left origin, matching this
     // canvas's own 2D coordinate system directly (unlike GlobeCollider,
-    // which has to flip into world-space for Rapier).
-    if (globeElement && circle) {
-      // GLOBE_SURFACE_RADIUS_FRACTION (0.4) is already "sphere radius as a
-      // fraction of the FULL canvas box width" — dividing circle.radius by
-      // it yields the box width directly, not a radius that still needs
-      // doubling into a diameter.
-      const boxSize = (circle.radius / GLOBE_SURFACE_RADIUS_FRACTION) * BACKDROP_SCALE
-      const cx = circle.centerX * BACKDROP_SCALE
-      const cy = circle.centerY * BACKDROP_SCALE
-      ctx.drawImage(globeElement, cx - boxSize / 2, cy - boxSize / 2, boxSize, boxSize)
-    }
+    // which has to flip into world-space for Rapier). Crop `base` at the
+    // same box the globe itself occupies, so the gradient stays
+    // continuous across the seam between the two planes.
+    const cx = circle.centerX * BACKDROP_SCALE
+    const cy = circle.centerY * BACKDROP_SCALE
+    const sx = cx - boxSize / 2
+    const sy = cy - boxSize / 2
+    ctx.clearRect(0, 0, boxSize, boxSize)
+    ctx.drawImage(base, sx, sy, boxSize, boxSize, 0, 0, boxSize, boxSize)
+    if (globeElement) ctx.drawImage(globeElement, 0, 0, boxSize, boxSize)
     texture.needsUpdate = true
   })
 
-  if (!texture) return null
+  if (!gradientTexture) return null
   return (
-    <mesh position={[0, 0, -420]}>
-      <planeGeometry args={[width, height]} />
-      <meshBasicMaterial map={texture} toneMapped={false} />
-    </mesh>
+    <>
+      <mesh position={[0, 0, -420]}>
+        <planeGeometry args={[width, height]} />
+        <meshBasicMaterial map={gradientTexture} toneMapped={false} />
+      </mesh>
+      {texture && circle && (
+        <mesh position={[circle.centerX - width / 2, height / 2 - circle.centerY, -419]}>
+          <planeGeometry args={[boxSize, boxSize]} />
+          <meshBasicMaterial map={texture} toneMapped={false} />
+        </mesh>
+      )}
+    </>
   )
 })
 
@@ -737,6 +766,13 @@ function GlobeCollider({ circle }: { circle: GlobeCircle }) {
 // true for the whole shrink. Once the shrink completes, `onExpire` tells
 // the parent to actually remove this bead from state, which is the only
 // thing that unmounts this component.
+// Reused across every bead's departure computation, not allocated fresh
+// per-bead per-frame -- see BeadBody's useFrame for why this only ever
+// needs to hold one bead's position for the single synchronous instant
+// it's read, so one shared scratch vector is safe (JS is single-threaded;
+// each bead's useFrame callback fully consumes it before the next runs).
+const _departureScratch = new THREE.Vector3()
+
 const BeadBody = memo(function BeadBody({
   bead,
   material,
@@ -754,24 +790,26 @@ const BeadBody = memo(function BeadBody({
 }) {
   const { width, height } = useThree((state) => state.size)
   const meshRef = useRef<THREE.Mesh>(null)
-  const lastScreenPosRef = useRef({ x: width / 2 + bead.x, y: height / 2 })
   const exitElapsedMsRef = useRef(0)
   const departedRef = useRef(false)
   const expiredRef = useRef(false)
 
+  // getWorldPosition (a matrix decompose) is only ever needed once per
+  // bead's whole lifetime -- the instant it starts dying, to launch its
+  // departure leaf from the right spot. Previously this ran for every
+  // live bead on every single frame regardless of whether it was dying,
+  // computing a value nothing read until (if ever) that one instant.
   useFrame((_, delta) => {
+    if (!dying) return
     const mesh = meshRef.current
     if (!mesh) return
-    const worldPos = mesh.getWorldPosition(new THREE.Vector3())
-    // Orthographic camera, world units == CSS pixels, origin at viewport
-    // centre, +y up (see this file's top-of-file comment) — flip to DOM
-    // screen space (origin top-left, +y down) for LeafOverlay.
-    lastScreenPosRef.current = { x: width / 2 + worldPos.x, y: height / 2 - worldPos.y }
-
-    if (!dying) return
     if (!departedRef.current) {
       departedRef.current = true
-      onDeparture(lastScreenPosRef.current.x, lastScreenPosRef.current.y, color)
+      const worldPos = mesh.getWorldPosition(_departureScratch)
+      // Orthographic camera, world units == CSS pixels, origin at viewport
+      // centre, +y up (see this file's top-of-file comment) — flip to DOM
+      // screen space (origin top-left, +y down) for LeafOverlay.
+      onDeparture(width / 2 + worldPos.x, height / 2 - worldPos.y, color)
     }
     exitElapsedMsRef.current += delta * 1000
     const t = Math.min(1, exitElapsedMsRef.current / BEAD_EXIT_MS)
@@ -810,14 +848,16 @@ interface BeadSceneProps {
    * backdrop each frame (see Backdrop's comment for why). Null until
    * GlobeView's canvas has mounted. */
   globeElement: HTMLCanvasElement | null
-  /** Called once per marble, when it departs the scene — currently the
-   * scene's only departure path is the whole thing unmounting (see
-   * BeadBody's unmount cleanup), which happens on a country/year switch or
-   * deselect. Drives LeafOverlay (src/components/LeafOverlay.tsx). */
+  /** Called once per marble, at the moment it starts fading out (see
+   * BeadBody's dying branch) — fires only on per-bead eviction at
+   * MAX_CAPACITY. A full scene teardown (country/year switch or deselect)
+   * does NOT fire this for whatever beads were still alive; there is no
+   * unmount-based fallback anymore. Drives LeafOverlay
+   * (src/components/LeafOverlay.tsx). */
   onDeparture: (x: number, y: number, color: string) => void
 }
 
-export function BeadScene({
+export const BeadScene = memo(function BeadScene({
   birthMarbleCount,
   deathMarbleCount,
   birthAnnualTotal,
@@ -1004,7 +1044,17 @@ export function BeadScene({
         <Backdrop theme={theme} circle={globeCircle} globeElement={globeElement} />
         {/* Rapier's WASM is loaded via suspend-react, so Physics suspends. */}
         <Suspense fallback={null}>
-          <Physics gravity={[0, -GRAVITY_PX_PER_S2, 0]}>
+          {/* timeStep="vary" (rather than the default fixed 1/60 with
+              interpolation) steps the world once per rendered frame using
+              that frame's own delta, instead of running a `while
+              (accumulator >= timeStep)` catch-up loop plus a full
+              previous-state interpolation snapshot every frame. A slow
+              frame under a fixed timestep runs MORE physics steps to catch
+              up, which makes the next frame slower too -- "vary" has no
+              such feedback loop, at the cost of physics becoming slightly
+              framerate-dependent, an acceptable trade for a decorative
+              bead pile. */}
+          <Physics gravity={[0, -GRAVITY_PX_PER_S2, 0]} timeStep="vary">
             <Boundaries />
             {globeCircle && <GlobeCollider circle={globeCircle} />}
             {beads.map((bead) => (
@@ -1023,4 +1073,4 @@ export function BeadScene({
       </Canvas>
     </div>
   )
-}
+})

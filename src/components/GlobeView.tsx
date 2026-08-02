@@ -24,6 +24,10 @@ interface GlobeViewProps {
   onElementChange?: (element: HTMLCanvasElement | null) => void
   cityCount: number
   rotationSpeedKmS: number
+  /** True while BeadScene's opaque backdrop is covering the entire
+   * viewport, so this canvas's pixels aren't actually visible — throttles
+   * cobe's per-frame work. See Globe's own `obscured` prop for the detail. */
+  obscured?: boolean
 }
 
 // The globe sphere always stays white, like the original reference demo —
@@ -516,6 +520,7 @@ export const GlobeView = memo(function GlobeView({
   onElementChange,
   cityCount,
   rotationSpeedKmS,
+  obscured = false,
 }: GlobeViewProps) {
   // Globe exposes live screen-space projection (see cobe-globe.tsx) so the
   // reveal/draw-in stagger below can order itself top-left to bottom-right
@@ -670,6 +675,7 @@ export const GlobeView = memo(function GlobeView({
         markers={markers}
         arcs={arcs}
         pulses={pulses}
+        obscured={obscured}
         activeLabelIndex={LANGUAGES.indexOf(lang)}
         speed={kmPerSecToPhiSpeed(rotationSpeedKmS)}
         {...GLOBE_COLORS}

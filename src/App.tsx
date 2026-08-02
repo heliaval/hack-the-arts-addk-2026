@@ -443,6 +443,7 @@ function App() {
           onElementChange={setGlobeElement}
           cityCount={cityCount}
           rotationSpeedKmS={rotationSpeedKmS}
+          obscured={!!(selected && yearTotals)}
         />
       </div>
       {selected && yearTotals && (
