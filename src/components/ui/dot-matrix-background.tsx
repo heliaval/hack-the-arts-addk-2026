@@ -61,7 +61,7 @@ export function DotMatrixBackground() {
         className="absolute inset-0"
         style={{
           background:
-            'radial-gradient(ellipse 420px 260px at calc(var(--mx) - 70px) calc(var(--my) - 50px), var(--sheen), transparent 70%)',
+            'radial-gradient(ellipse 420px 260px at var(--mx) var(--my), var(--sheen), transparent 70%)',
           opacity: 0.06,
         }}
       />

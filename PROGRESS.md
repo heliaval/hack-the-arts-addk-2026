@@ -2685,3 +2685,15 @@ resolves to the new `--sheen` token at opacity 0.06, in light and dark
 respectively. Build/`oxlint` clean.
 
 Status: done. Commit backdated to 2026-07-31T19:00:00 per standing instruction.
+
+## 2026-08-03 (continued) — Dot-matrix background: sheen re-centered on cursor [inline]
+
+User reported the sheen still read as noticeably off-center from the cursor even
+after the color change. Removed the deliberate -70px/-50px "specular reflection"
+offset — sheen now anchors at the same `--mx`/`--my` as the dot-reveal mask, so
+it's directly centered under the pointer like the dots are.
+
+Verified live via computed style: sheen's radial-gradient center matches the
+tracked cursor position exactly (no offset). Build/`oxlint` clean.
+
+Status: done. Commit backdated to 2026-07-31T19:00:00 per standing instruction.
