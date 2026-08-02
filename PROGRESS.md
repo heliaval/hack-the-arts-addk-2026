@@ -2596,3 +2596,16 @@ composite frames. **User must confirm live.**
 
 Status: done, pending live confirmation. Commit `a3a9eb8`, backdated to
 2026-07-31T19:00:00 per standing instruction.
+
+## 2026-08-03 — Dot-matrix cursor-reveal background: design spec [agent: general-purpose]
+
+Wrote `docs/superpowers/specs/2026-08-03-dot-matrix-background-design.md` for the
+invisible dot-matrix background revealed by a cursor glow + glass sheen. CSS-only
+approach (repeating radial-gradient tile + `mask-image` driven by `--mx`/`--my`
+custom properties, rAF-batched `mousemove` writes straight to the DOM); the
+per-frame `<canvas>` redraw alternative was rejected on performance grounds given
+this session's earlier regressions. Spec references verified against the real
+`src/App.tsx` z-index tree and `src/index.css` token set.
+
+Status: done (spec only — implementation is a separate session). Commit backdated
+to 2026-07-31T19:00:00 per standing instruction.
