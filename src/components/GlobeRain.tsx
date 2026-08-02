@@ -7,54 +7,86 @@ import { resolveAccentColor } from '@/lib/resolveAccentColor'
 // edge of the screen — it's already off-screen when it (re)starts falling.
 const RESPAWN_MARGIN_PX = 60
 
+// One shared wind direction for every drop, instead of everything falling
+// dead vertical. A single consistent off-vertical angle across the whole
+// field is what makes rain read as weather rather than as a screensaver of
+// falling lines — the drops agree with each other about which way the wind
+// is blowing. ~16 degrees: enough to be unmistakably diagonal, shallow
+// enough that drops still visibly fall rather than streak sideways.
+const WIND_ANGLE_RAD = 0.28
+// Unit direction of travel, +x right / +y down. Precomputed once — this is
+// read for every drop on every frame.
+const WIND_DIR = { x: Math.sin(WIND_ANGLE_RAD), y: Math.cos(WIND_ANGLE_RAD) } as const
+const WIND_TAN = Math.tan(WIND_ANGLE_RAD)
+
+/** Horizontal drift a drop accumulates while falling `distanceY` pixels. */
+function windDriftOver(distanceY: number): number {
+  return distanceY * WIND_TAN
+}
+
 // A drop fades to fully transparent over this many pixels as it approaches
 // the bottom of the viewport, reaching alpha 0 exactly at the visible
-// bottom edge (see dropFadeAlpha) — a dissolve instead of a hard cutoff at
-// the edge, or (previously) no visible cue at all before it's silently
-// recycled RESPAWN_MARGIN_PX further down, off-screen.
-const FADE_ZONE_PX = 90
+// bottom edge (see dropFadeAlpha). Widened from 90: at 220-420 px/s a 90px
+// ramp is only ~0.2-0.4 seconds, which reads as a cut rather than a
+// dissolve. 300px is ~0.7-1.4 seconds. This costs nothing now that the
+// fade is folded into the quantized alpha level the renderer already
+// batches on (see dropAlpha / ALPHA_LEVELS) — before that, every drop
+// inside this zone had to be drawn individually, and widening it would
+// have put roughly a third of the field on the per-drop path.
+const FADE_ZONE_PX = 300
 
 // Three depth tiers instead of independently randomized speed/width/length
-// per drop: correlating them (near = faster/wider/longer/more opaque) is
-// what actually reads as depth/parallax rather than a flat wall of
-// identical lines, and fixing width/length PER TIER (not randomized within
-// it) is what makes the batched-by-tier rendering in GlobeRain's tick()
-// possible — one canvas path per tier per style, instead of one
-// beginPath/stroke pair per drop (260 -> 6 draw calls at DROP_COUNT=130).
+// per drop: correlating them (near = faster/wider/longer/brighter) is what
+// actually reads as depth/parallax rather than a flat wall of identical
+// lines, and fixing width/length PER TIER (not randomized within it) is
+// what makes the batched rendering in GlobeRain's tick() possible — a
+// fixed handful of canvas paths, not one beginPath/stroke pair per drop.
+//
+// Widths are thinner and lengths longer than the pre-overhaul teardrop
+// values: the target look is a motion-blurred streak (a long exposure of a
+// small fast object), not a droplet with a visible body.
 interface DepthTier {
   speedRangePxS: [number, number]
   widthPx: number
   lengthPx: number
-  bodyAlpha: number
-  highlightAlpha: number
+  /** Peak alpha at the middle of this tier's streaks, before the per-drop
+   * brightness variant, the bottom-edge fade, and lighting are folded in.
+   * See dropAlpha. */
+  baseAlpha: number
 }
 
 const DEPTH_TIERS: readonly DepthTier[] = [
-  { speedRangePxS: [340, 420], widthPx: 3, lengthPx: 34, bodyAlpha: 0.55, highlightAlpha: 0.85 },
-  { speedRangePxS: [280, 350], widthPx: 2.2, lengthPx: 26, bodyAlpha: 0.42, highlightAlpha: 0.7 },
-  { speedRangePxS: [220, 280], widthPx: 1.5, lengthPx: 18, bodyAlpha: 0.3, highlightAlpha: 0.55 },
+  { speedRangePxS: [340, 420], widthPx: 2, lengthPx: 64, baseAlpha: 0.85 },
+  { speedRangePxS: [280, 350], widthPx: 1.5, lengthPx: 48, baseAlpha: 0.6 },
+  { speedRangePxS: [220, 280], widthPx: 1, lengthPx: 34, baseAlpha: 0.4 },
 ]
 
-// Slight per-drop color variation instead of every drop in a tier sharing
-// one exact shade — three discrete steps (not a continuous random mix), so
-// drops can still be grouped and batched per (depth tier, color variant)
-// pair rather than needing one draw call per drop. -1 = darker/deeper,
-// 0 = base, 1 = lighter. See resolveRainColors for how these map to actual
-// colors.
-const COLOR_VARIANT_OFFSETS: readonly number[] = [-1, 0, 1]
-const COLOR_VARIANT_JITTER = 0.16
+// Per-drop variation is BRIGHTNESS ONLY — no hue shift, no shape change.
+// That is the one axis the reference rain varies on, and it is also the
+// only axis that stays free here: brightness already has to be quantized
+// per frame for the bottom-edge fade and the lighting, so a per-drop
+// multiplier folds into that same quantized level (see dropAlpha) instead
+// of adding a batching dimension of its own. Replaces the old
+// COLOR_VARIANT_OFFSETS, which varied shade (a real hue/lightness mix) and
+// therefore needed its own colour table and its own bucket axis.
+const BRIGHTNESS_VARIANTS: readonly number[] = [0.7, 1, 1.3]
 
 // Fraction of spawns pulled toward the globe's own horizontal band rather
-// than scattered uniformly across the full viewport width — otherwise, on a
-// wide viewport, only a small minority of drops ever cross the globe at all
-// and the "rain on the globe" read gets lost in ambient side-fall.
-const GLOBE_BAND_SPAWN_FRACTION = 0.82
-// How far past the globe's own radius that band extends, so drops still
-// visibly approach the silhouette from just outside it rather than only
-// ever spawning directly above it. Tightened from 1.4 alongside the raised
-// spawn fraction above — a narrower band concentrates the extra density
-// directly over the globe instead of just widening the diffuse spread.
-const GLOBE_BAND_RADIUS_MULTIPLIER = 1.15
+// than scattered uniformly across the full viewport width. Lowered from
+// 0.82: that value was tuned when drops were thin abstract lines and the
+// worry was losing the "rain on the globe" read entirely in ambient
+// side-fall. With today's much more prominent streaks — plus the entry
+// ripple and the silhouette-hugging wrap trail, both of which are
+// per-CROSSING cues that stay legible at a far lower crossing rate — an
+// 82% bias no longer reads as a lean toward the globe, it reads as a
+// column of rain down the middle of the screen. At 0.35 with the widened
+// band below, in-band density is ~1.8x out-of-band rather than ~10x.
+const GLOBE_BAND_SPAWN_FRACTION = 0.35
+// How far past the globe's own radius that band extends. Widened from 1.15
+// for the same reason the fraction dropped: the point is now a soft,
+// broad lean toward the globe, so the remaining biased spawns should be
+// spread over a wide band rather than concentrated into a narrow one.
+const GLOBE_BAND_RADIUS_MULTIPLIER = 1.6
 // Of the spawns pulled into the globe band, the fraction that use the
 // angle-weighted pick below rather than a flat pick across the band width.
 // A flat pick in X under-represents the globe's edges: dx = radius*sin(a),
@@ -85,9 +117,10 @@ export interface Drop {
   /** Index into DEPTH_TIERS — fixes this drop's width/length/color for its
    * whole lifetime (a respawn via spawnDropAbove picks a fresh one). */
   depth: number
-  /** Index into COLOR_VARIANT_OFFSETS — fixes this drop's exact shade for
-   * its whole lifetime, same respawn-refreshes-it rule as depth. */
-  colorVariant: number
+  /** Index into BRIGHTNESS_VARIANTS — fixes this drop's own brightness
+   * multiplier for its whole lifetime, same respawn-refreshes-it rule as
+   * depth. */
+  brightnessVariant: number
   phase: 'fall' | 'wrap' | 'release'
   /** Angle in [0, π] around the globe's center, 0 = top (north pole of the
    * visible silhouette), π = bottom. Only meaningful while phase === 'wrap'. */
@@ -106,7 +139,7 @@ export interface Drop {
 function randomDrop(x: number, y: number): Drop {
   const depth = Math.floor(Math.random() * DEPTH_TIERS.length)
   const tier = DEPTH_TIERS[depth]
-  const colorVariant = Math.floor(Math.random() * COLOR_VARIANT_OFFSETS.length)
+  const brightnessVariant = Math.floor(Math.random() * BRIGHTNESS_VARIANTS.length)
   return {
     x,
     y,
@@ -114,7 +147,7 @@ function randomDrop(x: number, y: number): Drop {
     width: tier.widthPx,
     length: tier.lengthPx,
     depth,
-    colorVariant,
+    brightnessVariant,
     phase: 'fall',
     wrapAngle: 0,
     wrapExitAngle: Math.PI,
@@ -122,12 +155,31 @@ function randomDrop(x: number, y: number): Drop {
   }
 }
 
-/** Picks a spawn x biased toward the globe's own horizontal band (see
- * GLOBE_BAND_SPAWN_FRACTION) so a majority of drops visibly cross its
- * silhouette rather than scattering evenly across the full viewport. Falls
- * back to a full-width uniform pick once no globe has been measured yet. */
-function randomSpawnX(viewportWidth: number, globe: GlobeCircleLike | null): number {
-  if (!globe || Math.random() >= GLOBE_BAND_SPAWN_FRACTION) return Math.random() * viewportWidth
+/** Picks a spawn x for a drop starting at `spawnY`, biased toward the globe's
+ * own horizontal band (see GLOBE_BAND_SPAWN_FRACTION). Both branches are
+ * wind-compensated: because every drop drifts right as it falls (WIND_DIR),
+ * the uniform range extends LEFT of the viewport by exactly the drift this
+ * drop will accumulate on its way to the bottom, or the left edge of the
+ * screen would go bare while the right edge over-filled. Falls back to a
+ * plain wind-compensated uniform pick once no globe has been measured yet. */
+function randomSpawnX(
+  viewportWidth: number,
+  viewportHeight: number,
+  spawnY: number,
+  globe: GlobeCircleLike | null,
+): number {
+  const overhang = windDriftOver(Math.max(0, viewportHeight - spawnY))
+
+  if (!globe || Math.random() >= GLOBE_BAND_SPAWN_FRACTION) {
+    return randomBetween(-overhang, viewportWidth)
+  }
+
+  // Biased spawns aim at where the globe WILL be relative to this drop by
+  // the time it gets there, not at where it is directly below the spawn
+  // point — without this shift the wind carries the whole biased population
+  // past the globe's right edge and the bias buys nothing.
+  const driftToGlobe = windDriftOver(Math.max(0, globe.centerY - spawnY))
+  const aimCenterX = globe.centerX - driftToGlobe
 
   if (Math.random() < GLOBE_BAND_ANGLE_WEIGHTED_FRACTION) {
     // Sample the entry ANGLE uniformly (0 = dead center top, π/2 = the
@@ -136,22 +188,26 @@ function randomSpawnX(viewportWidth: number, globe: GlobeCircleLike | null): num
     // lifts the edges instead of just widening the flat spread.
     const angle = Math.random() * (Math.PI / 2)
     const side: -1 | 1 = Math.random() < 0.5 ? -1 : 1
-    const x = globe.centerX + globe.radius * Math.sin(angle) * side
-    return Math.min(viewportWidth, Math.max(0, x))
+    const x = aimCenterX + globe.radius * Math.sin(angle) * side
+    return Math.min(viewportWidth, Math.max(-overhang, x))
   }
 
   const bandHalfWidth = globe.radius * GLOBE_BAND_RADIUS_MULTIPLIER
-  const min = Math.max(0, globe.centerX - bandHalfWidth)
-  const max = Math.min(viewportWidth, globe.centerX + bandHalfWidth)
+  const min = Math.max(-overhang, aimCenterX - bandHalfWidth)
+  const max = Math.min(viewportWidth, aimCenterX + bandHalfWidth)
   return randomBetween(min, max)
 }
 
 /** A fresh drop above the viewport, ready to fall in. Used both for the
  * initial pool (see seedDrop) and to recycle a drop that has fallen past
- * the bottom of the viewport. */
-export function spawnDropAbove(viewportWidth: number, globe: GlobeCircleLike | null = null): Drop {
-  const x = randomSpawnX(viewportWidth, globe)
+ * the bottom of the viewport (or been blown off its right edge). */
+export function spawnDropAbove(
+  viewportWidth: number,
+  viewportHeight: number,
+  globe: GlobeCircleLike | null = null,
+): Drop {
   const y = -RESPAWN_MARGIN_PX - Math.random() * RESPAWN_MARGIN_PX
+  const x = randomSpawnX(viewportWidth, viewportHeight, y, globe)
   return randomDrop(x, y)
 }
 
@@ -186,12 +242,16 @@ function isInsideGlobe(x: number, y: number, globe: GlobeCircleLike): boolean {
 
 /** Places a drop at a random position across the FULL viewport height
  * (not just above it), used only to seed the initial pool so the effect
- * looks already in progress on mount instead of starting from zero. If
- * that random position happens to already be inside the globe's
- * silhouette, the drop starts directly in the 'wrap' phase. */
+ * looks already in progress on mount instead of starting from zero. Its y
+ * is picked FIRST so randomSpawnX can size that drop's own wind overhang
+ * from its remaining fall distance — a drop seeded near the bottom has
+ * barely any drift left, so giving it the full-height overhang would leave
+ * a visibly empty wedge along the left edge on mount. If the chosen
+ * position happens to already be inside the globe's silhouette, the drop
+ * starts directly in the 'wrap' phase. */
 export function seedDrop(viewportWidth: number, viewportHeight: number, globe: GlobeCircleLike | null): Drop {
-  const x = randomSpawnX(viewportWidth, globe)
   const y = randomBetween(-RESPAWN_MARGIN_PX, viewportHeight + RESPAWN_MARGIN_PX)
+  const x = randomSpawnX(viewportWidth, viewportHeight, y, globe)
   const drop = randomDrop(x, y)
   if (globe && isInsideGlobe(x, y, globe)) enterWrap(drop, x, y, globe)
   return drop
@@ -208,10 +268,12 @@ export function updateDrop(
 ): void {
   switch (drop.phase) {
     case 'fall': {
-      const nextY = drop.y + drop.speed * dt
-      if (globe && isInsideGlobe(drop.x, nextY, globe)) {
-        enterWrap(drop, drop.x, nextY, globe)
+      const nextX = drop.x + drop.speed * WIND_DIR.x * dt
+      const nextY = drop.y + drop.speed * WIND_DIR.y * dt
+      if (globe && isInsideGlobe(nextX, nextY, globe)) {
+        enterWrap(drop, nextX, nextY, globe)
       } else {
+        drop.x = nextX
         drop.y = nextY
       }
       break
@@ -234,14 +296,21 @@ export function updateDrop(
       break
     }
     case 'release': {
-      drop.y += drop.speed * dt
+      drop.x += drop.speed * WIND_DIR.x * dt
+      drop.y += drop.speed * WIND_DIR.y * dt
       break
     }
   }
 
-  const { y } = dropPosition(drop, globe)
-  if (y - drop.length > viewportHeight + RESPAWN_MARGIN_PX) {
-    Object.assign(drop, spawnDropAbove(viewportWidth, globe))
+  const { x, y } = dropPosition(drop, globe)
+  // Wind means a drop can now leave the frame sideways as well as
+  // downward — without the x test those drops would keep being simulated
+  // (and keep being pushed further right) forever off-screen instead of
+  // being recycled.
+  const fellPastBottom = y - drop.length > viewportHeight + RESPAWN_MARGIN_PX
+  const blownPastRight = x - drop.length > viewportWidth + RESPAWN_MARGIN_PX
+  if (fellPastBottom || blownPastRight) {
+    Object.assign(drop, spawnDropAbove(viewportWidth, viewportHeight, globe))
   }
 }
 
@@ -268,18 +337,27 @@ export function dropDirection(drop: Drop, globe: GlobeCircleLike | null): { x: n
     const len = Math.hypot(dx, dy) || 1
     return { x: dx / len, y: dy / len }
   }
-  return { x: 0, y: 1 }
+  return { x: WIND_DIR.x, y: WIND_DIR.y }
 }
 
-/** 1 while a drop is well above the bottom of the viewport, ramping down
+/** 1 while a drop is well above the bottom of the viewport, easing down
  * to 0 exactly at viewportHeight — see FADE_ZONE_PX. Drops below that (in
  * the RESPAWN_MARGIN_PX gap before actually being recycled, see
- * updateDrop) are already fully transparent, so no visible pop either way. */
-export function dropFadeAlpha(drop: Drop, globe: GlobeCircleLike | null, viewportHeight: number): number {
-  const { y } = dropPosition(drop, globe)
+ * updateDrop) are already fully transparent, so no visible pop either way.
+ * Takes the already-computed on-screen y rather than (drop, globe): the
+ * render loop resolves dropPosition once per drop per frame anyway, and
+ * re-deriving it in here was duplicate work on the hottest path.
+ *
+ * Smoothstep, not linear: 3t^2 - 2t^3 has zero derivative at BOTH t=0 and
+ * t=1, so the fade neither switches on abruptly at the top of the zone nor
+ * arrives at zero still moving — which is exactly what "more gradual"
+ * means here. A linear ramp of the same length still has a visible corner
+ * at each end no matter how long it is. */
+export function dropFadeAlpha(y: number, viewportHeight: number): number {
   const fadeStart = viewportHeight - FADE_ZONE_PX
   if (y <= fadeStart) return 1
-  return Math.max(0, 1 - (y - fadeStart) / FADE_ZONE_PX)
+  const t = Math.min(1, (y - fadeStart) / FADE_ZONE_PX)
+  return 1 - t * t * (3 - 2 * t)
 }
 
 function hexToRgb(hex: string): [number, number, number] {
@@ -299,51 +377,33 @@ function hexToRgba(hex: string, alpha: number): string {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`
 }
 
-interface TierColors {
-  /** Translucent body/tail color, drawn as a wider, lower-alpha stroke. */
-  body: string
-  /** Brighter core along the streak's leading edge, standing in for a
-   * droplet's specular highlight — pushed toward white so it doesn't just
-   * read as a second copy of the body color. */
-  highlight: string
-}
-
 interface RainColors {
-  /** [tier][colorVariant + 1] — index-aligned with DEPTH_TIERS and
-   * COLOR_VARIANT_OFFSETS (offset -1/0/1 -> index 0/1/2). */
-  variants: TierColors[][]
+  /** One opaque colour for every streak in the field. Per-drop and
+   * per-frame brightness is applied through ctx.globalAlpha per bucket
+   * instead of through a table of pre-baked rgba strings — the reference
+   * look varies only in brightness, so one colour plus one alpha number
+   * covers it, and globalAlpha is what the batched buckets can set once
+   * for many drops at a time. */
+  streak: string
   /** Base color for the entry-ripple rings (see Ripple, below) — full
    * alpha here, ripple fade is applied separately via ctx.globalAlpha so
    * one color resolve covers every ripple regardless of its age. */
   ripple: string
 }
 
-// How far the deepened base color is mixed toward pure black to build the
-// -1 ("darker") color variant, and toward white for the +1 ("lighter")
-// one — kept separate from COLOR_VARIANT_JITTER's role in resolveRainColors
-// only in name; same constant, used symmetrically in both directions.
 function resolveRainColors(): RainColors {
   const accent = resolveAccentColor()
-  // --accent alone read as washed out for a raindrop's own body color,
-  // especially in dark mode where it's a light pink-red (#c17b8a) rather
-  // than a deep red — mixing toward a dark blood-red anchor first gives a
-  // richer base in both themes without introducing a hue outside the
-  // palette (still derived from --accent, just pulled darker/more
-  // saturated).
-  const deepBase = mixHex(accent, '#4a0e14', 0.4)
-  const highlightHex = mixHex(deepBase, '#ffffff', 0.65)
-
-  const variantColor = (baseHex: string, offset: number): string =>
-    offset === 0 ? baseHex : mixHex(baseHex, offset < 0 ? '#000000' : '#ffffff', COLOR_VARIANT_JITTER)
-
+  // --accent alone read as washed out for rain, especially in dark mode
+  // where it's a light pink-red (#c17b8a) rather than a deep red — mixing
+  // toward a dark blood-red anchor gives a richer base in both themes
+  // without introducing a hue outside the palette. Pulled back from the
+  // pre-overhaul 0.4 mix and then lifted toward white: streaks are now
+  // thin and soft-ended, and a very dark colour at those widths simply
+  // disappears against the background.
+  const deepBase = mixHex(accent, '#4a0e14', 0.25)
   return {
-    variants: DEPTH_TIERS.map((tier) =>
-      COLOR_VARIANT_OFFSETS.map((offset) => ({
-        body: hexToRgba(variantColor(deepBase, offset), tier.bodyAlpha),
-        highlight: hexToRgba(variantColor(highlightHex, offset), tier.highlightAlpha),
-      })),
-    ),
-    ripple: hexToRgba(highlightHex, 0.6),
+    streak: mixHex(deepBase, '#ffffff', 0.3),
+    ripple: hexToRgba(mixHex(deepBase, '#ffffff', 0.65), 0.6),
   }
 }
 
@@ -368,16 +428,15 @@ function resizeCanvasToViewport(canvas: HTMLCanvasElement): void {
   ctx?.setTransform(dpr, 0, 0, dpr, 0, 0)
 }
 
-// A drop mid-wrap is moving along the globe's circular silhouette, but the
-// original drawDrop always drew a straight tangent segment behind it — so
-// the trail visibly stuck off the sphere instead of hugging the curve it's
-// supposedly gliding along, the one moment the enterWrap/dropPosition curve
-// math exists to sell. Sampling several points along the actual arc (via
-// the same sin/cos parametrization dropPosition already uses for wrap
-// phase) and connecting them with short line segments fixes this without
-// needing canvas arc()'s angle-direction bookkeeping: since wrapAngle only
-// ever increases going forward, "behind in time" is always simply "a
-// smaller wrapAngle," for either wrapSide.
+// A drop mid-wrap is moving along the globe's circular silhouette, but a
+// straight tangent segment would visibly stick off the sphere instead of
+// hugging the curve it's supposedly gliding along — the one moment the
+// enterWrap/dropPosition curve math exists to sell. Sampling several points
+// along the actual arc (via the same sin/cos parametrization dropPosition
+// already uses for wrap phase) and connecting them with short line segments
+// fixes this without needing canvas arc()'s angle-direction bookkeeping:
+// since wrapAngle only ever increases going forward, "behind in time" is
+// always simply "a smaller wrapAngle," for either wrapSide.
 const WRAP_TRAIL_SEGMENTS = 5
 
 function wrapPointAt(globe: GlobeCircleLike, angle: number, side: -1 | 1): { x: number; y: number } {
@@ -387,14 +446,76 @@ function wrapPointAt(globe: GlobeCircleLike, angle: number, side: -1 | 1): { x: 
   }
 }
 
-// Appends the wrap-phase trail's curved subpath (moveTo + lineTo...) to
-// the currently-open path without stroking it — callers batch many drops
-// into one path per depth tier and issue a single stroke() for all of them
-// at once, instead of one beginPath/stroke pair per drop.
-function appendWrapTrail(ctx: CanvasRenderingContext2D, drop: Drop, globe: GlobeCircleLike): void {
+// The soft-fade-at-both-ends look, without per-drop gradients. A canvas
+// linear gradient is anchored to absolute coordinates handed to
+// createLinearGradient, so one gradient object cannot serve many
+// differently-positioned streaks — matching the reference literally would
+// mean 130 gradient objects and 130 stroke() calls REBUILT EVERY FRAME,
+// which is exactly the per-drop draw cost this file's batching exists to
+// avoid. Instead each bucket's streaks are stroked three times: wide and
+// faint over the full length, then progressively narrower, stronger, and
+// inset further from BOTH endpoints. Composited source-over, alpha along a
+// streak lands at roughly 0.32 / 0.66 / 0.89 / 0.66 / 0.32 from tail to
+// head — a soft plateau through the middle falling off gently at both
+// ends, which is the shape the reference actually has. lineCap 'round'
+// rounds off each pass's own ends so the steps don't read as steps.
+interface TaperPass {
+  /** Multiplier on the tier's own lineWidth. */
+  widthScale: number
+  /** Multiplier on the bucket's alpha for this pass. */
+  alphaScale: number
+  /** How far in from EACH end of the streak this pass starts/stops, as a
+   * fraction of the streak's total length. */
+  endInset: number
+}
+
+const TAPER_PASSES: readonly TaperPass[] = [
+  { widthScale: 1, alphaScale: 0.32, endInset: 0 },
+  { widthScale: 0.62, alphaScale: 0.5, endInset: 0.18 },
+  { widthScale: 0.3, alphaScale: 0.68, endInset: 0.38 },
+]
+
+// Appends one straight streak's subpath (moveTo + lineTo) to the
+// currently-open path without stroking it — callers batch many drops into
+// one path per (tier, alpha level) bucket per taper pass and issue a single
+// stroke() for all of them at once. `head` is the drop's leading point,
+// `dir` its unit direction of travel.
+function appendStreak(
+  ctx: CanvasRenderingContext2D,
+  head: { x: number; y: number },
+  dir: { x: number; y: number },
+  length: number,
+  endInset: number,
+): void {
+  const inset = length * endInset
+  const tailDistance = length - inset
+  if (tailDistance <= inset) return
+  ctx.moveTo(head.x - dir.x * tailDistance, head.y - dir.y * tailDistance)
+  ctx.lineTo(head.x - dir.x * inset, head.y - dir.y * inset)
+}
+
+// The wrap-phase equivalent: a drop hugging the globe's silhouette is
+// moving along a circular arc, so a straight tangent segment would visibly
+// stick off the sphere — the one moment the enterWrap/dropPosition curve
+// math exists to sell. Samples points along the actual arc (via the same
+// sin/cos parametrization dropPosition already uses) and connects them with
+// short line segments, which avoids canvas arc()'s angle-direction
+// bookkeeping: since wrapAngle only ever increases going forward, "behind
+// in time" is always simply "a smaller wrapAngle," for either wrapSide.
+// endInset is applied in ANGLE space (the arc is parametrized by angle, and
+// arc length is exactly radius * angle here) so the taper lines up with the
+// straight-streak version.
+function appendWrapStreak(
+  ctx: CanvasRenderingContext2D,
+  drop: Drop,
+  globe: GlobeCircleLike,
+  endInset: number,
+): void {
   const fullSpan = drop.length / globe.radius
-  const headAngle = drop.wrapAngle
-  const tailAngle = Math.max(0, headAngle - fullSpan)
+  const insetSpan = fullSpan * endInset
+  const headAngle = drop.wrapAngle - insetSpan
+  const tailAngle = Math.max(0, drop.wrapAngle - fullSpan + insetSpan)
+  if (headAngle <= tailAngle) return
   for (let i = 0; i <= WRAP_TRAIL_SEGMENTS; i++) {
     const a = tailAngle + (headAngle - tailAngle) * (i / WRAP_TRAIL_SEGMENTS)
     const p = wrapPointAt(globe, a, drop.wrapSide)
@@ -403,91 +524,95 @@ function appendWrapTrail(ctx: CanvasRenderingContext2D, drop: Drop, globe: Globe
   }
 }
 
-// A single stroked line reads as an abstract streak, not a droplet. This
-// builds an actual teardrop outline instead — a rounded head (the bulge
-// where surface tension pools the water) tapering to a point at the tail
-// (where it's been stretched thin by drag) — appended to the currently-open
-// path as one filled subpath, same batching approach as the trail above:
-// many drops' teardrops go into one path, one fill() call covers all of
-// them. `head` is the drop's leading point, `dir` its unit direction of
-// travel, `length`/`headRadius` its tail length and head bulb radius.
-function appendTeardrop(
-  ctx: CanvasRenderingContext2D,
-  head: { x: number; y: number },
-  dir: { x: number; y: number },
-  length: number,
-  headRadius: number,
-): void {
-  const dirAngle = Math.atan2(dir.y, dir.x)
-  // The two points where the tail's tangent lines meet the head's circle,
-  // 90 degrees off the direction of travel on either side. The arc between
-  // them (swept the "long way," through dirAngle, i.e. the far side from
-  // the tail) is the rounded head; the tail point connects to both via
-  // straight tangent lines, giving the classic teardrop silhouette.
-  const leftAngle = dirAngle + Math.PI / 2
-  const rightAngle = dirAngle - Math.PI / 2
-  const leftHead = {
-    x: head.x + Math.cos(leftAngle) * headRadius,
-    y: head.y + Math.sin(leftAngle) * headRadius,
-  }
-  const tail = { x: head.x - dir.x * length, y: head.y - dir.y * length }
+// "Lighting affects the raindrops," part one: a soft pool of light that
+// follows the cursor and brightens the drops passing through it. Direct
+// analogue of BeadScene's MouseLight (a cursor-tracked pointLight whose
+// specular hot-spot slides across the beads) and deliberately co-located
+// with DotMatrixBackground's cursor reveal, which is already lighting up
+// the same patch of screen on this same page — the two now read as
+// responding to one implied light source instead of ignoring each other.
+//
+// Quadratic falloff to zero at the radius: no discontinuity at the edge of
+// the pool, and the brightening concentrates near the cursor rather than
+// smearing a flat lift across a 380px disc.
+const CURSOR_LIGHT_RADIUS_PX = 380
+const CURSOR_LIGHT_GAIN = 0.9
 
-  ctx.moveTo(tail.x, tail.y)
-  ctx.lineTo(leftHead.x, leftHead.y)
-  ctx.arc(head.x, head.y, headRadius, leftAngle, rightAngle, true)
-  ctx.lineTo(tail.x, tail.y)
+function cursorLightMul(x: number, y: number, cursor: { x: number; y: number } | null): number {
+  if (!cursor) return 1
+  const distance = Math.hypot(x - cursor.x, y - cursor.y)
+  if (distance >= CURSOR_LIGHT_RADIUS_PX) return 1
+  const t = 1 - distance / CURSOR_LIGHT_RADIUS_PX
+  return 1 + CURSOR_LIGHT_GAIN * t * t
 }
 
-// Draws one drop's body + (if mid-wrap) trail + highlight with its own
-// beginPath/fill/stroke calls under a shared ctx.globalAlpha, for the
-// small number of drops currently inside FADE_ZONE_PX — everything else
-// still goes through the batched-per-(tier, colorVariant) path above/below,
-// since ctx.globalAlpha applies to a whole fill()/stroke() call and can't
-// vary per subpath within one shared batched path.
-function drawSingleFadingDrop(
-  ctx: CanvasRenderingContext2D,
+// "Lighting affects the raindrops," part two: one fixed light direction for
+// the whole scene, from the upper left. A streak's broadside catches that
+// light most when the streak runs perpendicular to it, so brightness keys
+// off |cross(direction, light)| — 1 when perpendicular, 0 when aligned.
+//
+// For straight-falling drops this is a constant (they all share WIND_DIR),
+// which is the point: it is a global tone, not per-drop noise. The visible
+// payoff is the WRAP phase, where a drop's direction sweeps through every
+// angle as it rides the globe's silhouette, so one side of the globe's rain
+// halo stays consistently brighter than the other. That replaces what the
+// pre-overhaul renderer was faking with a per-drop highlight dot pinned at
+// an arbitrary -0.65π offset from the direction of travel — same intent
+// (a droplet catching a glint), but now derived from an actual shared light
+// direction instead of a magic constant. Kept shallow so it doesn't fight
+// the deliberately narrow brightness-only variation of the overall look.
+const SCENE_LIGHT_DIR = (() => {
+  const x = -0.6
+  const y = -0.8
+  const len = Math.hypot(x, y)
+  return { x: x / len, y: y / len }
+})()
+const SCENE_LIGHT_CONTRAST = 0.3
+
+function sceneLightMul(dir: { x: number; y: number }): number {
+  const facing = Math.abs(dir.x * SCENE_LIGHT_DIR.y - dir.y * SCENE_LIGHT_DIR.x)
+  return 1 - SCENE_LIGHT_CONTRAST + SCENE_LIGHT_CONTRAST * facing
+}
+
+// The number of discrete brightness steps a drop can land in on any given
+// frame. This is the SECOND (and last) batching dimension alongside depth
+// tier: everything that varies a drop's brightness — its own lifetime
+// variant, the bottom-edge fade, and the lighting — is multiplied together
+// and snapped to one of these levels, so all of it costs zero extra
+// buckets and zero extra draw calls. 8 is fine-grained enough that a drop
+// crossing the fade zone steps down invisibly (each step is 12.5% of alpha,
+// on shapes whose peak alpha is already under 0.9) and coarse enough that
+// the field never spreads across more buckets than there are meaningful
+// shades.
+const ALPHA_LEVELS = 8
+
+/** Every brightness input for one drop on one frame, multiplied into a
+ * single 0..1 value: the tier's base alpha, the drop's own lifetime
+ * variant, the bottom-edge fade, the cursor light, and the fixed scene
+ * light. Quantized by the caller — see ALPHA_LEVELS. Collapsing all of it
+ * into one number here is what keeps the renderer's bucket key at
+ * (depth tier, alpha level): lighting adds no batching dimension, no
+ * per-frame re-sort, and no per-drop draw call. */
+function dropAlpha(
   drop: Drop,
-  globe: GlobeCircleLike | null,
-  colors: TierColors,
-  headRadius: number,
-  highlightRadius: number,
-  fadeAlpha: number,
-): void {
-  if (fadeAlpha <= 0) return
-  ctx.globalAlpha = fadeAlpha
-
-  const head = dropPosition(drop, globe)
-  ctx.fillStyle = colors.body
-  ctx.beginPath()
-  if (drop.phase === 'wrap') {
-    ctx.moveTo(head.x + headRadius, head.y)
-    ctx.arc(head.x, head.y, headRadius, 0, Math.PI * 2)
-  } else {
-    appendTeardrop(ctx, head, dropDirection(drop, globe), drop.length, headRadius)
-  }
-  ctx.fill()
-
-  if (drop.phase === 'wrap' && globe) {
-    ctx.strokeStyle = colors.body
-    ctx.lineWidth = DEPTH_TIERS[drop.depth].widthPx
-    ctx.beginPath()
-    appendWrapTrail(ctx, drop, globe)
-    ctx.stroke()
-  }
-
-  const dir = dropDirection(drop, globe)
-  const dirAngle = Math.atan2(dir.y, dir.x)
-  const highlightAngle = dirAngle - Math.PI * 0.65
-  const hx = head.x + Math.cos(highlightAngle) * headRadius * 0.4
-  const hy = head.y + Math.sin(highlightAngle) * headRadius * 0.4
-  ctx.fillStyle = colors.highlight
-  ctx.beginPath()
-  ctx.moveTo(hx + highlightRadius, hy)
-  ctx.arc(hx, hy, highlightRadius, 0, Math.PI * 2)
-  ctx.fill()
-
-  ctx.globalAlpha = 1
+  pos: { x: number; y: number },
+  dir: { x: number; y: number },
+  viewportHeight: number,
+  cursor: { x: number; y: number } | null,
+): number {
+  const base = DEPTH_TIERS[drop.depth].baseAlpha * BRIGHTNESS_VARIANTS[drop.brightnessVariant]
+  const lit = base * sceneLightMul(dir) * cursorLightMul(pos.x, pos.y, cursor)
+  return Math.min(1, lit * dropFadeAlpha(pos.y, viewportHeight))
 }
+
+/** Flat index into the preallocated bucket array. Level 0 means "invisible"
+ * and is never drawn, but it still gets a slot so the arithmetic stays a
+ * plain multiply-add. */
+function bucketIndex(depth: number, level: number): number {
+  return depth * (ALPHA_LEVELS + 1) + level
+}
+
+const BUCKET_COUNT = DEPTH_TIERS.length * (ALPHA_LEVELS + 1)
 
 // A drop's on-screen entry point into the globe's silhouette, marked by a
 // small expanding ring that fades out — a hairline, water-instrument-style
@@ -549,6 +674,15 @@ export function GlobeRain({ globeCircle, theme }: GlobeRainProps) {
   const globeRef = useRef<GlobeCircleLike | null>(globeCircle)
   globeRef.current = globeCircle
 
+  // Plain mutable ref, not React state: pointermove fires far faster than
+  // React commits, and this only feeds the rAF loop below, which reads it
+  // once per frame — a state update per pointer event would be discarded
+  // work. Same reasoning (and same shape) as BeadScene's MouseLight. No
+  // rAF batching wrapper here, unlike DotMatrixBackground: that component
+  // needs one because its handler writes to the DOM, whereas this handler
+  // only assigns a ref.
+  const cursorRef = useRef<{ x: number; y: number } | null>(null)
+
   // Re-resolved on theme flip via a rAF, same reasoning as BeadScene's
   // resolveBeadColors effect: the `.dark` class toggle happens in a
   // sibling effect, and child effects run before parent effects, so
@@ -561,6 +695,21 @@ export function GlobeRain({ globeCircle, theme }: GlobeRainProps) {
     })
     return () => cancelAnimationFrame(id)
   }, [theme])
+
+  useEffect(() => {
+    function handlePointerMove(event: PointerEvent) {
+      cursorRef.current = { x: event.clientX, y: event.clientY }
+    }
+    function handlePointerLeave() {
+      cursorRef.current = null
+    }
+    window.addEventListener('pointermove', handlePointerMove, { passive: true })
+    document.addEventListener('pointerleave', handlePointerLeave)
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove)
+      document.removeEventListener('pointerleave', handlePointerLeave)
+    }
+  }, [])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -576,6 +725,10 @@ export function GlobeRain({ globeCircle, theme }: GlobeRainProps) {
       if (canvas) resizeCanvasToViewport(canvas)
     }
     window.addEventListener('resize', handleResize)
+
+    // Preallocated once, reused every frame (length reset to 0 rather than
+    // reallocated) — binning 130 drops per frame must not allocate.
+    const buckets: Drop[][] = Array.from({ length: BUCKET_COUNT }, () => [])
 
     let rafId: number
     let lastTime = performance.now()
@@ -604,100 +757,51 @@ export function GlobeRain({ globeCircle, theme }: GlobeRainProps) {
           }
         }
 
-        // Batched by (depth tier, color variant): a handful of paths (and
-        // one fill/stroke each) per bucket, instead of one beginPath/stroke
-        // pair per drop — see DEPTH_TIERS' and COLOR_VARIANT_OFFSETS' own
-        // comments for why width/length/shade are all fixed per bucket
-        // rather than randomized, which is what makes this possible. Drops
-        // currently inside FADE_ZONE_PX are excluded here and drawn
-        // individually afterward instead, since ctx.globalAlpha can't vary
-        // per subpath within one shared batched fill()/stroke() call.
-        ctx.lineCap = 'round'
+        // Batched by (depth tier, quantized alpha level). Depth tier owns
+        // GEOMETRY (line width, streak length); the alpha level owns
+        // BRIGHTNESS and absorbs every per-drop and per-frame brightness
+        // input at once, so a fading drop is no longer a special case that
+        // has to be pulled out and drawn individually — it is just a drop
+        // in a lower bucket. Draw-call ceiling is
+        // DEPTH_TIERS.length * ALPHA_LEVELS * TAPER_PASSES.length = 72
+        // strokes, and empty buckets are skipped entirely.
         const colors = colorsRef.current
-        const fadingDrops: { drop: Drop; alpha: number }[] = []
+        const cursor = cursorRef.current
+        for (const bucket of buckets) bucket.length = 0
+        for (const drop of drops) {
+          const pos = dropPosition(drop, globe)
+          const dir = dropDirection(drop, globe)
+          const level = Math.round(dropAlpha(drop, pos, dir, viewportHeight, cursor) * ALPHA_LEVELS)
+          if (level <= 0) continue
+          buckets[bucketIndex(drop.depth, level)].push(drop)
+        }
+
+        ctx.lineCap = 'round'
+        ctx.lineJoin = 'round'
+        ctx.strokeStyle = colors.streak
         for (let tier = 0; tier < DEPTH_TIERS.length; tier++) {
           const tierSpec = DEPTH_TIERS[tier]
-          // The head bulb is where surface tension pools the water — sized
-          // off the tier's stroke width so nearer (wider) tiers get
-          // visibly bigger drops, not just longer/faster ones.
-          const headRadius = tierSpec.widthPx * 0.9
-          const highlightRadius = headRadius * 0.35
-
-          for (let variant = 0; variant < COLOR_VARIANT_OFFSETS.length; variant++) {
-            const bucketColors = colors.variants[tier][variant]
-            const inBucket = (drop: Drop) => drop.depth === tier && drop.colorVariant === variant
-
-            // Body: a filled teardrop while falling/releasing straight, or
-            // a round head bulb (the trailing curve is the separate
-            // wrap-trail stroke below) while gliding along the globe's
-            // silhouette. Both shapes use this bucket's body color, so
-            // they share one fill().
-            ctx.fillStyle = bucketColors.body
-            ctx.beginPath()
-            for (const drop of drops) {
-              if (!inBucket(drop)) continue
-              const alpha = dropFadeAlpha(drop, globe, viewportHeight)
-              if (alpha < 1) {
-                fadingDrops.push({ drop, alpha })
-                continue
+          for (let level = 1; level <= ALPHA_LEVELS; level++) {
+            const bucket = buckets[bucketIndex(tier, level)]
+            if (bucket.length === 0) continue
+            const bucketAlpha = level / ALPHA_LEVELS
+            for (const pass of TAPER_PASSES) {
+              ctx.globalAlpha = bucketAlpha * pass.alphaScale
+              ctx.lineWidth = tierSpec.widthPx * pass.widthScale
+              ctx.beginPath()
+              for (const drop of bucket) {
+                if (drop.phase === 'wrap' && globe) {
+                  appendWrapStreak(ctx, drop, globe, pass.endInset)
+                } else {
+                  const head = dropPosition(drop, globe)
+                  appendStreak(ctx, head, dropDirection(drop, globe), drop.length, pass.endInset)
+                }
               }
-              const head = dropPosition(drop, globe)
-              if (drop.phase === 'wrap') {
-                ctx.moveTo(head.x + headRadius, head.y)
-                ctx.arc(head.x, head.y, headRadius, 0, Math.PI * 2)
-              } else {
-                appendTeardrop(ctx, head, dropDirection(drop, globe), drop.length, headRadius)
-              }
+              ctx.stroke()
             }
-            ctx.fill()
-
-            // The curved trail behind a wrap-phase drop's head bulb — see
-            // appendWrapTrail for why this can't just be another teardrop.
-            ctx.strokeStyle = bucketColors.body
-            ctx.lineWidth = tierSpec.widthPx
-            ctx.beginPath()
-            for (const drop of drops) {
-              if (!inBucket(drop) || drop.phase !== 'wrap' || !globe) continue
-              if (dropFadeAlpha(drop, globe, viewportHeight) < 1) continue
-              appendWrapTrail(ctx, drop, globe)
-            }
-            ctx.stroke()
-
-            // Specular highlight: a small bright dot offset toward the
-            // head's leading curve, mimicking where a real droplet catches
-            // light.
-            ctx.fillStyle = bucketColors.highlight
-            ctx.beginPath()
-            for (const drop of drops) {
-              if (!inBucket(drop)) continue
-              if (dropFadeAlpha(drop, globe, viewportHeight) < 1) continue
-              const head = dropPosition(drop, globe)
-              const dir = dropDirection(drop, globe)
-              const dirAngle = Math.atan2(dir.y, dir.x)
-              const highlightAngle = dirAngle - Math.PI * 0.65
-              const hx = head.x + Math.cos(highlightAngle) * headRadius * 0.4
-              const hy = head.y + Math.sin(highlightAngle) * headRadius * 0.4
-              ctx.moveTo(hx + highlightRadius, hy)
-              ctx.arc(hx, hy, highlightRadius, 0, Math.PI * 2)
-            }
-            ctx.fill()
           }
         }
-
-        // The disappearing effect: the handful of drops currently inside
-        // FADE_ZONE_PX, drawn individually under their own globalAlpha.
-        for (const { drop, alpha } of fadingDrops) {
-          const tierSpec = DEPTH_TIERS[drop.depth]
-          drawSingleFadingDrop(
-            ctx,
-            drop,
-            globe,
-            colors.variants[drop.depth][drop.colorVariant],
-            tierSpec.widthPx * 0.9,
-            tierSpec.widthPx * 0.9 * 0.35,
-            alpha,
-          )
-        }
+        ctx.globalAlpha = 1
 
         drawRipples(ctx, ripplesRef.current, now, colors.ripple)
       }

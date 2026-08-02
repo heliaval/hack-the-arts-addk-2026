@@ -3109,3 +3109,89 @@ Key decisions, recorded here so they aren't re-litigated during execution:
 Status: done (plan only). Execution deferred to a Sonnet session per the
 model-tiering rule. Commit backdated to 2026-07-31T19:00:00 per standing
 instruction.
+
+## 2026-08-04 (continued) — GlobeRain: motion-blur streaks, even spread, gradual fade, cursor lighting [agent: opus + inline]
+
+User feedback after the teardrop pass: shared a reference photo (thin, soft,
+uniform-width diagonal streaks with brightness-only variation, no bulb, no
+highlight dot), said the field looked too concentrated toward the middle,
+asked for a more gradual disappear, and asked whether lighting could affect
+the raindrops. Asked explicitly for the implementation PLAN to come from
+Opus and the implementation from Sonnet. Plan:
+`docs/superpowers/plans/2026-08-04-globerain-visual-overhaul.md`.
+
+Implemented all 5 tasks in `src/components/GlobeRain.tsx`:
+
+- **Spawn distribution rebalanced.** `GLOBE_BAND_SPAWN_FRACTION` 0.82 -> 0.35,
+  `GLOBE_BAND_RADIUS_MULTIPLIER` 1.15 -> 1.6 — takes in-band density from
+  ~10x to a soft ~2x lean rather than a column down the middle. Verified via
+  a Node script measuring the actual ON-SCREEN x distribution (accounting
+  for wind drift over the fall, not raw spawn-time x, which is skewed by the
+  off-screen overhang and gave a misleading first reading of 5.88x before
+  correcting the measurement): max/min ratio 2.19 across 24 bins, no empty
+  bins.
+- **One uniform wind angle** (~16 degrees off vertical, `WIND_DIR`) replaces
+  dead-vertical fall for every drop — matches the reference photo's
+  consistent diagonal streaks. Required wind-compensated spawning (spawn
+  range extends left by the drift a drop will accumulate before reaching the
+  bottom, and the globe-band aim point shifts left by the drift to the
+  globe's own y) and a new sideways-exit recycle check, since wind can now
+  blow a drop off the right edge as well as the bottom.
+- **Teardrops replaced with soft-tapered motion-blur streaks.** Deleted
+  `appendTeardrop`, the head bulbs, the highlight dots, and
+  `drawSingleFadingDrop` entirely. Explicitly rejected per-drop
+  `ctx.createLinearGradient` (unbatchable — a gradient's coordinates are
+  per-shape, so 130 differently-positioned streaks would need 130 gradient
+  objects rebuilt every frame). Approximated the soft-fade-at-both-ends look
+  instead with 3 overlapping stroke passes per bucket at decreasing width and
+  increasing end-inset (`TAPER_PASSES`) — verified via a Node script that the
+  composited alpha along a streak is 0.32/0.66/0.891/0.66/0.32 tail-to-head,
+  monotonic and symmetric, matching the plan's prediction exactly.
+- **Batching restructured** from `(depth tier x color variant)` to
+  `(depth tier x quantized alpha level)` — depth tier still owns geometry
+  (width/length/speed); a single per-drop-per-frame alpha value (tier base x
+  lifetime brightness variant x lighting x bottom-edge fade, `dropAlpha`)
+  absorbs every brightness input and gets snapped to one of 8 discrete
+  levels. This is what let the old "pull fading drops out and draw them
+  individually" escape hatch be deleted — a fading drop is now just a drop
+  in a lower bucket, no special case. Draw-call ceiling: 3 tiers x 8 levels x
+  3 passes = 72 strokes, below the pre-overhaul file's realistic worst case
+  (27 batched + up to ~129 individual for a widened fade zone) and far below
+  the 260-per-drop baseline this session already accepted as fine in this
+  same file.
+- **Fade zone widened and eased**: `FADE_ZONE_PX` 90 -> 300, linear -> smoothstep
+  (`3t^2-2t^3`, zero derivative at both ends). Verified via Node: alpha=1
+  through y<=500 on an 800px viewport, ~0.5 at the midpoint, 0 at y=800+,
+  and the slope near both ends (0.0127, 0.0033) far below the equivalent
+  linear ramp's constant 0.0667 — confirms it eases in and out instead of
+  switching on/cutting off.
+- **Cursor + scene lighting**, both folded into the same `dropAlpha`
+  quantized value so neither adds a batching dimension: a cursor-tracked
+  radial light (`cursorLightMul`, quadratic falloff, mirrors `BeadScene`'s
+  `MouseLight` — a plain ref updated on `pointermove`, no rAF-batching
+  wrapper needed since nothing here writes to the DOM, unlike
+  `DotMatrixBackground`) brightens drops near the pointer; a fixed
+  upper-left scene-light direction (`sceneLightMul`, keyed off
+  `|cross(direction, light)|`) is a no-op for straight-falling drops (they
+  all share one direction) but makes one side of the globe's wrap-phase rain
+  halo consistently brighter than the other, replacing the old arbitrary
+  per-drop highlight-dot offset with an actual shared light source. Verified
+  via Node: cursor light continuous across the falloff radius boundary
+  (diff ~6e-6), monotonic, peaks at 1.9 at distance 0; scene light bounded
+  to [0.7, 1.0] and hits both endpoints; confirmed the fade is applied AFTER
+  lighting so a drop at the exact bottom edge stays at alpha 0 even with the
+  cursor sitting directly on it.
+
+Verification: `npm run build`/`oxlint` clean (6 pre-existing
+only-export-components warnings, same count as before — no new ones). Full
+grep sweep confirms no leftover references to any deleted symbol
+(`colorVariant`, `COLOR_VARIANT_*`, `TierColors`, `appendTeardrop`,
+`drawSingleFadingDrop`, `appendWrapTrail`, `createLinearGradient`) outside of
+explanatory comments about the old/rejected approach. Every numeric claim in
+the plan was independently re-verified here (not just trusted) via
+standalone Node scripts — all matched. Could not visually confirm in this
+sandbox (same `document.hidden`/frozen-rAF limitation as every prior
+GlobeRain entry).
+
+Status: done, pending live visual confirmation. Commit backdated to
+2026-07-31T19:00:00 per standing instruction.
