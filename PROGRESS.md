@@ -2642,3 +2642,24 @@ Logic mirrors the already-proven `useRafThrottled` pattern elsewhere in this
 file; user should confirm the live glow/sheen effect visually.
 
 Status: done. Commit backdated to 2026-07-31T19:00:00 per standing instruction.
+
+## 2026-08-03 (continued) — Dot-matrix background: fixed sheen nesting bug [inline]
+
+Found while re-reviewing the implementation with the user: the glass-sheen `<div>`
+was nested as a *child* of the masked dot-grid layer. CSS `mask-image` clips an
+element's entire rendered output including descendants, so the sheen was actually
+being clipped by the same 320px reveal mask as the dots — contradicting the
+spec's "not masked, its own gradient falloff is the shape." In practice the two
+mostly overlap (both track the cursor), but the sheen's wider edges (420x260
+ellipse, offset -70/-50) would get cut off at the mask boundary instead of
+fading on their own terms.
+
+Fixed by restructuring `DotMatrixBackground`: the tracked `--mx`/`--my` custom
+properties now live on the outer wrapper div, with the dot grid and the sheen as
+two independent sibling children (custom properties inherit down the DOM tree,
+so both children's `var(--mx)` still resolve correctly). Verified live via
+computed styles: dots div reports a non-empty `mask-image`, sheen div now reports
+`mask-image: none`, and the sheen's own radial-gradient resolves independently.
+
+Build/`oxlint` clean. Commit backdated to 2026-07-31T19:00:00 per standing
+instruction. Status: done.

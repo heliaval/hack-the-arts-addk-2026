@@ -33,10 +33,15 @@ export function DotMatrixBackground() {
     <div
       ref={layerRef}
       className="pointer-events-none absolute inset-0 z-0"
-      style={
-        {
-          '--mx': '-9999px',
-          '--my': '-9999px',
+      style={{ '--mx': '-9999px', '--my': '-9999px' } as React.CSSProperties}
+    >
+      {/* Dot grid, masked independently of the sheen below — CSS mask-image
+          clips an element's entire rendered output including descendants,
+          so the sheen must be a sibling here, not a child, or the reveal
+          mask would clip it too and contradict its own unmasked falloff. */}
+      <div
+        className="absolute inset-0"
+        style={{
           backgroundImage: 'radial-gradient(circle at center, var(--border) 0 1px, transparent 1px)',
           backgroundSize: '24px 24px',
           opacity: 0.35,
@@ -50,9 +55,8 @@ export function DotMatrixBackground() {
           ].join(','),
           maskComposite: 'add',
           WebkitMaskComposite: 'source-over',
-        } as React.CSSProperties
-      }
-    >
+        }}
+      />
       <div
         className="absolute inset-0"
         style={{
