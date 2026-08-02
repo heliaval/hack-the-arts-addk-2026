@@ -466,16 +466,60 @@ const BeadEnvironment = memo(function BeadEnvironment({
 // Lightformer rig (BeadEnvironment) and no longer scale with it.
 const BACKDROP_SCALE = 1
 
-// Static base only (gradient) — memoized on theme/viewport size
-// alone, so it is NOT rebuilt every time the globe rotates or the circle
-// moves a pixel during layout. The live globe is composited on top of a
-// copy of this each frame in Backdrop's useFrame, below.
+// Same lattice as the app's real background layer
+// (src/components/ui/dot-matrix-background.tsx: a 24px radial-gradient
+// cell with a 1px dot at each cell's centre) and as TileTransition's
+// resting front face (DOT_GRID_BASE_STYLE). Reproduced here with Canvas
+// 2D calls rather than CSS because this backdrop is a raw <canvas> that
+// becomes a THREE.CanvasTexture -- there is no DOM element to put a
+// background-image on.
+const DOT_GRID_CELL_PX = 24
+const DOT_RADIUS_PX = 1
+// 0.32, not dot-matrix-background.tsx's own 0.18, for the reason spelled
+// out at length on TileTransition's DOT_GRID_BASE_STYLE: near-black dots
+// on a near-white base do NOT read as equally present as near-white dots
+// on a near-black one at the same alpha, and 0.18 was reported invisible
+// in light mode there. Matching TileTransition's number specifically
+// matters here -- its tiles flip away to reveal THIS surface, so a
+// different density would show as a visible step at the moment of the
+// reveal.
+const BACKDROP_DOT_OPACITY = 0.32
+
+// Resolved sRGB values of src/index.css's --background / --foreground for
+// each theme, hardcoded rather than read via getComputedStyle. Canvas 2D
+// can't consume CSS custom properties, and reading the computed values at
+// runtime would be reliably WRONG here: this runs inside a useMemo (i.e.
+// during render), and the `.dark` class is toggled by App's own useTheme
+// effect -- child effects run before parent effects, so a render-time
+// read would pick up the PREVIOUS theme. Same trap resolveBeadColors
+// works around with a requestAnimationFrame further down this file; a
+// useMemo has no equivalent escape hatch, and the `theme` parameter here
+// is already an authoritative input. Conversions are oklch(L 0 0) ->
+// linear L^3 -> sRGB gamma: 0.2 -> #161616, 0.16 -> #0d0d0d,
+// 0.95 -> #eeeeee. --background is a literal #fffffa in :root.
+const BACKDROP_COLORS = {
+  light: { base: '#fffffa', dot: '#161616' },
+  dark: { base: '#0d0d0d', dot: '#eeeeee' },
+} as const
+
+// Static base only (the app's dot-matrix texture) -- memoized on
+// theme/viewport size alone, so it is NOT rebuilt every time the globe
+// rotates or the circle moves a pixel during layout. The live globe is
+// composited on top of a copy of this each frame in Backdrop's useFrame,
+// below.
 //
-// Round-tripped 2026-08-06: this was briefly swapped to a flat pure-black
-// fill, then explicitly reverted back to this exact gradient the same day
-// -- "implement exactly the same texture as before... we will change it
-// in a bit". Treat this as still-temporary placeholder art, not a
-// settled decision either way.
+// History (2026-08-06): this was a vertical light-to-dark gradient, then
+// briefly a flat pure-black fill, then reverted to the gradient, and is
+// now the dot grid. The intent is that the bead scene's background reads
+// as a CONTINUATION of the app's own persistent background layer
+// (dot-matrix-background.tsx) rather than a separate gradient treatment
+// of its own -- same 24px lattice, same --background/--foreground
+// pairing per theme.
+//
+// The whole draw happens once per memo recomputation (theme flip or
+// viewport resize), never per frame: Backdrop wraps the returned canvas
+// in a CanvasTexture that uploads on construction and never has
+// needsUpdate set again. Keep it that way.
 function useBackdropBase(theme: 'light' | 'dark', width: number, height: number) {
   return useMemo(() => {
     if (width <= 0 || height <= 0) return null
@@ -486,18 +530,45 @@ function useBackdropBase(theme: 'light' | 'dark', width: number, height: number)
     canvas.height = h
     const ctx = canvas.getContext('2d')
     if (!ctx) return null
-    const gradient = ctx.createLinearGradient(0, 0, 0, h)
-    if (theme === 'dark') {
-      gradient.addColorStop(0, '#4a4a4a')
-      gradient.addColorStop(0.55, '#262626')
-      gradient.addColorStop(1, '#0d0d0d')
-    } else {
-      gradient.addColorStop(0, '#ffffff')
-      gradient.addColorStop(0.55, '#dcdcdc')
-      gradient.addColorStop(1, '#b0b0b0')
-    }
-    ctx.fillStyle = gradient
+    const { base, dot } = BACKDROP_COLORS[theme]
+    ctx.fillStyle = base
     ctx.fillRect(0, 0, w, h)
+
+    // One 24x24 tile carrying a single dot, then one pattern fill for the
+    // whole viewport -- two draw calls instead of a nested arc() loop
+    // over every cell, and the pattern anchors to this canvas's own
+    // origin under the identity transform, which IS the viewport-origin
+    // lattice (this plane covers the full viewport 1:1 at
+    // BACKDROP_SCALE=1). That's the same lattice TileTransition
+    // reconstructs by hand via dotGridPosition, so the two line up
+    // dot-for-dot where they meet.
+    const cell = Math.max(1, Math.round(DOT_GRID_CELL_PX * BACKDROP_SCALE))
+    const tile = document.createElement('canvas')
+    tile.width = cell
+    tile.height = cell
+    const tileCtx = tile.getContext('2d')
+    if (tileCtx) {
+      // Dot at the cell's centre with a radius well under half the cell,
+      // matching `radial-gradient(circle at center, ... 0 1px,
+      // transparent 1px)` -- it never touches a tile edge, so the repeat
+      // has no seam or clipping to worry about.
+      tileCtx.fillStyle = dot
+      tileCtx.beginPath()
+      tileCtx.arc(cell / 2, cell / 2, DOT_RADIUS_PX * BACKDROP_SCALE, 0, Math.PI * 2)
+      tileCtx.fill()
+      const pattern = ctx.createPattern(tile, 'repeat')
+      if (pattern) {
+        // globalAlpha, not a pre-multiplied rgba() dot colour: it applies
+        // to the pattern fill as a whole, and the tile is transparent
+        // everywhere but the dot, so this is exactly the CSS layer's
+        // `opacity` semantics. Restored immediately so nothing
+        // downstream inherits it.
+        ctx.globalAlpha = BACKDROP_DOT_OPACITY
+        ctx.fillStyle = pattern
+        ctx.fillRect(0, 0, w, h)
+        ctx.globalAlpha = 1
+      }
+    }
     // The bokeh highlights that used to live here now live in the
     // Lightformer rig (BeadEnvironment) instead — same illuminating effect
     // on the beads, but no longer a shape visible directly in this backdrop.
@@ -516,17 +587,17 @@ function useBackdropBase(theme: 'light' | 'dark', width: number, height: number)
 // rate halves this cost without touching resolution or reverting that fix.
 const BACKDROP_UPDATE_EVERY_N_FRAMES = 2
 
-// Only the globe-sized region needs a per-frame update -- the gradient
-// behind it never changes once built (see useBackdropBase). Previously
-// this whole file's Backdrop was one full-viewport canvas, recomposited
-// AND re-uploaded every BACKDROP_UPDATE_EVERY_N_FRAMES frames even though
-// only the globe's own on-screen box (typically well under half the
-// viewport) ever actually changes. Split into two meshes: a full-viewport
-// gradient plane whose texture uploads exactly once (CanvasTexture
-// uploads on construction; nothing here ever sets needsUpdate on it
-// again), and a small globe-sized plane that gets the per-frame
-// composite+upload treatment, at its own boxSize x boxSize resolution
-// instead of the full viewport.
+// Only the globe-sized region needs a per-frame update -- the dot-matrix
+// base behind it never changes once built (see useBackdropBase).
+// Previously this whole file's Backdrop was one full-viewport canvas,
+// recomposited AND re-uploaded every BACKDROP_UPDATE_EVERY_N_FRAMES
+// frames even though only the globe's own on-screen box (typically well
+// under half the viewport) ever actually changes. Split into two meshes:
+// a full-viewport base plane whose texture uploads exactly once
+// (CanvasTexture uploads on construction; nothing here ever sets
+// needsUpdate on it again), and a small globe-sized plane that gets the
+// per-frame composite+upload treatment, at its own boxSize x boxSize
+// resolution instead of the full viewport.
 const Backdrop = memo(function Backdrop({
   theme,
   circle,
@@ -586,8 +657,9 @@ const Backdrop = memo(function Backdrop({
     // Coordinates are DOM/CSS pixels with a top-left origin, matching this
     // canvas's own 2D coordinate system directly (unlike GlobeCollider,
     // which has to flip into world-space for Rapier). Crop `base` at the
-    // same box the globe itself occupies, so the gradient stays
-    // continuous across the seam between the two planes.
+    // same box the globe itself occupies, so the dot lattice stays
+    // continuous (same phase, same size) across the seam between the two
+    // planes.
     const cx = circle.centerX * BACKDROP_SCALE
     const cy = circle.centerY * BACKDROP_SCALE
     const sx = cx - boxSize / 2

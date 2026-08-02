@@ -4429,3 +4429,49 @@ before/after: now correctly resolves to `rgb(255, 255, 250)` (the light
 token) instead of staying pinned to black.
 
 Status: done. Committed with the standing backdated timestamp.
+
+## 2026-08-06 (continued) — BeadScene backdrop: gradient -> app's dot-matrix texture
+
+User looked at the reverted gradient backdrop live and asked for a
+different replacement this time: the same dot-matrix texture used on
+TileTransition's front face / the app's real background, applied
+sensibly to light mode too. Dispatched an Opus planning agent per
+explicit request ("plan with opus implement with sonnet").
+
+Plan confirmed: base = that theme's `--background`, dots = that theme's
+`--foreground`, matching `dot-matrix-background.tsx`'s own pairing;
+opacity 0.32 (not the source layer's 0.18) for the same light-mode
+contrast reason already found for `TileTransition.tsx`'s copy of this
+texture, and specifically so density doesn't visibly step at the moment
+tiles flip away to reveal this surface. Colors are hardcoded resolved hex
+values (`#fffffa`/`#161616` light, `#0d0d0d`/`#eeeeee` dark) rather than
+read via `getComputedStyle` -- `useBackdropBase` is a `useMemo`, which
+runs during render, before the theme-toggle effect's `.dark` class change
+has necessarily propagated (same class of bug `resolveBeadColors`
+elsewhere in this file already works around with a `requestAnimationFrame`
+deferral; a `useMemo` has no equivalent escape hatch, so hardcoding off
+the `theme` parameter -- already authoritative -- is the correct fix
+rather than reading the DOM).
+
+Implemented in `src/components/BeadScene.tsx`'s `useBackdropBase`: draws
+a 24x24px tile canvas with one 1px-radius dot at its center, then fills
+the whole backdrop with `ctx.createPattern(tile, 'repeat')` at
+`globalAlpha = 0.32` over the theme's flat base-color fill -- two draw
+calls instead of a per-cell loop, and the pattern's origin-anchored tiling
+is the same viewport-origin lattice `TileTransition`'s `dotGridPosition`
+reconstructs by hand, so the two are meant to line up where they meet.
+Confirmed the per-frame globe-composite crop (`Backdrop`'s `useFrame`,
+`ctx.drawImage` at 1:1 scale) needed no changes -- it just crops whatever
+`base` contains now, dots included, at the same phase.
+
+Verification: `npm run build` clean, `npx oxlint src` clean (same
+pre-existing unrelated warnings). No new console errors on a fresh load.
+Only observable during an active bead-scene selection, which this
+sandbox can't reliably trigger via synthetic canvas clicks -- user should
+confirm live in both themes, particularly the seam where the globe's
+composited region meets the surrounding dot field (should be no visible
+size/phase jump), and whether light mode reads too washed-out (the plan's
+fallback if so: swap `--background` for `--muted`, i.e. `#fffffa` ->
+`#f2f2f2`, not a reintroduced gradient).
+
+Status: done. Committed with the standing backdated timestamp.
