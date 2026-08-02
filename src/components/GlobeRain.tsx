@@ -337,34 +337,55 @@ function wrapPointAt(globe: GlobeCircleLike, angle: number, side: -1 | 1): { x: 
   }
 }
 
-// Appends one subpath (moveTo + lineTo...) to the currently-open path
-// without stroking it — callers batch many drops into one path per
-// (depth tier, body|highlight) combination and issue a single stroke() for
-// all of them at once, instead of one beginPath/stroke pair per drop.
-function appendDropSegment(
-  ctx: CanvasRenderingContext2D,
-  drop: Drop,
-  globe: GlobeCircleLike | null,
-  spanFraction: number,
-): void {
-  if (drop.phase === 'wrap' && globe) {
-    const fullSpan = drop.length / globe.radius
-    const span = fullSpan * spanFraction
-    const headAngle = drop.wrapAngle
-    const tailAngle = Math.max(0, headAngle - span)
-    for (let i = 0; i <= WRAP_TRAIL_SEGMENTS; i++) {
-      const a = tailAngle + (headAngle - tailAngle) * (i / WRAP_TRAIL_SEGMENTS)
-      const p = wrapPointAt(globe, a, drop.wrapSide)
-      if (i === 0) ctx.moveTo(p.x, p.y)
-      else ctx.lineTo(p.x, p.y)
-    }
-    return
+// Appends the wrap-phase trail's curved subpath (moveTo + lineTo...) to
+// the currently-open path without stroking it — callers batch many drops
+// into one path per depth tier and issue a single stroke() for all of them
+// at once, instead of one beginPath/stroke pair per drop.
+function appendWrapTrail(ctx: CanvasRenderingContext2D, drop: Drop, globe: GlobeCircleLike): void {
+  const fullSpan = drop.length / globe.radius
+  const headAngle = drop.wrapAngle
+  const tailAngle = Math.max(0, headAngle - fullSpan)
+  for (let i = 0; i <= WRAP_TRAIL_SEGMENTS; i++) {
+    const a = tailAngle + (headAngle - tailAngle) * (i / WRAP_TRAIL_SEGMENTS)
+    const p = wrapPointAt(globe, a, drop.wrapSide)
+    if (i === 0) ctx.moveTo(p.x, p.y)
+    else ctx.lineTo(p.x, p.y)
   }
-  const head = dropPosition(drop, globe)
-  const dir = dropDirection(drop, globe)
-  const tailStart = { x: head.x - dir.x * drop.length * spanFraction, y: head.y - dir.y * drop.length * spanFraction }
-  ctx.moveTo(tailStart.x, tailStart.y)
-  ctx.lineTo(head.x, head.y)
+}
+
+// A single stroked line reads as an abstract streak, not a droplet. This
+// builds an actual teardrop outline instead — a rounded head (the bulge
+// where surface tension pools the water) tapering to a point at the tail
+// (where it's been stretched thin by drag) — appended to the currently-open
+// path as one filled subpath, same batching approach as the trail above:
+// many drops' teardrops go into one path, one fill() call covers all of
+// them. `head` is the drop's leading point, `dir` its unit direction of
+// travel, `length`/`headRadius` its tail length and head bulb radius.
+function appendTeardrop(
+  ctx: CanvasRenderingContext2D,
+  head: { x: number; y: number },
+  dir: { x: number; y: number },
+  length: number,
+  headRadius: number,
+): void {
+  const dirAngle = Math.atan2(dir.y, dir.x)
+  // The two points where the tail's tangent lines meet the head's circle,
+  // 90 degrees off the direction of travel on either side. The arc between
+  // them (swept the "long way," through dirAngle, i.e. the far side from
+  // the tail) is the rounded head; the tail point connects to both via
+  // straight tangent lines, giving the classic teardrop silhouette.
+  const leftAngle = dirAngle + Math.PI / 2
+  const rightAngle = dirAngle - Math.PI / 2
+  const leftHead = {
+    x: head.x + Math.cos(leftAngle) * headRadius,
+    y: head.y + Math.sin(leftAngle) * headRadius,
+  }
+  const tail = { x: head.x - dir.x * length, y: head.y - dir.y * length }
+
+  ctx.moveTo(tail.x, tail.y)
+  ctx.lineTo(leftHead.x, leftHead.y)
+  ctx.arc(head.x, head.y, headRadius, leftAngle, rightAngle, true)
+  ctx.lineTo(tail.x, tail.y)
 }
 
 // A drop's on-screen entry point into the globe's silhouette, marked by a
@@ -482,35 +503,68 @@ export function GlobeRain({ globeCircle, theme }: GlobeRainProps) {
           }
         }
 
-        // Batched by depth tier: one path (and one stroke()) per tier per
-        // style, instead of one beginPath/stroke pair per drop — see
-        // DEPTH_TIERS' own comment for why width/length are fixed per tier
-        // rather than randomized, which is what makes this possible.
+        // Batched by depth tier: a handful of paths (and one fill/stroke
+        // each) per tier, instead of one beginPath/stroke pair per drop —
+        // see DEPTH_TIERS' own comment for why width/length are fixed per
+        // tier rather than randomized, which is what makes this possible.
         ctx.lineCap = 'round'
         const colors = colorsRef.current
         for (let tier = 0; tier < DEPTH_TIERS.length; tier++) {
           const tierColors = colors.tiers[tier]
           const tierSpec = DEPTH_TIERS[tier]
+          // The head bulb is where surface tension pools the water — sized
+          // off the tier's stroke width so nearer (wider) tiers get
+          // visibly bigger drops, not just longer/faster ones.
+          const headRadius = tierSpec.widthPx * 0.9
+          const highlightRadius = headRadius * 0.35
 
+          // Body: a filled teardrop while falling/releasing straight, or a
+          // round head bulb (the trailing curve is the separate wrap-trail
+          // stroke below) while gliding along the globe's silhouette. Both
+          // shapes use the tier's body color, so they share one fill().
+          ctx.fillStyle = tierColors.body
+          ctx.beginPath()
+          for (const drop of drops) {
+            if (drop.depth !== tier) continue
+            const head = dropPosition(drop, globe)
+            if (drop.phase === 'wrap') {
+              ctx.moveTo(head.x + headRadius, head.y)
+              ctx.arc(head.x, head.y, headRadius, 0, Math.PI * 2)
+            } else {
+              appendTeardrop(ctx, head, dropDirection(drop, globe), drop.length, headRadius)
+            }
+          }
+          ctx.fill()
+
+          // The curved trail behind a wrap-phase drop's head bulb — see
+          // appendWrapTrail for why this can't just be another teardrop.
           ctx.strokeStyle = tierColors.body
           ctx.lineWidth = tierSpec.widthPx
           ctx.beginPath()
           for (const drop of drops) {
-            if (drop.depth !== tier) continue
-            appendDropSegment(ctx, drop, globe, 1)
+            if (drop.depth !== tier || drop.phase !== 'wrap' || !globe) continue
+            appendWrapTrail(ctx, drop, globe)
           }
           ctx.stroke()
 
-          // Highlight core: the leading third of each streak, thinner and
-          // brighter.
-          ctx.strokeStyle = tierColors.highlight
-          ctx.lineWidth = Math.max(1, tierSpec.widthPx * 0.5)
+          // Specular highlight: a small bright dot offset toward the
+          // head's leading curve, mimicking where a real droplet catches
+          // light — a second full-length bright stroke (the old approach)
+          // just looked like a thinner copy of the body line, not a glint.
+          ctx.fillStyle = tierColors.highlight
           ctx.beginPath()
           for (const drop of drops) {
             if (drop.depth !== tier) continue
-            appendDropSegment(ctx, drop, globe, 0.3)
+            const head = dropPosition(drop, globe)
+            const dir = dropDirection(drop, globe)
+            const dirAngle = Math.atan2(dir.y, dir.x)
+            const highlightAngle = dirAngle - Math.PI * 0.65
+            const hx = head.x + Math.cos(highlightAngle) * headRadius * 0.4
+            const hy = head.y + Math.sin(highlightAngle) * headRadius * 0.4
+            ctx.moveTo(hx + highlightRadius, hy)
+            ctx.arc(hx, hy, highlightRadius, 0, Math.PI * 2)
           }
-          ctx.stroke()
+          ctx.fill()
         }
 
         drawRipples(ctx, ripplesRef.current, now, colors.ripple)

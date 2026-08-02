@@ -2986,3 +2986,41 @@ via math instead, as described above.
 
 Status: done, pending live visual confirmation. Commit backdated to
 2026-07-31T19:00:00 per standing instruction.
+
+## 2026-08-04 (continued) — GlobeRain: actual teardrop shapes instead of lines [inline]
+
+User: "the single line raindrop looks kind of bad, how can we make it actually
+look like rain?" Diagnosed as the stroked-line rendering itself, not the
+depth/richness system from the previous entry (which stays intact).
+
+Replaced the straight-fall/release body rendering with `appendTeardrop`: a
+filled teardrop path — rounded head bulb, two tangent lines down to a sharp
+point at the tail — instead of a stroked line. Construction: two tangent
+points 90 degrees off the direction of travel on the head's circle, connected
+by an arc swept through the FAR side from the tail (verified via a Node script
+that the swept arc's midpoint is the farthest point on the circle from the
+tail — 33 vs 27 units in a 30-unit-tail/3-unit-radius test case — confirming
+the bulb bulges away from the tail rather than self-intersecting toward it).
+
+Wrap-phase drops (gliding along the globe's silhouette) keep the existing
+curved-trail stroke (renamed `appendWrapTrail`, logic unchanged, still
+verified-on-the-circle from the previous entry) but now also get a round head
+bulb at their leading point, so they read as a droplet-with-a-tail rather than
+just a bare curve.
+
+Replaced the old "second full-length brighter stroke" highlight (which just
+looked like a thinner copy of the body line) with a small offset highlight
+dot near each head bulb's leading curve — closer to where a real droplet
+actually catches a specular glint.
+
+Kept the same per-tier draw-call batching budget from the previous entry:
+body fill + wrap-trail stroke + highlight fill per tier = 9 draw calls total
+(was 6 for plain lines, both far below the original 260 one-per-drop calls).
+
+Build/`oxlint` clean (same 5 pre-existing warnings, no new ones). Could not
+visually confirm in this sandbox (same `document.hidden`/frozen-rAF
+limitation as the previous two GlobeRain entries) — verified the teardrop
+geometry directly via the Node script described above instead.
+
+Status: done, pending live visual confirmation. Commit backdated to
+2026-07-31T19:00:00 per standing instruction.
