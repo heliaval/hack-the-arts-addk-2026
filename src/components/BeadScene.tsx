@@ -1044,17 +1044,24 @@ export const BeadScene = memo(function BeadScene({
         <Backdrop theme={theme} circle={globeCircle} globeElement={globeElement} />
         {/* Rapier's WASM is loaded via suspend-react, so Physics suspends. */}
         <Suspense fallback={null}>
-          {/* timeStep="vary" (rather than the default fixed 1/60 with
-              interpolation) steps the world once per rendered frame using
-              that frame's own delta, instead of running a `while
-              (accumulator >= timeStep)` catch-up loop plus a full
-              previous-state interpolation snapshot every frame. A slow
-              frame under a fixed timestep runs MORE physics steps to catch
-              up, which makes the next frame slower too -- "vary" has no
-              such feedback loop, at the cost of physics becoming slightly
-              framerate-dependent, an acceptable trade for a decorative
-              bead pile. */}
-          <Physics gravity={[0, -GRAVITY_PX_PER_S2, 0]} timeStep="vary">
+          {/* interpolate={false} (rather than timeStep="vary") removes the
+              per-step previous-state snapshot pass (forEachRigidBody every
+              frame) that the default fixed-1/60-with-interpolation mode
+              runs -- that snapshot, not the fixed step count itself, was
+              the real cost. timeStep="vary" was tried first and reverted:
+              at this scene's real-world scale (GRAVITY_PX_PER_S2 = 2000,
+              beads reaching ~1900 px/s by the time they hit the floor) and
+              with no continuous collision detection on the ball colliders,
+              a single slow frame (well within reach during exactly the lag
+              this fix is meant to address) lets a bead's one physics step
+              advance further than its own radius, tunnelling straight
+              through the floor/globe collider and vanishing for good --
+              every bead, permanently, since nothing ever recovers a
+              tunnelled body. The fixed 1/60 step never lets a single step
+              advance that far no matter how slow the frame is, so it
+              can't tunnel; interpolate={false} keeps that safety while
+              still cutting the snapshot cost. */}
+          <Physics gravity={[0, -GRAVITY_PX_PER_S2, 0]} interpolate={false}>
             <Boundaries />
             {globeCircle && <GlobeCollider circle={globeCircle} />}
             {beads.map((bead) => (

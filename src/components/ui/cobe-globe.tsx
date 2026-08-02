@@ -44,11 +44,15 @@ interface GlobeProps {
   /** Which entry of each label's variant array is shown; animates the swap. */
   activeLabelIndex?: number
   /** True when something opaque (BeadScene's backdrop) is covering this
-   * canvas's entire viewport, so none of its pixels are actually visible.
-   * Throttles the WebGL draw and skips label/ripple DOM updates entirely —
-   * see the comment above animate()'s obscured branch for the full
-   * rationale. Does not pause rotation state, so the globe is still in the
-   * right position whenever it becomes visible again. */
+   * canvas's entire viewport, so none of its pixels are directly visible.
+   * Skips label/ripple DOM updates only — the WebGL draw itself (
+   * globe.update()) still runs every frame regardless, since cobe's
+   * context has preserveDrawingBuffer: false and BeadScene's Backdrop
+   * reads this canvas's live pixels on its own schedule; skipping frames
+   * here would risk it reading a blank buffer (see the comment above
+   * animate()'s obscured handling for the full rationale). Does not pause
+   * rotation state, so the globe is still in the right position whenever
+   * it becomes directly visible again. */
   obscured?: boolean
 }
 
@@ -531,19 +535,18 @@ export const Globe = forwardRef<GlobeRef, GlobeProps>(function Globe({
       let lastMarkers: Marker[] | null = null
       let lastArcs: Arc[] | null = null
       // While `obscured` (BeadScene's opaque backdrop is covering the
-      // entire viewport, so none of this canvas's pixels are visible),
-      // still advance rotation state every frame (cheap arithmetic, keeps
-      // the globe in the right position for when it's revealed again) but
-      // skip the two actually expensive per-frame operations: the WebGL
-      // draw itself (globe.update() — gl.clear + drawArrays at up to 2x
-      // DPR, roughly 16x the bead scene's own fragment count) and the
-      // label/ripple DOM writes (inline style + SVG path rebuilds).
-      // globe.update() is throttled rather than fully skipped so its
-      // (invisible) canvas still occasionally refreshes — matches
-      // BeadScene's own Backdrop update cadence, since that's the only
-      // thing that would ever read this canvas's pixels while obscured.
-      let obscuredFrameCount = 0
-
+      // entire viewport, so this canvas's pixels aren't seen directly by
+      // the user), still advance rotation state and call globe.update()
+      // every frame — cobe's WebGL context is created with
+      // preserveDrawingBuffer: false, so the drawing buffer is cleared
+      // after every composite; skipping update() on some frames (a
+      // previous version of this code did, throttled to every other
+      // frame) left BeadScene's Backdrop reading a blank canvas on any
+      // frame its own independent throttle didn't line up with this one,
+      // which could go permanently out of phase and show no globe image
+      // at all. What IS skipped while obscured: the label/ripple DOM
+      // writes (inline style + SVG path rebuilds), since those are
+      // genuinely never read by anything while obscured.
       function animate() {
         if (!isPausedRef.current) {
           phi += liveProps.current.speed
@@ -599,12 +602,8 @@ export const Globe = forwardRef<GlobeRef, GlobeProps>(function Globe({
           }))
           lastArcs = p.arcs
         }
-        if (p.obscured) {
-          obscuredFrameCount++
-          if (obscuredFrameCount % 2 === 0) globe!.update(updatePayload)
-        } else {
-          obscuredFrameCount = 0
-          globe!.update(updatePayload)
+        globe!.update(updatePayload)
+        if (!p.obscured) {
           updateLabels(currentPhi, currentTheta, p.markerElevation, p.arcHeight)
           updateRipples(currentPhi, currentTheta, p.markerElevation)
         }
