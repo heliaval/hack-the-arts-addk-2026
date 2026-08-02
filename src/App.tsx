@@ -387,12 +387,9 @@ function App() {
       <div className="absolute left-4 top-4 flex flex-col gap-2">
         <AppTitle />
         {selected && (
-          <div className="pointer-events-none rounded-[var(--radius)] border bg-card/90 px-3 py-2 text-card-foreground shadow-sm backdrop-blur-sm">
-            <div className="flex items-center gap-1.5 text-[0.65rem] uppercase tracking-widest text-muted-foreground">
-              <span className="inline-block size-1.5 rounded-full bg-accent" />
-              reading
-            </div>
-            <div className="font-mono text-sm font-medium">{selected.name}</div>
+          <div className="pointer-events-none flex items-center gap-1.5 font-mono text-sm font-medium text-foreground">
+            <span className="inline-block size-1.5 shrink-0 rounded-full bg-accent" />
+            {selected.name}
           </div>
         )}
       </div>
