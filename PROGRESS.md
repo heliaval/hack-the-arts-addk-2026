@@ -2766,3 +2766,59 @@ blur loop, post-processing, vignette, aspect-fit.
 Docs only, no source changes. Scope fits one implementation plan.
 
 Status: done. Commit backdated to 2026-07-31T19:00:00 per standing instruction.
+
+## 2026-08-03 (continued) — GlassRain: refracting droplet shader replacing GlobeRain [inline]
+
+Started: user asked, after discussing a rain-on-glass photo and pointing at
+https://github.com/rocksdanister/rain as a reference, to spec (via an Opus
+agent) and implement (Sonnet) a real-refraction droplet effect to replace
+GlobeRain's flat falling-streak rain. Spec:
+docs/superpowers/specs/2026-08-03-glass-rain-design.md. Plan:
+docs/superpowers/plans/2026-08-03-glass-rain.md.
+
+Implemented `src/components/GlassRain.tsx`: a plain (non-R3F) three.js
+fullscreen-quad shader layer, ported from rocksdanister/rain's
+`shaders/rain.frag` (the "Heartfelt Rain" technique) — procedurally generated
+droplets (one static clinging-to-glass layer + one slow falling/trailing
+layer, medium-fidelity tier per the user's choice) whose heightfield gradient
+is used as a per-pixel refraction normal against a captured background
+texture. The captured texture is the live globe `<canvas>` (reusing
+BeadScene.tsx's Backdrop drawImage-throttle pattern: half-resolution scratch
+canvas, `--background` fill + `drawImage(globeElement, ...)` positioned from
+`globeCircle`, re-uploaded every 2 frames) — the one thing worth refracting.
+Output is alpha-masked RGBA (droplet heightfield drives alpha), not opaque,
+so the live 60fps globe shows through untouched outside droplets.
+
+`GlobeRain.tsx` is untouched (per the explicit reversibility requirement) —
+`App.tsx`'s swap is two lines (import + the `{!selected && ...}` JSX line),
+reverting is the same two lines back.
+
+One real bug caught before committing: a stray backtick inside a GLSL
+comment (`` `max(m1.y * l0, m2.y * l1)` ``) prematurely closed the
+FRAGMENT_SHADER template literal, turning the rest of the shader source into
+real (invalid) JS. Caught by `oxlint`, fixed by dropping the inner backticks
+from the comment.
+
+Verification: `npm run build` (`tsc -b && vite build`) and `oxlint` both
+clean. Live-checked in a fresh browser tab (an existing tab had stale
+Vite-HMR "Failed to reload App.tsx" errors from mid-edit intermediate
+states — confirmed stale via a brand-new tab showing zero console errors,
+same precedent as prior sessions in this project): the GlassRain canvas
+mounts with a live, non-lost WebGL2 context, `gl.getError()` reports
+`NO_ERROR`, no shader-compile errors logged (three.js logs those to
+console.error by default), confirming the ported GLSL is syntactically and
+semantically valid to the GPU driver. **Could not verify actual visual
+rendering** (droplet shapes, refraction correctness/orientation, alpha
+compositing) — this sandbox's `window.innerWidth`/`innerHeight` report `0`
+(the Browser pane isn't actually compositing frames, the same recurring
+limitation documented throughout this project), so both GlobeRain's and
+GlassRain's own resize-to-viewport logic size the canvas to 0 here
+regardless of which one is mounted; this is an environment limitation, not
+new to this component. **User needs to check live**: droplet shapes/motion
+look right, the globe appears correctly oriented (not mirrored/flipped)
+inside a droplet's refraction, alpha compositing doesn't wash out the globe,
+country select/deselect cleanly mounts/unmounts the layer with no WebGL
+context-loss warnings, and resize/theme-flip behave.
+
+Status: done, pending live visual confirmation. Commit backdated to
+2026-07-31T19:00:00 per standing instruction.
