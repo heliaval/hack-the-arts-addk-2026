@@ -4,7 +4,13 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { Environment, Lightformer } from '@react-three/drei'
 import { BallCollider, CuboidCollider, Physics, RigidBody } from '@react-three/rapier'
 import { GLOBE_SURFACE_RADIUS_FRACTION, type GlobeCircle } from '@/components/ui/cobe-globe'
-import { WaterSurface } from '@/components/WaterSurface'
+import {
+  WaterSurface,
+  WATER_VERTEX_SHADER,
+  WATER_UNIFORMS_GLSL,
+  WATER_COMMON_GLSL,
+  useWaterUniforms,
+} from '@/components/WaterSurface'
 
 // With <Canvas orthographic> and no manual frustum override, react-three-
 // fiber sizes the camera frustum to the canvas's CSS pixel dimensions on
@@ -15,34 +21,86 @@ import { WaterSurface } from '@/components/WaterSurface'
 const GRAVITY_PX_PER_S2 = 2000
 const BEAD_RADIUS = 34
 const WALL_THICKNESS = 40
-// Half-width of the horizontal band beads spawn across. Without jitter
-// every bead would stack in one perfect column. Scaled with BEAD_RADIUS
-// (was 90 at r=14) so consecutive spawns are no more likely to overlap at
-// birth than before, and kept below the globe's typical on-screen radius
-// (a 1280x800 viewport gives a 640px globe canvas => a 256px sphere) so
-// most beads land ON the globe rather than falling past it.
-export const SPAWN_JITTER_PX = 200
+// Half-width of the horizontal band beads spawn across. Was 200, chosen to
+// sit below the globe's typical on-screen radius (~256px at 1280x800) so
+// most beads would land ON the globe. That constraint inverts at the live
+// bead count capacityFor() now targets (~110 at 1280x800, up from a flat
+// 40): 110 beads in a 400px-wide band is 400/68 ~= 5.9 per row, i.e. a
+// ~19-row, ~1300px-tall column -- taller than the viewport, overflowing
+// back past the spawn point instead of filling the screen. At 420 the band
+// is 840px, the globe's collider splits it into two streams that roll out
+// to the side walls, and the settled pile spans most of the width at a
+// height that actually reads as "fills the screen".
+export const SPAWN_JITTER_PX = 420
 
-// Fixed cadence for the year-batch drain — reuses beadSpawnRate.ts's
-// FASTEST_SPAWN_INTERVAL_MS value as a constant rate rather than a rate
-// derived from real births/deathsPerSecond, since this feature shows "this
-// year's totals landing," not "right now" — see
-// docs/superpowers/specs/2026-08-01-year-select-marble-batches-design.md.
-const BATCH_SPAWN_INTERVAL_MS = 120
+// Fixed cadence for the year-batch drain — was 120 (a documentation link to
+// beadSpawnRate.ts's FASTEST_SPAWN_INTERVAL_MS, not an import; that link is
+// now broken on purpose). The batch has to actually REACH the live ceiling
+// before it drains, or a populous country never shows the pile that ceiling
+// was raised for: two parallel streams at 80ms is 25 beads/s, so a ~110
+// ceiling is reached in ~4.4s and a full 80+80 marbleCount.ts batch drains
+// in ~6.4s. Not lowered further: every spawn is a setBeads call, i.e. a
+// BeadScene re-render that recreates every live BeadBody element (memo()'d,
+// so they bail out of re-rendering, but createElement still runs for each),
+// and at ~110 live beads 25 spawns/s is already ~2,750 element creations
+// per second.
+//
+// This is a DIFFERENT system from WaterSurface.tsx's SPAWN_MEAN_MS -- that
+// one is ambient rain on the backdrop, deliberately decoupled from this
+// cadence (see its own comment). Changing one must never be reasoned about
+// as changing the other.
+const BATCH_SPAWN_INTERVAL_MS = 80
 
 // Restores the per-bead eviction the leaf-departure effect was originally
 // designed around (see docs/superpowers/specs/2026-08-01-leaf-departure-
 // effect-design.md), lost when the year-select-marble-batches refactor
-// removed the old fixed-cap mechanism. marbleCount.ts's own comment
-// references a "MAX_CAPACITY = 55" backstop as already existing here --
-// it never actually did, and even if it had, 55 sits ABOVE this scene's
-// real max combined spawn (25 + 25 = 50, per marbleCount.ts's MAX_MARBLES),
-// so eviction would have silently never fired for any single country/year.
-// 40 sits below that max so it actually bites for populous countries
-// (where the effect is visible during normal viewing, not just on
-// country/year switch), while small countries under 40 combined simply
-// never reach it -- which is fine, there's nothing to evict yet.
-const MAX_CAPACITY = 40
+// removed the old fixed-cap mechanism.
+//
+// Live-bead ceiling, derived from the viewport rather than fixed at 40 --
+// "a more dramatic amount of beads that fills at least half the screen"
+// cannot be a flat number across window sizes. A bead's silhouette is
+// pi * 34^2 = 3,632 px^2, and Boundaries' front/back planes pin every
+// bead's centre to exactly z = 0, so a settled pile is a genuine 2D disc
+// packing -- hexagonal close packing is 0.9069, random close packing
+// ~0.84, and a gravity-settled pile with the globe as an obstacle in it
+// and residual arching lands near PILE_PACKING_FRACTION. So N beads occupy
+// roughly N * 3,632 / 0.78 = N * 4,657 px^2 of screen.
+//
+// At 1280x800 (1,024,000 px^2) half the viewport is 512,000 px^2 => ~110
+// beads. At 1920x1080 => ~223, which is not affordable, so
+// MAX_CAPACITY_CEILING caps the COST rather than holding the fraction: at
+// 1080p 160 beads cover ~36% of the viewport, which still reads as
+// dramatic. MAX_CAPACITY_FLOOR keeps a small window from degenerating into
+// a scene with almost nothing in it. marbleCount.ts's own comment keeps
+// this invariant in sync: the combined per-stream max there (80 + 80) must
+// sit ABOVE this ceiling, or eviction silently never fires.
+const TARGET_PILE_VIEWPORT_FRACTION = 0.5
+const PILE_PACKING_FRACTION = 0.78
+const BEAD_SILHOUETTE_PX2 = Math.PI * BEAD_RADIUS * BEAD_RADIUS
+const MAX_CAPACITY_CEILING = 160
+const MAX_CAPACITY_FLOOR = 60
+
+function capacityFor(viewportWidth: number, viewportHeight: number): number {
+  const raw =
+    (viewportWidth * viewportHeight * TARGET_PILE_VIEWPORT_FRACTION * PILE_PACKING_FRACTION) /
+    BEAD_SILHOUETTE_PX2
+  return Math.round(THREE.MathUtils.clamp(raw, MAX_CAPACITY_FLOOR, MAX_CAPACITY_CEILING))
+}
+
+// window, not useThree: BeadScene is the component that RENDERS <Canvas>,
+// so it sits outside the R3F tree and has no useThree of its own.
+function useBeadCapacity(): number {
+  const [capacity, setCapacity] = useState(() => capacityFor(window.innerWidth, window.innerHeight))
+  useEffect(() => {
+    function onResize() {
+      setCapacity(capacityFor(window.innerWidth, window.innerHeight))
+    }
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+  return capacity
+}
+
 // How long a bead takes to shrink away once evicted.
 const BEAD_EXIT_MS = 400
 
@@ -127,8 +185,10 @@ const BEAD_CLEARCOAT_ROUGHNESS = 0.04
 const BEAD_ENV_RESOLUTION = 256
 // Lowered from 1.4 with the move to a 256px map and a clearcoat layer:
 // both add specular energy, and the previous value blows the highlights
-// out into white discs.
-const BEAD_ENV_INTENSITY = 0.45
+// out into white discs. Raised again, 0.45 -> 0.52, to compensate for the
+// removed <directionalLight> in the Canvas below: the baked rig now has to
+// carry the directional shading on its own.
+const BEAD_ENV_INTENSITY = 0.52
 
 // One geometry for every bead, built once at module scope. Phase 1 gave
 // each bead its own <sphereGeometry> element, i.e. up to a full batch's
@@ -137,7 +197,16 @@ const BEAD_ENV_INTENSITY = 0.45
 // every country/year switch — module scope means this buffer survives those
 // remounts instead of being rebuilt each time. Never disposed: there is
 // exactly one, for the lifetime of the page.
-const BEAD_GEOMETRY = new THREE.SphereGeometry(BEAD_RADIUS, 32, 32)
+// 32x32 -> 16x16. Vertices per bead go 33*33 = 1,089 -> 17*17 = 289 and
+// triangles 1,984 -> 480, roughly a 3.8x cut in vertex shading and setup
+// per bead -- headroom traded for capacityFor()'s much higher live bead
+// count. The visual cost is the silhouette: a 16-segment equator deviates
+// from a true circle by r * (1 - cos(pi/16)) = 34 * 0.0192 = 0.65px at
+// dpr=1, sub-pixel-scale faceting on a shape whose edge already reads
+// mostly from refraction, the clearcoat rim and a moving highlight, not
+// from geometric silhouette precision. Normals stay exact per vertex and
+// smooth-interpolated, so the refraction direction error is the same order.
+const BEAD_GEOMETRY = new THREE.SphereGeometry(BEAD_RADIUS, 16, 16)
 
 interface Bead {
   id: number
@@ -680,24 +749,32 @@ function useBackdropBase(
     if (textureImage) {
       ctx.save()
       if (circle) {
-        // Same box-from-radius formula Backdrop's own boxSize uses
-        // below, so this clip and that composite target the identical
-        // region -- a mismatch here would just move the seam instead of
-        // removing it.
-        const boxSize = Math.max(
-          1,
-          Math.round((circle.radius / GLOBE_SURFACE_RADIUS_FRACTION) * BACKDROP_SCALE),
-        )
-        const boxX = circle.centerX * BACKDROP_SCALE - boxSize / 2
-        const boxY = circle.centerY * BACKDROP_SCALE - boxSize / 2
+        // A DISC, not the full boxSize x boxSize rect. The original fix
+        // (found live as "the texture is superimposed on the globe")
+        // clipped the entire box, but cobe only paints an opaque sphere of
+        // radius GLOBE_SURFACE_RADIUS_FRACTION * boxSize inside that box --
+        // the four corners and the margin ring around the sphere are
+        // transparent, and clipping brick out of THEM too left a
+        // brick-free square whose edge became visible once the
+        // globe-composite plane started rendering the water field in those
+        // corners (see Backdrop's own comment) and the cursor-local
+        // TEX_REVEAL_GAIN doubled the local contrast right at that edge.
+        // Excluding exactly the opaque silhouette keeps the original fix
+        // (no brick under the globe) while restoring brick continuity
+        // across the box's own edge. The 1px antialiased silhouette rim is
+        // the only place the two overlap, which is below notice.
+        const cx = circle.centerX * BACKDROP_SCALE
+        const cy = circle.centerY * BACKDROP_SCALE
+        const r = circle.radius * BACKDROP_SCALE
         // evenodd, not the default nonzero: a plain outer rect plus an
-        // inner rect wound the same direction would just re-fill the
+        // inner subpath wound the same direction would just re-fill the
         // whole canvas. evenodd makes overlapping subpaths punch a hole
         // wherever they're nested an odd number of times, so the inner
-        // rect subtracts from the outer one regardless of winding order.
+        // disc subtracts from the outer rect regardless of winding order.
         ctx.beginPath()
         ctx.rect(0, 0, w, h)
-        ctx.rect(boxX, boxY, boxSize, boxSize)
+        ctx.moveTo(cx + r, cy)
+        ctx.arc(cx, cy, r, 0, Math.PI * 2)
         ctx.clip('evenodd')
       }
       ctx.filter = BACKDROP_TEXTURE_FILTER
@@ -723,6 +800,52 @@ function useBackdropBase(
 // that constant's own comment for why it isn't lower). Halving the update
 // rate halves this cost without touching resolution or reverting that fix.
 const BACKDROP_UPDATE_EVERY_N_FRAMES = 2
+
+// The globe-composite plane's own shader. It is NOT a variation on the
+// water shader -- it IS the water shader (waterColor(), from
+// WaterSurface.tsx's WATER_COMMON_GLSL, over the SAME shared uniform
+// objects useWaterUniforms drives), with the live globe composited on top
+// of it in the fragment. That is the fix for "it cuts off in an obvious
+// square box around the globe": this plane used to render a pre-baked crop
+// of the base canvas through a meshBasicMaterial, so its pixels were static
+// and brick-free while the water behind it swelled, revealed grain under
+// the cursor and carried ripples. Now every pixel where cobe is transparent
+// evaluates the identical field at the identical screen position, so the
+// two planes agree exactly and there is no edge to feather.
+//
+// The material stays OPAQUE (no `transparent: true`, alpha 1 out) and the
+// blend happens inside the shader. This is load-bearing, not style: three's
+// renderTransmissionPass renders only opaqueObjects into the transmission
+// target, so marking this transparent would silently drop the globe out of
+// what the beads refract -- which is the entire reason this plane exists
+// (see the "An earlier version tried a transparent hole" note above). The
+// canvas's own alpha is never exposed to the browser compositor either: the
+// water plane behind it is fully opaque, so nothing here can revive that
+// old "transparent hole leaked DOM brightness into the glass" bug.
+const GLOBE_FRAGMENT_SHADER = `
+varying vec2 vUv;
+${WATER_UNIFORMS_GLSL}
+${WATER_COMMON_GLSL}
+
+uniform sampler2D u_globe;
+/** Top-left of this plane's box, in DOM pixels. */
+uniform vec2 u_boxOrigin;
+uniform float u_boxSize;
+
+void main() {
+  vec4 g = texture2D(u_globe, vUv);
+  // Fully-opaque globe: skip the water field entirely. This branch is
+  // screen-coherent (the sphere's disc is one contiguous region), so whole
+  // warps take the same path -- which is what keeps the added cost of this
+  // plane close to "only the corners and glow ring", not the whole box.
+  if (g.a >= 0.999) {
+    gl_FragColor = vec4(g.rgb, 1.0);
+    return;
+  }
+  vec2 p = u_boxOrigin + vec2(vUv.x, 1.0 - vUv.y) * u_boxSize;
+  gl_FragColor = vec4(g.rgb + waterColor(p) * (1.0 - g.a), 1.0);
+}
+`
 
 // Only the globe-sized region needs a per-frame update -- the dot-matrix
 // base behind it never changes once built (see useBackdropBase).
@@ -775,6 +898,12 @@ const Backdrop = memo(function Backdrop({
   }, [base])
   useEffect(() => () => gradientTexture?.dispose(), [gradientTexture])
 
+  // One water-field uniform set for the whole scene, shared by the
+  // full-viewport water plane below AND the globe-composite plane's own
+  // shader -- see useWaterUniforms' own comment for why sharing the VALUE
+  // OBJECTS (not cloning them) is what keeps the two planes in sync.
+  const waterUniforms = useWaterUniforms(gradientTexture, width, height, theme, circle)
+
   // GLOBE_SURFACE_RADIUS_FRACTION (0.4) is already "sphere radius as a
   // fraction of the FULL canvas box width" — dividing circle.radius by it
   // yields the box width directly, not a radius that still needs doubling
@@ -785,14 +914,27 @@ const Backdrop = memo(function Backdrop({
     ? Math.max(1, Math.round((circle.radius / GLOBE_SURFACE_RADIUS_FRACTION) * BACKDROP_SCALE))
     : 0
 
-  // Recreated only when the base (theme/size) or the globe's on-screen
-  // size changes — globeElement is read fresh every frame in useFrame
-  // instead of triggering a recreate, since the globe rotates continuously.
-  // ctx hoisted alongside the canvas it belongs to (found in a 2026-08-06
-  // performance audit) -- was previously re-fetched via canvas.getContext
-  // inside useFrame every BACKDROP_UPDATE_EVERY_N_FRAMES-th frame; cheap
-  // per-call (browsers cache the context object) but pointless work in a
-  // hot path when it can just be captured once here instead.
+  // The composite canvas now holds ONLY the globe, on a transparent
+  // ground -- the base crop that used to be blitted underneath it every
+  // update is gone, because the shader evaluates waterColor() for those
+  // pixels instead (see GLOBE_FRAGMENT_SHADER above), which is both
+  // seamless with the water plane behind it and one canvas blit cheaper
+  // per update.
+  //
+  // NoColorSpace, not SRGBColorSpace -- this OVERRIDES the closing line of
+  // gradientTexture's own comment above ("The globe composite plane's own
+  // texture below is UNTOUCHED and stays SRGBColorSpace: it still uses
+  // meshBasicMaterial"). It no longer uses meshBasicMaterial, so there is
+  // no <colorspace_fragment> re-encode to cancel a hardware sRGB decode,
+  // and leaving this SRGBColorSpace would feed a linear-valued globe into
+  // an sRGB-valued shader -- the same reasoning gradientTexture's own
+  // NoColorSpace is built on, just for a second texture.
+  //
+  // premultiplyAlpha: a 2D canvas natively stores premultiplied pixels, and
+  // GLOBE_FRAGMENT_SHADER's composite (`g.rgb + waterColor(p) * (1 - g.a)`)
+  // is written for premultiplied input -- setting this explicitly (three
+  // otherwise assumes false for CanvasTexture) is what keeps cobe's soft
+  // glow edge from a visible un-premultiply/re-premultiply quantise step.
   const { canvas, ctx, texture } = useMemo(() => {
     if (!base || boxSize <= 0) return { canvas: null, ctx: null, texture: null }
     const canvas = document.createElement('canvas')
@@ -800,32 +942,56 @@ const Backdrop = memo(function Backdrop({
     canvas.height = boxSize
     const ctx = canvas.getContext('2d')
     const texture = new THREE.CanvasTexture(canvas)
-    texture.colorSpace = THREE.SRGBColorSpace
+    texture.colorSpace = THREE.NoColorSpace
+    texture.premultiplyAlpha = true
     return { canvas, ctx, texture }
   }, [base, boxSize])
   useEffect(() => () => texture?.dispose(), [texture])
 
+  const globeMaterial = useMemo(
+    () =>
+      new THREE.ShaderMaterial({
+        vertexShader: WATER_VERTEX_SHADER,
+        fragmentShader: GLOBE_FRAGMENT_SHADER,
+        uniforms: {
+          // Spread, not a deep clone: these must be the SAME IUniform
+          // objects the water plane's material holds (see waterUniforms'
+          // own comment), so one write per frame drives both materials.
+          ...waterUniforms,
+          u_globe: { value: null as THREE.Texture | null },
+          u_boxOrigin: { value: new THREE.Vector2(0, 0) },
+          u_boxSize: { value: 1 },
+        },
+      }),
+    [waterUniforms],
+  )
+  useEffect(() => () => globeMaterial.dispose(), [globeMaterial])
+
+  useEffect(() => {
+    globeMaterial.uniforms.u_globe.value = texture
+  }, [globeMaterial, texture])
+
+  useEffect(() => {
+    if (!circle) return
+    ;(globeMaterial.uniforms.u_boxOrigin.value as THREE.Vector2).set(
+      circle.centerX - boxSize / 2,
+      circle.centerY - boxSize / 2,
+    )
+    globeMaterial.uniforms.u_boxSize.value = boxSize
+  }, [globeMaterial, circle, boxSize])
+
   const frameCountRef = useRef(0)
 
   useFrame(() => {
-    if (!canvas || !ctx || !base || !texture || !circle) return
+    if (!canvas || !ctx || !texture || !circle) return
     frameCountRef.current++
     if (frameCountRef.current % BACKDROP_UPDATE_EVERY_N_FRAMES !== 0) return
-    // Coordinates are DOM/CSS pixels with a top-left origin, matching this
-    // canvas's own 2D coordinate system directly (unlike GlobeCollider,
-    // which has to flip into world-space for Rapier). Crop `base` at the
-    // same box the globe itself occupies, so the dot lattice stays
-    // continuous (same phase, same size) across the seam between the two
-    // planes.
-    const cx = circle.centerX * BACKDROP_SCALE
-    const cy = circle.centerY * BACKDROP_SCALE
-    const sx = cx - boxSize / 2
-    const sy = cy - boxSize / 2
-    // No clearRect: the drawImage immediately below is opaque and covers
-    // this exact same (0, 0, boxSize, boxSize) target rect every time, so
-    // the clear was always immediately overwritten in full (found in the
-    // same audit).
-    ctx.drawImage(base, sx, sy, boxSize, boxSize, 0, 0, boxSize, boxSize)
+    // clearRect is required again now that the opaque base-crop blit is
+    // gone (the prior version's "no clearRect" comment relied on that blit
+    // covering this exact rect every time -- without it, the globe's own
+    // transparent corners would accumulate every previous frame's
+    // rotation as a ghost).
+    ctx.clearRect(0, 0, boxSize, boxSize)
     if (globeElement) ctx.drawImage(globeElement, 0, 0, boxSize, boxSize)
     texture.needsUpdate = true
   })
@@ -838,13 +1004,24 @@ const Backdrop = memo(function Backdrop({
           than a new layer. It renders the identical texture at the
           identical z, and is a pixel-exact pass-through whenever no ripple
           is live, so a still scene looks exactly as it did before. The
-          globe composite plane below still sits in FRONT of it at z=-419,
-          so the globe is never rippled or refracted. */}
-      <WaterSurface texture={gradientTexture} width={width} height={height} theme={theme} circle={circle} />
+          globe composite plane below now shares this plane's own water
+          field (GLOBE_FRAGMENT_SHADER, above) instead of rendering a
+          static crop, which is what removes the visible seam at its edge. */}
+      <WaterSurface uniforms={waterUniforms} width={width} height={height} />
       {texture && circle && (
-        <mesh position={[circle.centerX - width / 2, height / 2 - circle.centerY, -419]}>
+        // renderOrder=-1 is a performance guarantee, not cosmetics. three's
+        // painterSortStable orders the opaque list by renderOrder BEFORE
+        // material id and z, so this forces the globe plane to draw first,
+        // write depth at z=-419, and let early-Z reject the water plane's
+        // fragments underneath it. Without it the sort falls through to
+        // material id (creation order, not guaranteed) and the box region
+        // could be shaded twice per frame -- once by each plane.
+        <mesh
+          renderOrder={-1}
+          position={[circle.centerX - width / 2, height / 2 - circle.centerY, -419]}
+        >
           <planeGeometry args={[boxSize, boxSize]} />
-          <meshBasicMaterial map={texture} toneMapped={false} />
+          <primitive object={globeMaterial} attach="material" />
         </mesh>
       )}
     </>
@@ -872,9 +1049,11 @@ const MOUSE_LIGHT_LERP = 0.25
 // three's point/spot lights have used physically-based inverse-square decay
 // (intensity / distance^2, in candela) since r155 — there is no
 // "physicallyCorrectLights" toggle to opt out of it anymore. So this has to
-// scale with MOUSE_LIGHT_DISTANCE^2 to land in the same visible range as
-// the directionalLight above (which has no distance falloff at all), rather
-// than being a small unitless number like that light's 0.4.
+// scale with MOUSE_LIGHT_DISTANCE^2 to land in the same visible range as a
+// light with no distance falloff at all (the scene's own baked Lightformer
+// rig, since the Canvas's static <directionalLight> this was originally
+// pinned against was removed -- see BEAD_ENV_INTENSITY's own comment),
+// rather than being a small unitless number like that removed light's 0.4.
 const MOUSE_LIGHT_DISTANCE = BEAD_RADIUS * 12
 const MOUSE_LIGHT_INTENSITY = 0.5 * MOUSE_LIGHT_DISTANCE * MOUSE_LIGHT_DISTANCE
 
@@ -1000,7 +1179,7 @@ function GlobeCollider({ circle }: { circle: GlobeCircle }) {
 // React keys matter: a changing key would recreate the body and teleport a
 // settled bead back to the spawn point.
 //
-// Per-bead eviction at MAX_CAPACITY (see that constant's comment): the
+// Per-bead eviction at the live-bead ceiling (see capacityFor's comment): the
 // scene marks the oldest live bead `dying` rather than removing it
 // outright, so it shrinks away over BEAD_EXIT_MS instead of popping out of
 // existence. Physics keeps simulating it while it shrinks (only the mesh's
@@ -1072,7 +1251,17 @@ const BeadBody = memo(function BeadBody({
       position={[bead.x, height / 2 + BEAD_RADIUS * 2, 0]}
       restitution={0.25}
       friction={0.6}
-      linearDamping={0.1}
+      // 0.1 -> 0.2, plus angular damping that did not exist before (Rapier's
+      // own default is 0). The cheapest available offset for capacityFor()'s
+      // much higher live bead count: @react-three/rapier leaves canSleep on
+      // by default, and a sleeping body costs Rapier essentially nothing --
+      // so the real per-frame cost is not "how many beads exist" but "how
+      // many have not settled yet". Damping harder gets beads to the sleep
+      // threshold sooner, which shrinks that number, and glass marbles that
+      // stop rolling instead of creeping forever is also the more correct
+      // look for a pile this size.
+      linearDamping={0.2}
+      angularDamping={0.4}
     >
       <mesh ref={meshRef} geometry={BEAD_GEOMETRY} material={material} dispose={null} />
     </RigidBody>
@@ -1096,7 +1285,7 @@ interface BeadSceneProps {
   globeElement: HTMLCanvasElement | null
   /** Called once per marble, at the moment it starts fading out (see
    * BeadBody's dying branch) — fires only on per-bead eviction at
-   * MAX_CAPACITY. A full scene teardown (country/year switch or deselect)
+   * the live-bead ceiling. A full scene teardown (country/year switch or deselect)
    * does NOT fire this for whatever beads were still alive; there is no
    * unmount-based fallback anymore. Drives LeafOverlay
    * (src/components/LeafOverlay.tsx). */
@@ -1127,7 +1316,7 @@ export const BeadScene = memo(function BeadScene({
   const materials = useBeadMaterials(colors)
 
   const [beads, setBeads] = useState<Bead[]>([])
-  // ids currently mid-shrink-out (evicted at MAX_CAPACITY, or -- once
+  // ids currently mid-shrink-out (evicted at the live-bead ceiling, or -- once
   // added -- expired via handleExpire). A bead in `beads` but not yet in
   // `dyingIds` is fully live; one in both is fading; handleExpire removes
   // it from both once its shrink finishes.
@@ -1151,6 +1340,16 @@ export const BeadScene = memo(function BeadScene({
   // never collide, or Rapier bodies get torn down and recreated mid-fall.
   const nextIdRef = useRef(0)
 
+  const capacity = useBeadCapacity()
+  // Mirrored into a ref for the same reason beadsRef/dyingIdsRef are:
+  // spawn() runs from setInterval closures. Adding `capacity` to the spawn
+  // effect's own dependency array would restart both timers (and reset
+  // birthsSpawned/deathsSpawned to 0) on every resize event.
+  const capacityRef = useRef(capacity)
+  useEffect(() => {
+    capacityRef.current = capacity
+  }, [capacity])
+
   const handleExpire = useCallback((id: number) => {
     setBeads((prev) => prev.filter((b) => b.id !== id))
     setDyingIds((prev) => {
@@ -1164,7 +1363,7 @@ export const BeadScene = memo(function BeadScene({
   useEffect(() => {
     function spawn(kind: 'birth' | 'death') {
       const liveCount = beadsRef.current.length - dyingIdsRef.current.size
-      if (liveCount >= MAX_CAPACITY) {
+      if (liveCount >= capacityRef.current) {
         const oldest = beadsRef.current.find((b) => !dyingIdsRef.current.has(b.id))
         if (oldest) {
           setDyingIds((prev) => {
@@ -1275,7 +1474,13 @@ export const BeadScene = memo(function BeadScene({
           // except the globe collider (invisible) and the page itself, so
           // downscaling this target is visually free while quartering the
           // pass's fill cost and its mipmap chain.
-          gl.transmissionResolutionScale = 0.5
+          // 0.5 -> 0.4. What this does and does NOT buy: the transmission
+          // pass is one full render of every opaque object plus its mipmap
+          // chain, run ONCE per frame no matter how many beads exist, so
+          // this is a FIXED cost that cannot "pay for" more beads. What it
+          // does is shrink that fixed cost (render-target area -36%) to
+          // make room for the bead cost that IS growing with capacityFor().
+          gl.transmissionResolutionScale = 0.4
         }}
       >
         {/* Deliberately subtle: every Lightformer here is desaturated and
@@ -1283,9 +1488,20 @@ export const BeadScene = memo(function BeadScene({
             a bead's surface — they only exist to keep the clearcoat/
             transmission shading from going flat (see the "stripped"
             comparison this was restored from). MouseLight supplies the one
-            highlight that IS meant to be seen, tracking the cursor. */}
+            highlight that IS meant to be seen, tracking the cursor.
+
+            The static <directionalLight intensity={0.4}> that used to sit
+            here is gone. MeshPhysicalMaterial evaluates a full direct-light
+            block per light per fragment -- Lambert + BRDF_GGX + a second
+            GGX lobe for the clearcoat layer -- and at the much larger
+            transmissive screen coverage capacityFor() now targets, that is
+            the largest per-fragment cut available that doesn't touch the
+            material itself. BEAD_ENV_INTENSITY (0.45 -> 0.52) compensates:
+            the baked rig's own 700x320 top rect already supplies the same
+            top-down key direction, at zero per-frame cost (frames={1}). If
+            the beads read flat after this, revert THIS line first, before
+            touching BEAD_CLEARCOAT. */}
         <BeadEnvironment intensity={theme === 'dark' ? 0.35 : 0.55} resolution={BEAD_ENV_RESOLUTION} />
-        <directionalLight position={[200, 400, 300]} intensity={0.4} />
         <MouseLight />
         <Backdrop theme={theme} circle={globeCircle} globeElement={globeElement} />
         {/* Rapier's WASM is loaded via suspend-react, so Physics suspends. */}

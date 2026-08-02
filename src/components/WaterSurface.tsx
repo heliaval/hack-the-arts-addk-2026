@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef } from 'react'
 import * as THREE from 'three'
 import { useFrame } from '@react-three/fiber'
-import { GLOBE_SURFACE_RADIUS_FRACTION, type GlobeCircle } from '@/components/ui/cobe-globe'
+import type { GlobeCircle } from '@/components/ui/cobe-globe'
 
 // The bead scene's water layer: the backdrop plane, rendered through a
 // ripple shader instead of a flat meshBasicMaterial.
@@ -12,7 +12,7 @@ import { GLOBE_SURFACE_RADIUS_FRACTION, type GlobeCircle } from '@/components/ui
 //
 //  - A DOM canvas layer behind the beads is physically impossible in this
 //    app. BeadScene's backdrop is an OPAQUE full-viewport plane inside a
-//    `fixed inset-0 z-0` <Canvas> that sits later in App's tree than
+//    fixed inset-0 z-0 <Canvas> that sits later in App's tree than
 //    DotMatrixBackground, so it occludes every DOM layer behind it
 //    wholesale. That is the entire reason DotMatrixAtmosphere exists (see
 //    its own comment). The only reachable DOM slot is ABOVE the canvas,
@@ -33,8 +33,16 @@ import { GLOBE_SURFACE_RADIUS_FRACTION, type GlobeCircle } from '@/components/ui
 // is cheaper: the gradient is derived ANALYTICALLY, so each fragment
 // evaluates the ripple field once, where GlassRain evaluates it three
 // times for a finite-difference epsilon.
+//
+// The water FIELD (waterColor, in WATER_COMMON_GLSL below) is shared, not
+// just the technique: BeadScene.tsx's globe-composite plane evaluates the
+// exact same function, over the exact same uniform VALUE OBJECTS (see
+// useWaterUniforms), so the two planes agree pixel-for-pixel wherever they
+// meet -- there is no seam to feather between "the water" and "the globe's
+// box" because both are the same shader evaluated at the same screen
+// position.
 
-const VERTEX_SHADER = `
+export const WATER_VERTEX_SHADER = `
 varying vec2 vUv;
 void main() {
   vUv = uv;
@@ -42,25 +50,17 @@ void main() {
 }
 `
 
+// Must match the shader's own RIPPLE_LIFE_S (WATER_COMMON_GLSL) and is
+// injected into WATER_UNIFORMS_GLSL below, so the two can never drift.
+export const MAX_RIPPLES = 14
+const RIPPLE_LIFE_S = 2.6
+
 // Every length here is in CSS pixels, matching the rest of BeadScene (see
 // that file's top-of-file orthographic-camera note).
-//
-// The wave model is a radially expanding WAVE PACKET, not a wave equation:
-// a ~3-crest cosine burst inside a sin^2 envelope, riding outward at a
-// fixed speed, decaying with both age and distance. Ripples sum linearly
-// and do not reflect off the globe or the screen edges -- at this density
-// (steady-state ~7 live, each a 90px-thick annulus) there is nothing to
-// interfere with, so a real wave-equation ping-pong sim would cost two
-// extra fullscreen passes per frame to produce a difference nobody can see.
-//
-// The gradient is closed-form. Treating `decay` and `atten` as constant in
-// r while differentiating (they vary over hundreds of px; the wave varies
-// over 30px) makes the derivative exact enough to be visually
-// indistinguishable, and turns three field evaluations into one.
-const FRAGMENT_SHADER = `
+export const WATER_UNIFORMS_GLSL = `
 precision highp float;
 
-#define MAX_RIPPLES 10
+#define MAX_RIPPLES ${MAX_RIPPLES}
 #define PI 3.14159265359
 
 uniform sampler2D u_base;
@@ -75,9 +75,29 @@ uniform float u_specular;
 uniform float u_shade;
 uniform float u_pivot;
 uniform vec3 u_sheen;
+`
 
-varying vec2 vUv;
-
+// The wave model is a radially expanding WAVE PACKET, not a wave equation:
+// a ~3-crest cosine burst inside a sin^2 envelope, riding outward at a
+// fixed speed, decaying with both age and distance. Ripples sum linearly
+// into one gradient field (real small-amplitude superposition, i.e. real
+// interference) and do not reflect off the globe or the screen edges -- a
+// wave-equation ping-pong sim would cost two extra fullscreen passes per
+// frame for a difference nobody would see at this density.
+//
+// The gradient is closed-form. Treating decay and atten as constant in r
+// while differentiating (they vary over hundreds of px; the wave varies
+// over 30px) makes the derivative exact enough to be visually
+// indistinguishable, and turns three field evaluations into one.
+//
+// waterColor() is parameterised on a DOM-pixel position rather than on a
+// mesh's own vUv, specifically so a mesh that covers only PART of the
+// viewport (BeadScene.tsx's globe-composite plane) can evaluate the
+// identical field at the identical screen pixels the full-viewport water
+// plane behind it would have produced there. That identity is what removes
+// the seam between the two planes: there is nothing to blend or feather,
+// because both planes compute the same number for the same pixel.
+export const WATER_COMMON_GLSL = `
 const float RIPPLE_LIFE_S = 2.6;
 const float RIPPLE_SPEED_PX_S = 165.0;
 const float PACKET_PX = 90.0;
@@ -86,10 +106,16 @@ const float ATTEN_FALLOFF_PX = 300.0;
 const float REFRACT_PX = 26.0;
 const float SLOPE_SCALE = 2.5;
 const float SHININESS = 48.0;
-// Slope magnitude at which specular reaches full strength. Also what
-// guarantees FLAT water gets exactly no highlight: at grad == 0 this gate
-// is 0, so neither lobe can tint a still surface.
-const float SPEC_GATE = 12.0;
+// Slope magnitude at which specular reaches full strength. Lowered from
+// 12.0: at 12.0 a single fresh ripple (|grad| ~= 0.15..0.28) already
+// saturates this gate, so one crest and two CROSSING crests produced an
+// identical highlight -- see the crest-response block below, which is what
+// actually makes crossings look different. At 6.0 a destructive null where
+// two ripples cancel now reads as a genuinely dark dip instead of staying
+// at full brightness, and the smoothstep toe further down divides the
+// ambient swell's permanent slope floor by roughly 11x instead of 3.5x,
+// which only strengthens that comment's original intent.
+const float SPEC_GATE = 6.0;
 // Matches AtmosphereLayers' own radial-gradient(circle 340px ...) so the
 // water's specular response and the DOM sheen share one footprint.
 const float SHEEN_RADIUS_PX = 340.0;
@@ -132,6 +158,42 @@ const float ANISO = 0.11;
 // ALREADY-REFRACTED sample, the revealed grain warps with the ripples.
 const float TEX_REVEAL_GAIN = 1.1;
 
+// --- Non-linear crest response --------------------------------------------
+// Ripples already sum LINEARLY into the gradient above, which is correct
+// small-amplitude superposition and is real interference -- but nothing
+// downstream used to be non-linear enough to make it legible: refraction
+// and the broad shade term are both linear in the gradient, and the old
+// SPEC_GATE = 12.0 saturated at |grad| = 0.083, which any single fresh
+// ripple already exceeds, so one crest and two crossing crests produced an
+// identical highlight.
+//
+// This is the one non-linear step, and it reads the FINAL summed gradient
+// ONCE, after the ripple loop -- never per ripple. That is the entire
+// reason it is affordable: it costs one smoothstep and two multiplies per
+// fragment regardless of how many ripples are live, and it cannot be
+// approximated per-ripple, since "how steep is it here in total" is
+// precisely the quantity a per-ripple term does not have.
+//
+// Thresholds are measured against what a lone packet can produce. Peak
+// |dhdr| = weight * ~0.22 where weight = ripple.w * decay * atten, so a
+// mid-life crest sits near 0.15 and the strongest possible fresh crest
+// (w=1.3, decay~0.99, atten~0.98) near 0.28. CREST_SOLO = 0.26 therefore
+// leaves even the strongest single ripple essentially untouched (+2%),
+// while two crossing crests around 0.40 get roughly +60% and a full
+// constructive pile-up saturates at +85% -- steeper slope, deeper
+// refraction of the dot lattice, brighter shade lobe. That is what shallow
+// water actually does where two wavefronts meet, and what "ripples
+// interacting" looks like. Destructive interference needs no term of its
+// own: the linear sum already cancels there, and the lowered SPEC_GATE
+// above is what lets the cancelled region read as a genuinely dark null
+// instead of a still-saturated highlight.
+//
+// The ambient swell can never trip this: its |grad| tops out near 0.015,
+// two orders of magnitude below CREST_SOLO.
+const float CREST_SOLO = 0.26;
+const float CREST_CROSS = 0.48;
+const float INTERFERE_GAIN = 0.85;
+
 // normalize(vec3(-0.6, 0.8, 0.35)) -- upper-left key light, in SCREEN space
 // with +y UP. GLSL ES 1.00 cannot call normalize() in a const initializer,
 // so both this and its half-vector are precomputed. Same light direction
@@ -142,12 +204,13 @@ const vec3 KEY_LIGHT = vec3(-0.56631, 0.75508, 0.33035);
 // because the camera is orthographic.
 const vec3 KEY_HALF = vec3(-0.34719, 0.46291, 0.81559);
 
-void main() {
-  // vUv.y = 1 is the TOP of the plane, and CanvasTexture's default
-  // flipY = true maps canvas row 0 (viewport top) to uv.y = 1 -- so this
-  // converts to DOM pixel space (top-left origin, +y down), which is the
-  // space every ripple/cursor coordinate arrives in.
-  vec2 p = vec2(vUv.x, 1.0 - vUv.y) * u_resolution;
+// The water field, evaluated at a DOM-pixel position (top-left origin,
+// +y down). See this file's header for why this is parameterised on a raw
+// position rather than on a mesh's own vUv.
+vec3 waterColor(vec2 p) {
+  // Viewport uv for the base texture -- the exact inverse of a
+  // full-viewport plane's own p = vec2(vUv.x, 1.0 - vUv.y) * u_resolution.
+  vec2 baseUv = vec2(p.x / u_resolution.x, 1.0 - p.y / u_resolution.y);
 
   // dh/dx, dh/dy of the summed height field, in DOM-y-down space.
   //
@@ -200,8 +263,8 @@ void main() {
     // Per-ripple elongation axis, hashed off the two independent random
     // fields the slot already carries (birth time, amplitude). Two fract()
     // products rather than the usual sin(dot(...))*43758.5453 -- no
-    // transcendental, and the quality bar here is "ten ellipses don't share
-    // an axis", not statistical soundness.
+    // transcendental, and the quality bar here is "ripples don't share an
+    // axis", not statistical soundness.
     vec2 raw = vec2(
       fract(ripple.z * 12.9898 + ripple.w * 78.233),
       fract(ripple.z * 39.3467 + ripple.w * 11.135)
@@ -245,9 +308,19 @@ void main() {
     grad += dhdr * ((1.0 - ANISO) * nq + (2.0 * ANISO * dot(nq, axis)) * axis);
   }
 
+  // Crest steepening, the one non-linear step -- see CREST_SOLO's own
+  // comment above. Applied to the FINAL summed gradient, never per ripple.
+  float slope = length(grad);
+  float boost = 1.0 + INTERFERE_GAIN * smoothstep(CREST_SOLO, CREST_CROSS, slope);
+  grad *= boost;
+  // Scaling a vector by a positive scalar scales its length by the same
+  // scalar, so the gate further down gets its updated magnitude for free
+  // rather than paying a second length().
+  slope *= boost;
+
   // Refraction: push the sample point along the slope. The y flip converts
   // the DOM-y-down gradient into uv space, where +v is up.
-  vec2 uv = clamp(vUv + vec2(grad.x, -grad.y) * REFRACT_PX / u_resolution, 0.0, 1.0);
+  vec2 uv = clamp(baseUv + vec2(grad.x, -grad.y) * REFRACT_PX / u_resolution, 0.0, 1.0);
   vec3 col = texture2D(u_base, uv).rgb;
 
   // Cursor sheen footprint, hoisted above BOTH its consumers -- the texture
@@ -293,47 +366,71 @@ void main() {
   vec3 sheenHalf = normalize(sheenDir + vec3(0.0, 0.0, 1.0));
   float specSheen = pow(max(dot(normal, sheenHalf), 0.0), SHININESS) * sheenFall;
 
-  // smoothstep, not the old bare min(): the ambient swell means length(grad)
-  // now has a small permanent floor (~0.005..0.012), which the linear gate
-  // would have promoted straight to a ~6-14% specular haze everywhere. The
-  // cubic toe divides that by roughly 3.5x while leaving real crests, which
-  // saturate the gate anyway, at full strength. Three ALU ops, and it is
-  // what makes the swell read as an occasional travelling glint rather than
-  // a uniform sheen lift.
-  float gate = smoothstep(0.0, 1.0, min(1.0, length(grad) * SPEC_GATE));
+  // smoothstep, not a bare min(): the ambient swell means slope now has a
+  // small permanent floor (~0.005..0.012), which a linear gate would have
+  // promoted straight into a haze everywhere. The cubic toe divides that
+  // down while leaving real crests, which saturate the gate anyway, at full
+  // strength -- and it is what makes the swell read as an occasional
+  // travelling glint rather than a uniform sheen lift.
+  float gate = smoothstep(0.0, 1.0, min(1.0, slope * SPEC_GATE));
   col += (specKey * 0.55 + specSheen * u_sheen) * u_specular * gate;
 
-  gl_FragColor = vec4(col, 1.0);
+  return col;
 }
 `
 
-// Must match the shader's own RIPPLE_LIFE_S / MAX_RIPPLES.
-const MAX_RIPPLES = 10
-const RIPPLE_LIFE_S = 2.6
+// The water plane's own fragment shader: the shared uniform block, the
+// shared field function, and a thin main() that converts this mesh's own
+// vUv into a DOM-pixel position and asks waterColor() for the answer.
+// BeadScene.tsx's globe-composite plane uses the exact same
+// WATER_UNIFORMS_GLSL + WATER_COMMON_GLSL pair in its own shader, over the
+// same uniform value objects (see useWaterUniforms) -- see this file's
+// header comment for why that is the fix for the seam between the two.
+const FRAGMENT_SHADER = `
+varying vec2 vUv;
+${WATER_UNIFORMS_GLSL}
+${WATER_COMMON_GLSL}
+void main() {
+  // vUv.y = 1 is the TOP of the plane, and CanvasTexture's default
+  // flipY = true maps canvas row 0 (viewport top) to uv.y = 1 -- so this
+  // converts to DOM pixel space (top-left origin, +y down), which is the
+  // space every ripple/cursor coordinate arrives in.
+  vec2 p = vec2(vUv.x, 1.0 - vUv.y) * u_resolution;
+  gl_FragColor = vec4(waterColor(p), 1.0);
+}
+`
 
 // Ambient, data-independent rain. Deliberately NOT tied to
-// BATCH_SPAWN_INTERVAL_MS: a batch is capped at 25 births + 25 deaths and
-// drains in ~3 seconds, after which the water would sit perfectly dead for
-// the rest of the session -- an effect that stops. Beads also all spawn
-// from one narrow band at screen top (SPAWN_JITTER_PX), so a ripple
-// anywhere else carries no perceivable correspondence to the bead that
-// "caused" it. GlobeRain, this app's own rain precedent, is atmospheric
-// for the same reasons.
+// BATCH_SPAWN_INTERVAL_MS: a batch drains in a handful of seconds, after
+// which the water would sit perfectly dead for the rest of the session --
+// an effect that stops. Beads also all spawn from one narrow band at screen
+// top (SPAWN_JITTER_PX), so a ripple anywhere else carries no perceivable
+// correspondence to the bead that "caused" it. GlobeRain, this app's own
+// rain precedent, is atmospheric for the same reasons. This is a DIFFERENT
+// system from BeadScene.tsx's BATCH_SPAWN_INTERVAL_MS (bead batch playback
+// speed) -- the two must never be reasoned about as the same knob.
 //
-// Steady state: 2.6s lifetime / 0.34s mean interval ~= 7.6 live ripples,
-// so MAX_RIPPLES = 10 is a backstop rather than a clamp.
 // Exponentially-distributed gaps (a Poisson arrival process), not a uniform
 // window. Rain is memoryless: drops genuinely cluster and genuinely leave
-// short lulls, where uniform(160, 520) is a metronome with jitter and reads
-// as one. The mean is deliberately 340ms -- the mean of the old window --
-// so the steady-state population (2.6s / 0.34s ~= 7.6 live) and therefore
-// MAX_RIPPLES = 10 as a backstop are both unchanged. The clamps only trim
-// the distribution's two tails: without SPAWN_MIN_MS the shortest gaps land
-// inside a single frame and waste a slot, and without SPAWN_MAX_MS a rare
-// long tail leaves the water visibly empty (which the ambient swell now
-// covers, but 1.4s is already past the point of noticing). Bursts past 10
-// live are handled by the pool's existing evict-oldest rule.
-const SPAWN_MEAN_MS = 340
+// short lulls, where a uniform window with jitter reads as a metronome. The
+// clamps only trim the distribution's two tails: without SPAWN_MIN_MS the
+// shortest gaps land inside a single frame and waste a slot, and without
+// SPAWN_MAX_MS a rare long tail leaves the water visibly empty. The lower
+// clamp is what makes the EFFECTIVE mean 273.9ms rather than the nominal
+// 260: E[max(90, Exp(260))] = 90*(1-e^-90/260) + 350*e^-90/260 = 273.9,
+// less a negligible 1.2ms correction from the upper clamp.
+//
+// 260, down from 340, is the "slightly more frequent" ask -- roughly 24%
+// more drops. That pushes the steady-state population from ~7.6 to
+// 2600/273.9 ~= 9.5 live (sigma ~= 3.1), which is why MAX_RIPPLES went
+// 10 -> 14 alongside it: at a mean that close to the old cap, the pool
+// would sit at capacity a large fraction of the time. 14 sits at
+// mean+1.45sigma; above it the evicted ripple is the oldest of fourteen
+// spread over RIPPLE_LIFE_S, i.e. age ~2.4s, where decay = (1-2.4/2.6)^2
+// ~= 0.006 -- there is nothing left to cut off. Empty ripple slots cost one
+// scalar compare each in the fragment loop, so headroom above the typical
+// count is close to free.
+const SPAWN_MEAN_MS = 260
 const SPAWN_MIN_MS = 90
 const SPAWN_MAX_MS = 1400
 const AMPLITUDE_MIN = 0.7
@@ -390,11 +487,14 @@ function resolveSheenRgb(): [number, number, number] {
   return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255]
 }
 
-/** A uniform-random point on the water, rejecting the globe's own square
- * box -- that region is covered by Backdrop's z=-419 composite plane, so a
- * ripple there would be invisible and would waste a slot. Gives up after a
- * few tries and skips the spawn rather than looping, since the box is only
- * ever a small fraction of the viewport. */
+/** A uniform-random point on the water, rejecting the globe's own DISC --
+ * only the sphere's opaque silhouette actually hides a ripple now, because
+ * BeadScene.tsx's globe-composite plane composites the live globe OVER the
+ * identical water field (see that plane's shader) rather than over a static
+ * crop, so anywhere outside the silhouette (including the box's corners and
+ * glow ring) shows real, visible water. Gives up after a few tries and
+ * skips the spawn rather than looping, since the disc is only ever a small
+ * fraction of the viewport. */
 function pickSpawnPoint(
   width: number,
   height: number,
@@ -404,65 +504,62 @@ function pickSpawnPoint(
     const x = Math.random() * width
     const y = Math.random() * height
     if (!circle) return { x, y }
-    // Same box-from-radius formula Backdrop's boxSize uses.
-    const half = circle.radius / GLOBE_SURFACE_RADIUS_FRACTION / 2
-    if (Math.abs(x - circle.centerX) > half || Math.abs(y - circle.centerY) > half) {
-      return { x, y }
-    }
+    const dx = x - circle.centerX
+    const dy = y - circle.centerY
+    if (dx * dx + dy * dy > circle.radius * circle.radius) return { x, y }
   }
   return null
 }
 
-export function WaterSurface({
-  texture,
-  width,
-  height,
-  theme,
-  circle,
-}: {
-  texture: THREE.Texture
-  width: number
-  height: number
-  theme: 'light' | 'dark'
-  circle: GlobeCircle | null
-}) {
-  // Created once for the component's whole life. Ripple state lives in the
+export type WaterUniforms = Record<string, THREE.IUniform>
+
+/** Creates and drives the ONE water-field uniform set for the whole bead
+ * scene. Called once by Backdrop (inside <Canvas>, so useFrame/useMemo are
+ * legal) and handed to both the full-viewport water plane (WaterSurface,
+ * below) and BeadScene.tsx's globe-composite plane -- sharing the same
+ * uniform VALUE OBJECTS, not copies, is what keeps the two planes in sync:
+ * three's WebGLUniforms reads `.value` at upload time, so writing u_time
+ * once here updates both materials' next draw. */
+export function useWaterUniforms(
+  texture: THREE.Texture | null,
+  width: number,
+  height: number,
+  theme: 'light' | 'dark',
+  circle: GlobeCircle | null,
+): WaterUniforms {
+  // Created once for the scene's whole life. Ripple state lives in the
   // uniform's own Vector4s and is written ONLY at spawn -- the animation
   // itself is a pure function of u_time, so the per-frame CPU cost of this
   // entire effect is one float write.
-  const material = useMemo(() => {
+  const uniforms = useMemo<WaterUniforms>(() => {
     const themeValues = WATER_THEME[theme]
-    return new THREE.ShaderMaterial({
-      vertexShader: VERTEX_SHADER,
-      fragmentShader: FRAGMENT_SHADER,
-      uniforms: {
-        u_base: { value: null as THREE.Texture | null },
-        u_resolution: { value: new THREE.Vector2(1, 1) },
-        u_time: { value: 0 },
-        u_ripples: {
-          value: Array.from({ length: MAX_RIPPLES }, () => new THREE.Vector4(0, 0, 0, 0)),
-        },
-        u_cursor: { value: new THREE.Vector2(-9999, -9999) },
-        u_specular: { value: themeValues.specular },
-        u_shade: { value: themeValues.shade },
-        u_pivot: { value: themeValues.pivot },
-        u_sheen: { value: new THREE.Vector3(0.57, 0.18, 0.25) },
+    return {
+      u_base: { value: null as THREE.Texture | null },
+      u_resolution: { value: new THREE.Vector2(1, 1) },
+      u_time: { value: 0 },
+      u_ripples: {
+        value: Array.from({ length: MAX_RIPPLES }, () => new THREE.Vector4(0, 0, 0, 0)),
       },
-    })
-    // theme is deliberately NOT a dependency -- the two theme-driven values
-    // are plain uniforms, updated in place by the effect below. Rebuilding
-    // the material would recompile the shader program on every theme flip.
+      u_cursor: { value: new THREE.Vector2(-9999, -9999) },
+      u_specular: { value: themeValues.specular },
+      u_shade: { value: themeValues.shade },
+      u_pivot: { value: themeValues.pivot },
+      u_sheen: { value: new THREE.Vector3(0.57, 0.18, 0.25) },
+    }
+    // theme is deliberately NOT a dependency -- the theme-driven values are
+    // plain uniforms, updated in place by the effect below. Recreating this
+    // object would recompile BOTH shader programs (the water plane's and
+    // the globe-composite plane's) on every theme flip.
     // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [])
-  useEffect(() => () => material.dispose(), [material])
 
   useEffect(() => {
-    material.uniforms.u_base.value = texture
-  }, [material, texture])
+    uniforms.u_base.value = texture
+  }, [uniforms, texture])
 
   useEffect(() => {
-    ;(material.uniforms.u_resolution.value as THREE.Vector2).set(width, height)
-  }, [material, width, height])
+    ;(uniforms.u_resolution.value as THREE.Vector2).set(width, height)
+  }, [uniforms, width, height])
 
   // Theme values + the sheen colour, re-resolved one rAF after the flip --
   // the exact pattern resolveBeadColors uses further down BeadScene.tsx and
@@ -474,21 +571,21 @@ export function WaterSurface({
   // hand-conversion gets wrong.
   useEffect(() => {
     const themeValues = WATER_THEME[theme]
-    material.uniforms.u_specular.value = themeValues.specular
-    material.uniforms.u_shade.value = themeValues.shade
-    material.uniforms.u_pivot.value = themeValues.pivot
+    uniforms.u_specular.value = themeValues.specular
+    uniforms.u_shade.value = themeValues.shade
+    uniforms.u_pivot.value = themeValues.pivot
     const id = requestAnimationFrame(() => {
       const [r, g, b] = resolveSheenRgb()
-      ;(material.uniforms.u_sheen.value as THREE.Vector3).set(r, g, b)
+      ;(uniforms.u_sheen.value as THREE.Vector3).set(r, g, b)
     })
     return () => cancelAnimationFrame(id)
-  }, [material, theme])
+  }, [uniforms, theme])
 
   // Plain mutable ref rather than React state, same reasoning as
   // MouseLight's own targetRef in BeadScene.tsx: pointermove fires far
   // faster than React commits and this only feeds a uniform.
   useEffect(() => {
-    const cursor = material.uniforms.u_cursor.value as THREE.Vector2
+    const cursor = uniforms.u_cursor.value as THREE.Vector2
     function handlePointerMove(event: PointerEvent) {
       cursor.set(event.clientX, event.clientY)
     }
@@ -501,7 +598,7 @@ export function WaterSurface({
       window.removeEventListener('pointermove', handlePointerMove)
       document.removeEventListener('pointerleave', handlePointerLeave)
     }
-  }, [material])
+  }, [uniforms])
 
   // Shared clock between useFrame and the setTimeout-driven spawner below.
   // A spawn can be up to one frame (~16ms) stale against u_time, which at
@@ -521,7 +618,7 @@ export function WaterSurface({
   circleRef.current = circle
 
   useEffect(() => {
-    const slots = material.uniforms.u_ripples.value as THREE.Vector4[]
+    const slots = uniforms.u_ripples.value as THREE.Vector4[]
     let timeoutId = 0
     let cancelled = false
 
@@ -556,12 +653,38 @@ export function WaterSurface({
       cancelled = true
       window.clearTimeout(timeoutId)
     }
-  }, [material])
+  }, [uniforms])
 
   useFrame((state) => {
     elapsedRef.current = state.clock.getElapsedTime()
-    material.uniforms.u_time.value = elapsedRef.current
+    uniforms.u_time.value = elapsedRef.current
   })
+
+  return uniforms
+}
+
+/** The full-viewport water plane. Purely a mesh + material over an
+ * already-driven uniform set -- see useWaterUniforms for everything that
+ * animates it. */
+export function WaterSurface({
+  uniforms,
+  width,
+  height,
+}: {
+  uniforms: WaterUniforms
+  width: number
+  height: number
+}) {
+  const material = useMemo(
+    () =>
+      new THREE.ShaderMaterial({
+        vertexShader: WATER_VERTEX_SHADER,
+        fragmentShader: FRAGMENT_SHADER,
+        uniforms,
+      }),
+    [uniforms],
+  )
+  useEffect(() => () => material.dispose(), [material])
 
   return (
     <mesh position={[0, 0, -420]}>
