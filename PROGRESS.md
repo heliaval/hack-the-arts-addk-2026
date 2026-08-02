@@ -3195,3 +3195,41 @@ GlobeRain entry).
 
 Status: done, pending live visual confirmation. Commit backdated to
 2026-07-31T19:00:00 per standing instruction.
+
+## 2026-08-04 (continued) — GlobeRain: vertical fall, no fade, bottom-collision ripples [inline]
+
+User: "just make them fall vertically, no disappearing effect, instead, they
+just create the same collision effect as on the globe on the bottom of the
+screen."
+
+Reverted the wind system entirely (`WIND_ANGLE_RAD`/`WIND_DIR`/`WIND_TAN`/
+`windDriftOver`, the wind-compensated `randomSpawnX`/`spawnDropAbove`/
+`seedDrop` signatures, the x-drift in `updateDrop`'s fall/release cases, the
+sideways `blownPastRight` recycle check, `dropDirection`'s wind-derived
+return) back to plain vertical fall (`{x:0, y:1}`), matching the file's
+pre-overhaul behavior. Removed the fade system entirely (`FADE_ZONE_PX`,
+`dropFadeAlpha`) and its term inside `dropAlpha`, which now simplifies to
+tier base alpha x lifetime brightness variant x scene light x cursor light,
+no viewportHeight parameter needed.
+
+In its place: the same entry-ripple mechanism already used for globe
+crossings now also fires at the bottom of the screen. In the tick loop,
+before/after `dropPosition(drop, globe).y` is compared against
+`viewportHeight` around the `updateDrop` call (mirroring the existing
+`wasFalling`/`phase === 'wrap'` transition check just above it) — the
+instant a drop's head first crosses the visible bottom edge, `spawnRipple`
+fires there, reusing the same fixed-cap pool and fade-out ring rendering
+already built for globe-entry ripples. No new mechanism, no new draw path —
+every drop now gets a one-shot "splash" at the bottom instead of a fade,
+exactly mirroring what already happens when a drop meets the globe.
+
+Verification: `npm run build`/`oxlint` clean (5 pre-existing
+only-export-components warnings, one fewer than the prior entry since the
+exported `dropFadeAlpha` is gone). Full grep confirms zero remaining
+references to `WIND_*`, `FADE_ZONE_PX`, `dropFadeAlpha`, or
+`windDriftOver` anywhere in the file. Could not visually confirm in this
+sandbox (same `document.hidden`/frozen-rAF limitation as every prior
+GlobeRain entry).
+
+Status: done, pending live visual confirmation. Commit backdated to
+2026-07-31T19:00:00 per standing instruction.

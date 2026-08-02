@@ -7,34 +7,6 @@ import { resolveAccentColor } from '@/lib/resolveAccentColor'
 // edge of the screen — it's already off-screen when it (re)starts falling.
 const RESPAWN_MARGIN_PX = 60
 
-// One shared wind direction for every drop, instead of everything falling
-// dead vertical. A single consistent off-vertical angle across the whole
-// field is what makes rain read as weather rather than as a screensaver of
-// falling lines — the drops agree with each other about which way the wind
-// is blowing. ~16 degrees: enough to be unmistakably diagonal, shallow
-// enough that drops still visibly fall rather than streak sideways.
-const WIND_ANGLE_RAD = 0.28
-// Unit direction of travel, +x right / +y down. Precomputed once — this is
-// read for every drop on every frame.
-const WIND_DIR = { x: Math.sin(WIND_ANGLE_RAD), y: Math.cos(WIND_ANGLE_RAD) } as const
-const WIND_TAN = Math.tan(WIND_ANGLE_RAD)
-
-/** Horizontal drift a drop accumulates while falling `distanceY` pixels. */
-function windDriftOver(distanceY: number): number {
-  return distanceY * WIND_TAN
-}
-
-// A drop fades to fully transparent over this many pixels as it approaches
-// the bottom of the viewport, reaching alpha 0 exactly at the visible
-// bottom edge (see dropFadeAlpha). Widened from 90: at 220-420 px/s a 90px
-// ramp is only ~0.2-0.4 seconds, which reads as a cut rather than a
-// dissolve. 300px is ~0.7-1.4 seconds. This costs nothing now that the
-// fade is folded into the quantized alpha level the renderer already
-// batches on (see dropAlpha / ALPHA_LEVELS) — before that, every drop
-// inside this zone had to be drawn individually, and widening it would
-// have put roughly a third of the field on the per-drop path.
-const FADE_ZONE_PX = 300
-
 // Three depth tiers instead of independently randomized speed/width/length
 // per drop: correlating them (near = faster/wider/longer/brighter) is what
 // actually reads as depth/parallax rather than a flat wall of identical
@@ -155,31 +127,12 @@ function randomDrop(x: number, y: number): Drop {
   }
 }
 
-/** Picks a spawn x for a drop starting at `spawnY`, biased toward the globe's
- * own horizontal band (see GLOBE_BAND_SPAWN_FRACTION). Both branches are
- * wind-compensated: because every drop drifts right as it falls (WIND_DIR),
- * the uniform range extends LEFT of the viewport by exactly the drift this
- * drop will accumulate on its way to the bottom, or the left edge of the
- * screen would go bare while the right edge over-filled. Falls back to a
- * plain wind-compensated uniform pick once no globe has been measured yet. */
-function randomSpawnX(
-  viewportWidth: number,
-  viewportHeight: number,
-  spawnY: number,
-  globe: GlobeCircleLike | null,
-): number {
-  const overhang = windDriftOver(Math.max(0, viewportHeight - spawnY))
-
-  if (!globe || Math.random() >= GLOBE_BAND_SPAWN_FRACTION) {
-    return randomBetween(-overhang, viewportWidth)
-  }
-
-  // Biased spawns aim at where the globe WILL be relative to this drop by
-  // the time it gets there, not at where it is directly below the spawn
-  // point — without this shift the wind carries the whole biased population
-  // past the globe's right edge and the bias buys nothing.
-  const driftToGlobe = windDriftOver(Math.max(0, globe.centerY - spawnY))
-  const aimCenterX = globe.centerX - driftToGlobe
+/** Picks a spawn x biased toward the globe's own horizontal band (see
+ * GLOBE_BAND_SPAWN_FRACTION) so a majority of drops visibly cross its
+ * silhouette rather than scattering evenly across the full viewport. Falls
+ * back to a full-width uniform pick once no globe has been measured yet. */
+function randomSpawnX(viewportWidth: number, globe: GlobeCircleLike | null): number {
+  if (!globe || Math.random() >= GLOBE_BAND_SPAWN_FRACTION) return Math.random() * viewportWidth
 
   if (Math.random() < GLOBE_BAND_ANGLE_WEIGHTED_FRACTION) {
     // Sample the entry ANGLE uniformly (0 = dead center top, π/2 = the
@@ -188,26 +141,22 @@ function randomSpawnX(
     // lifts the edges instead of just widening the flat spread.
     const angle = Math.random() * (Math.PI / 2)
     const side: -1 | 1 = Math.random() < 0.5 ? -1 : 1
-    const x = aimCenterX + globe.radius * Math.sin(angle) * side
-    return Math.min(viewportWidth, Math.max(-overhang, x))
+    const x = globe.centerX + globe.radius * Math.sin(angle) * side
+    return Math.min(viewportWidth, Math.max(0, x))
   }
 
   const bandHalfWidth = globe.radius * GLOBE_BAND_RADIUS_MULTIPLIER
-  const min = Math.max(-overhang, aimCenterX - bandHalfWidth)
-  const max = Math.min(viewportWidth, aimCenterX + bandHalfWidth)
+  const min = Math.max(0, globe.centerX - bandHalfWidth)
+  const max = Math.min(viewportWidth, globe.centerX + bandHalfWidth)
   return randomBetween(min, max)
 }
 
 /** A fresh drop above the viewport, ready to fall in. Used both for the
  * initial pool (see seedDrop) and to recycle a drop that has fallen past
- * the bottom of the viewport (or been blown off its right edge). */
-export function spawnDropAbove(
-  viewportWidth: number,
-  viewportHeight: number,
-  globe: GlobeCircleLike | null = null,
-): Drop {
+ * the bottom of the viewport. */
+export function spawnDropAbove(viewportWidth: number, globe: GlobeCircleLike | null = null): Drop {
+  const x = randomSpawnX(viewportWidth, globe)
   const y = -RESPAWN_MARGIN_PX - Math.random() * RESPAWN_MARGIN_PX
-  const x = randomSpawnX(viewportWidth, viewportHeight, y, globe)
   return randomDrop(x, y)
 }
 
@@ -250,8 +199,8 @@ function isInsideGlobe(x: number, y: number, globe: GlobeCircleLike): boolean {
  * position happens to already be inside the globe's silhouette, the drop
  * starts directly in the 'wrap' phase. */
 export function seedDrop(viewportWidth: number, viewportHeight: number, globe: GlobeCircleLike | null): Drop {
+  const x = randomSpawnX(viewportWidth, globe)
   const y = randomBetween(-RESPAWN_MARGIN_PX, viewportHeight + RESPAWN_MARGIN_PX)
-  const x = randomSpawnX(viewportWidth, viewportHeight, y, globe)
   const drop = randomDrop(x, y)
   if (globe && isInsideGlobe(x, y, globe)) enterWrap(drop, x, y, globe)
   return drop
@@ -268,12 +217,10 @@ export function updateDrop(
 ): void {
   switch (drop.phase) {
     case 'fall': {
-      const nextX = drop.x + drop.speed * WIND_DIR.x * dt
-      const nextY = drop.y + drop.speed * WIND_DIR.y * dt
-      if (globe && isInsideGlobe(nextX, nextY, globe)) {
-        enterWrap(drop, nextX, nextY, globe)
+      const nextY = drop.y + drop.speed * dt
+      if (globe && isInsideGlobe(drop.x, nextY, globe)) {
+        enterWrap(drop, drop.x, nextY, globe)
       } else {
-        drop.x = nextX
         drop.y = nextY
       }
       break
@@ -296,21 +243,14 @@ export function updateDrop(
       break
     }
     case 'release': {
-      drop.x += drop.speed * WIND_DIR.x * dt
-      drop.y += drop.speed * WIND_DIR.y * dt
+      drop.y += drop.speed * dt
       break
     }
   }
 
-  const { x, y } = dropPosition(drop, globe)
-  // Wind means a drop can now leave the frame sideways as well as
-  // downward — without the x test those drops would keep being simulated
-  // (and keep being pushed further right) forever off-screen instead of
-  // being recycled.
-  const fellPastBottom = y - drop.length > viewportHeight + RESPAWN_MARGIN_PX
-  const blownPastRight = x - drop.length > viewportWidth + RESPAWN_MARGIN_PX
-  if (fellPastBottom || blownPastRight) {
-    Object.assign(drop, spawnDropAbove(viewportWidth, viewportHeight, globe))
+  const { y } = dropPosition(drop, globe)
+  if (y - drop.length > viewportHeight + RESPAWN_MARGIN_PX) {
+    Object.assign(drop, spawnDropAbove(viewportWidth, globe))
   }
 }
 
@@ -337,27 +277,7 @@ export function dropDirection(drop: Drop, globe: GlobeCircleLike | null): { x: n
     const len = Math.hypot(dx, dy) || 1
     return { x: dx / len, y: dy / len }
   }
-  return { x: WIND_DIR.x, y: WIND_DIR.y }
-}
-
-/** 1 while a drop is well above the bottom of the viewport, easing down
- * to 0 exactly at viewportHeight — see FADE_ZONE_PX. Drops below that (in
- * the RESPAWN_MARGIN_PX gap before actually being recycled, see
- * updateDrop) are already fully transparent, so no visible pop either way.
- * Takes the already-computed on-screen y rather than (drop, globe): the
- * render loop resolves dropPosition once per drop per frame anyway, and
- * re-deriving it in here was duplicate work on the hottest path.
- *
- * Smoothstep, not linear: 3t^2 - 2t^3 has zero derivative at BOTH t=0 and
- * t=1, so the fade neither switches on abruptly at the top of the zone nor
- * arrives at zero still moving — which is exactly what "more gradual"
- * means here. A linear ramp of the same length still has a visible corner
- * at each end no matter how long it is. */
-export function dropFadeAlpha(y: number, viewportHeight: number): number {
-  const fadeStart = viewportHeight - FADE_ZONE_PX
-  if (y <= fadeStart) return 1
-  const t = Math.min(1, (y - fadeStart) / FADE_ZONE_PX)
-  return 1 - t * t * (3 - 2 * t)
+  return { x: 0, y: 1 }
 }
 
 function hexToRgb(hex: string): [number, number, number] {
@@ -551,8 +471,8 @@ function cursorLightMul(x: number, y: number, cursor: { x: number; y: number } |
 // light most when the streak runs perpendicular to it, so brightness keys
 // off |cross(direction, light)| — 1 when perpendicular, 0 when aligned.
 //
-// For straight-falling drops this is a constant (they all share WIND_DIR),
-// which is the point: it is a global tone, not per-drop noise. The visible
+// For straight-falling drops this is a constant (they all fall straight
+// down), which is the point: it is a global tone, not per-drop noise. The visible
 // payoff is the WRAP phase, where a drop's direction sweeps through every
 // angle as it rides the globe's silhouette, so one side of the globe's rain
 // halo stays consistently brighter than the other. That replaces what the
@@ -577,32 +497,27 @@ function sceneLightMul(dir: { x: number; y: number }): number {
 // The number of discrete brightness steps a drop can land in on any given
 // frame. This is the SECOND (and last) batching dimension alongside depth
 // tier: everything that varies a drop's brightness — its own lifetime
-// variant, the bottom-edge fade, and the lighting — is multiplied together
-// and snapped to one of these levels, so all of it costs zero extra
-// buckets and zero extra draw calls. 8 is fine-grained enough that a drop
-// crossing the fade zone steps down invisibly (each step is 12.5% of alpha,
-// on shapes whose peak alpha is already under 0.9) and coarse enough that
-// the field never spreads across more buckets than there are meaningful
-// shades.
+// variant and the lighting — is multiplied together and snapped to one of
+// these levels, so all of it costs zero extra buckets and zero extra draw
+// calls. 8 is coarse enough that the field never spreads across more
+// buckets than there are meaningful shades.
 const ALPHA_LEVELS = 8
 
 /** Every brightness input for one drop on one frame, multiplied into a
  * single 0..1 value: the tier's base alpha, the drop's own lifetime
- * variant, the bottom-edge fade, the cursor light, and the fixed scene
- * light. Quantized by the caller — see ALPHA_LEVELS. Collapsing all of it
- * into one number here is what keeps the renderer's bucket key at
- * (depth tier, alpha level): lighting adds no batching dimension, no
- * per-frame re-sort, and no per-drop draw call. */
+ * variant, the cursor light, and the fixed scene light. Quantized by the
+ * caller — see ALPHA_LEVELS. Collapsing all of it into one number here is
+ * what keeps the renderer's bucket key at (depth tier, alpha level):
+ * lighting adds no batching dimension, no per-frame re-sort, and no
+ * per-drop draw call. */
 function dropAlpha(
   drop: Drop,
   pos: { x: number; y: number },
   dir: { x: number; y: number },
-  viewportHeight: number,
   cursor: { x: number; y: number } | null,
 ): number {
   const base = DEPTH_TIERS[drop.depth].baseAlpha * BRIGHTNESS_VARIANTS[drop.brightnessVariant]
-  const lit = base * sceneLightMul(dir) * cursorLightMul(pos.x, pos.y, cursor)
-  return Math.min(1, lit * dropFadeAlpha(pos.y, viewportHeight))
+  return Math.min(1, base * sceneLightMul(dir) * cursorLightMul(pos.x, pos.y, cursor))
 }
 
 /** Flat index into the preallocated bucket array. Level 0 means "invisible"
@@ -750,10 +665,20 @@ export function GlobeRain({ globeCircle, theme }: GlobeRainProps) {
         const drops = dropsRef.current
         for (const drop of drops) {
           const wasFalling = drop.phase === 'fall'
+          const wasAboveBottom = dropPosition(drop, globe).y < viewportHeight
           updateDrop(drop, dt, globe, viewportWidth, viewportHeight)
           if (wasFalling && drop.phase === 'wrap' && globe) {
             const entryPoint = dropPosition(drop, globe)
             spawnRipple(ripplesRef.current, entryPoint.x, entryPoint.y, now)
+          }
+          // The same collision cue as a globe entry, now also at the
+          // bottom of the screen instead of a fade-out: fires once, the
+          // instant a drop's head first reaches the visible bottom edge.
+          // No fade means nothing else marks that moment, so this is the
+          // only visual cue a drop is about to be recycled.
+          const afterPosition = dropPosition(drop, globe)
+          if (wasAboveBottom && afterPosition.y >= viewportHeight) {
+            spawnRipple(ripplesRef.current, afterPosition.x, viewportHeight, now)
           }
         }
 
@@ -771,7 +696,7 @@ export function GlobeRain({ globeCircle, theme }: GlobeRainProps) {
         for (const drop of drops) {
           const pos = dropPosition(drop, globe)
           const dir = dropDirection(drop, globe)
-          const level = Math.round(dropAlpha(drop, pos, dir, viewportHeight, cursor) * ALPHA_LEVELS)
+          const level = Math.round(dropAlpha(drop, pos, dir, cursor) * ALPHA_LEVELS)
           if (level <= 0) continue
           buckets[bucketIndex(drop.depth, level)].push(drop)
         }
