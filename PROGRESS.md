@@ -3973,3 +3973,77 @@ turn rather than a flat door, and the sequence ends with a brief fade
 rather than an instant pop.
 
 Status: done, pending user confirmation on the live motion.
+
+## 2026-08-06 (continued) — Tile transition rework: behind-the-globe stacking + physical tiles
+
+Started: user pushed back on the just-shipped tile-flip transition (a hand-drawn
+sketch + screenshot showing tiles slicing across the visible globe sphere) —
+"it should be a truly 3d transition that occurs behind the globe." Ran the
+`superpowers:brainstorming` skill per CLAUDE.md before touching code.
+
+Clarified via `AskUserQuestion`: tiles should sit behind the globe in the visual
+stack (globe stays static, doesn't animate itself); keep the existing 8x6 grid
+(not the sketch's literal 2-panel count); tiles should read as physically solid
+(real edge thickness + lighting), not flat opposing planes.
+
+Wrote and committed
+`docs/superpowers/specs/2026-08-06-tile-transition-behind-globe-design.md`.
+Confirmed via `GlobeView.tsx`/`cobe-globe.tsx` that the globe's canvas is
+transparent outside the sphere's silhouette (even border-radius:50% clipped) —
+so painting the tile grid underneath it masks the tiles for free, no clip-path
+needed.
+
+Dispatched an Opus planning agent against the spec (per the standing
+plan-with-Opus/implement-with-Sonnet convention). It found two real problems
+the spec missed:
+1. **Geometry**: the two new "edge" faces the spec called for would be
+   invisible — the existing "back" face isn't a second flat plane, it's
+   already the tile's full-depth left side (an L-shaped prism, not two
+   parallel cards). Kept the edge faces anyway (harmless, closes the box
+   correctly) but flagged in-code that they're geometrically inert for this
+   rotation range; the real fidelity gain is the lighting treatment alone.
+2. **Stacking conflict**: tiles-below-globe (so the sphere masks them)
+   structurally conflicts with tiles-above-BeadScene (to hide its WebGL
+   cold-start hole) conflicts with BeadScene-above-globe (a documented
+   decision so falling marbles read as landing in front of the globe, not
+   behind it) — no single DOM order satisfies all three. Asked the user via
+   `AskUserQuestion`; chose **keep beads-in-front-of-globe** (leave BeadScene
+   where it is, move only the tile grid). Accepted cost: on the select
+   transition, BeadScene's first painted frame can appear above the
+   still-flipping tiles instead of staying hidden under them; deselect is
+   unaffected.
+
+Implemented in `src/components/TileTransition.tsx` and `src/App.tsx`:
+- Moved `TileTransition`'s render call to sit immediately before the
+  `GlobeView` wrapper div (was rendered last); dropped its container class
+  from `z-40` to `z-0` (a positive z-index would repaint it above GlobeView's
+  z-index:auto wrapper regardless of DOM order — z-0/auto share a paint pass
+  ordered by DOM position, which is why this only works with z-0).
+- Added `FRONT_HIGHLIGHT`/`EDGE_SHADE` static gradient constants; layered
+  `FRONT_HIGHLIGHT` onto the front face's existing tint via `backgroundImage`;
+  added two new edge-face divs (`rotateY(90deg) translateZ(±halfWidthPx)`,
+  width `2*halfWidthPx`) with `EDGE_SHADE`, per the spec.
+- Rewrote the now-stale "overlay swallows clicks" comment to reflect that
+  GlobeView's pointer-handling wrapper now sits above the tile grid, so
+  clicks during a transition reach the globe — the existing mid-flight
+  retrigger path (`retriggered`/`isCoveringBack`) already handles that.
+- Added a geometry-note comment on the existing back face documenting the
+  L-shaped-prism finding, so it isn't re-misdiagnosed later.
+
+Verification: `npm run build` clean, `npx oxlint src` clean (only
+pre-existing unrelated warnings in `button.tsx`/`GlobeRain.tsx`/
+`dropdown.tsx`). Confirmed via live DOM inspection (`getComputedStyle`) that
+`TileTransition` correctly renders `null` when idle and that the GlobeView
+wrapper sits at `z-index: auto` immediately after where the tile grid renders.
+**Could not visually confirm the actual flip animation or interactive
+click-to-select** in this session — the Browser pane doesn't composite frames
+for screenshots (a limitation noted since the very first session on this
+project), and synthetic pointer events against the cobe canvas's marker
+hit-testing didn't reliably land a selection either (continuous
+auto-rotation makes computed label coordinates stale by the time a click
+dispatches). User should confirm live in their own browser: that tiles now
+visibly flip in the margins around the sphere without ever crossing it, and
+that both transition directions still look right.
+
+Status: done (code + verification that doesn't require live visual
+confirmation). Committed with the standing backdated timestamp.

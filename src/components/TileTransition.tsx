@@ -53,6 +53,23 @@ const FLIP_EASING = 'cubic-bezier(0.45, 0, 0.55, 1)'
 // that happens (see `phase === 'idle'`), so this value is never actually
 // painted; it just needs to exist as a starting default for useState.
 const FALLBACK_HALF_WIDTH_PX = 90
+// Static per-face lighting (see the 2026-08-06 spec's "Physical tiles:
+// lighting"). No per-frame JS -- a fixed gradient per face is enough to
+// sell "distinct surfaces catching light differently," the same job the
+// front/back faces' differing tints (bg-muted/55 vs bg-muted/40) already
+// do, just more legibly. Layered as `background-image` ON TOP of each
+// face's existing `bg-muted/*` background-color, so the eventual texture
+// swap is still the one-line change the 2026-08-05 spec promised: replace
+// this value with `url(/textures/tile.jpg)` and the tint keeps working as
+// a fallback underneath it.
+const FRONT_HIGHLIGHT = 'linear-gradient(105deg, oklch(1 0 0 / 8%), transparent 60%)'
+// Edge faces are the "shadowed side": a flat darken, no gradient. A plain
+// black overlay rather than a heavier bg-muted/* class, because --muted is
+// LIGHTER than --background in dark mode (see src/index.css) -- raising
+// muted's alpha there would make the rim brighter, backwards from what a
+// shadowed edge should look like. A neutral black layer darkens correctly
+// in both themes. Eyeball-tuned starting point, adjustable later.
+const EDGE_SHADE = 'linear-gradient(oklch(0 0 0 / 12%), oklch(0 0 0 / 12%))'
 
 interface Tile {
   id: string
@@ -150,13 +167,27 @@ export function TileTransition({ active }: TileTransitionProps) {
     typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
 
   return (
-    // No pointer-events-none: the overlay intentionally swallows clicks
-    // for its ~1.1s lifetime -- that's the entire answer to "user clicks a
-    // different city while the transition is still mid-flight," for one
-    // CSS property. See the design spec's open questions.
+    // z-0, NOT a positive z-index: `z-index: 0` and `z-index: auto`
+    // positioned elements paint in the SAME pass, in tree order, while any
+    // positive value paints in a strictly later pass above all of them.
+    // GlobeView's wrapper in App.tsx is `absolute inset-0` with z-index
+    // auto, so anything above z-0 here would hoist this grid straight back
+    // on top of the globe and undo the whole point of sitting behind it.
+    // Ordering within that shared paint pass is by DOM position, which is
+    // why the render call in App.tsx must stay immediately before the
+    // GlobeView wrapper -- see the comment there.
+    //
+    // No pointer-events-none, but that no longer means much: since
+    // 2026-08-06 this grid sits BELOW GlobeView's full-viewport
+    // pointer-handling wrapper, so clicks during the transition reach the
+    // globe rather than being swallowed here. That's deliberate -- the
+    // mid-flight retrigger path (`retriggered` / `isCoveringBack` below)
+    // is what handles a second selection change mid-cycle, and it
+    // predates this change. See
+    // docs/superpowers/specs/2026-08-06-tile-transition-behind-globe-design.md.
     <div
       aria-hidden="true"
-      className="fixed inset-0 z-40 grid border-l border-t border-border transition-opacity ease-out"
+      className="fixed inset-0 z-0 grid border-l border-t border-border transition-opacity ease-out"
       style={{
         gridTemplateColumns: `repeat(${COLUMNS}, 1fr)`,
         gridTemplateRows: `repeat(${ROWS}, 1fr)`,
@@ -233,7 +264,11 @@ export function TileTransition({ active }: TileTransitionProps) {
                   backgroundSize: 'cover', backgroundPosition: 'center'. */}
               <div
                 className="absolute inset-0 border-r border-b border-border bg-muted/55"
-                style={{ backfaceVisibility: 'hidden', transform: `translateZ(${halfWidthPx}px)` }}
+                style={{
+                  backfaceVisibility: 'hidden',
+                  transform: `translateZ(${halfWidthPx}px)`,
+                  backgroundImage: FRONT_HIGHLIGHT,
+                }}
               />
               {/* Back face: briefly visible as the tile turns, settles
                   facing the viewer once the flip completes -- still a
@@ -243,11 +278,63 @@ export function TileTransition({ active }: TileTransitionProps) {
                   being transparent). Slightly different opacity than the
                   front face so the two faces read as distinct surfaces
                   catching light differently, like a real card. */}
+              {/* Geometry note (verified 2026-08-06): `rotateY(-90deg)
+                  translateZ(h)` maps this div's own x-axis onto the world
+                  Z axis, so it lands on the plane x = -h spanning
+                  z in [-h, +h] -- i.e. this is the tile's full-depth LEFT
+                  SIDE, not a plane parallel to the front face. Combined
+                  with the front face it forms an L-shaped quarter-prism,
+                  and since a positive rotateY recedes the right edge,
+                  these two are the only planes that can ever face the
+                  viewer through a 0deg -> +90deg turn. There is no gap
+                  between them to fill; the rim thickness the tile reads
+                  with IS this face. */}
               <div
                 className="absolute inset-0 border-r border-b border-border bg-muted/40"
                 style={{
                   backfaceVisibility: 'hidden',
                   transform: `rotateY(-90deg) translateZ(${halfWidthPx}px)`,
+                }}
+              />
+              {/* Edge faces -- the rim of the same rigid assembly (inside
+                  the rotating wrapper, so they turn with it), closing the
+                  prism's two remaining sides so the tile is a solid box
+                  rather than an open L. Own pre-transform width is the
+                  tile's full depth (2 * halfWidthPx), height is 100%;
+                  after the local rotateY(90deg) that width axis maps onto
+                  the world Z axis. Centered via left/marginLeft (layout,
+                  not transform) so transform-origin stays the cell center.
+
+                  Both are correct-but-invisible for THIS animation, and
+                  that's expected, not a bug: the right plane's outward
+                  normal points away from the per-cell perspective origin
+                  at every angle in 0..90deg, and the left plane is already
+                  occupied by the back face above (which carries the
+                  outward-facing normal there). They exist so the solid is
+                  actually closed -- if the flip range or rotation sign
+                  ever changes, these are what keep it from showing a
+                  hollow interior. See the 2026-08-06 spec, "Physical
+                  tiles: real edge thickness." */}
+              <div
+                className="absolute inset-y-0 bg-muted/70"
+                style={{
+                  left: '50%',
+                  marginLeft: `-${halfWidthPx}px`,
+                  width: `${halfWidthPx * 2}px`,
+                  backfaceVisibility: 'hidden',
+                  transform: `rotateY(90deg) translateZ(${halfWidthPx}px)`,
+                  backgroundImage: EDGE_SHADE,
+                }}
+              />
+              <div
+                className="absolute inset-y-0 bg-muted/70"
+                style={{
+                  left: '50%',
+                  marginLeft: `-${halfWidthPx}px`,
+                  width: `${halfWidthPx * 2}px`,
+                  backfaceVisibility: 'hidden',
+                  transform: `rotateY(90deg) translateZ(-${halfWidthPx}px)`,
+                  backgroundImage: EDGE_SHADE,
                 }}
               />
             </div>
