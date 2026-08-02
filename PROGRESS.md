@@ -2822,3 +2822,27 @@ context-loss warnings, and resize/theme-flip behave.
 
 Status: done, pending live visual confirmation. Commit backdated to
 2026-07-31T19:00:00 per standing instruction.
+
+## 2026-08-03 (continued) — GlassRain: sped up droplet motion [inline]
+
+User asked "isn't the rain supposed to move?" after checking it live. Verified
+via a standalone JS port of the shader's exact droplet-generation math (Node
+script, not the app itself) that the heightfield genuinely does change over
+time — this was not a frozen/dead shader — but at `DEFAULT_SPEED = 0.25`
+combined with the shader's own built-in `t = u_time * .2 * u_speed` factor,
+a full droplet cycle took roughly 20 real seconds, far too slow to read as
+motion on a normal glance.
+
+Bumped `DEFAULT_SPEED` in `src/components/GlassRain.tsx` from 0.25 to 1.0 —
+confirmed via the same JS port that this brings a full cycle down to roughly
+5 seconds. "Occasional drip, not a downpour" (the medium-fidelity intent) is
+still achieved via `fallWeight` (derived from `u_intensity`) keeping the
+falling layer sparse, not by slowing time itself — that was the wrong knob.
+
+Build/`oxlint` clean. Could not visually re-confirm in this sandbox (same
+0x0-viewport limitation as the previous entry), but the underlying math is
+now verified to move at a reasonable pace independent of any rendering
+limitation.
+
+Status: done, pending live visual confirmation. Commit backdated to
+2026-07-31T19:00:00 per standing instruction.

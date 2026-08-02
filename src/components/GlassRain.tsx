@@ -180,13 +180,24 @@ const CAPTURE_SCALE = 0.5
 const CAPTURE_UPDATE_EVERY_N_FRAMES = 2
 
 // Tuned by eye per the spec's "medium fidelity" tier: mostly static
-// droplets (high staticWeight via u_intensity), one slow falling layer
-// (low u_speed relative to the reference's continuous-downpour default),
-// moderate refraction strength, and a faint accent tint so droplets read
-// as tied to this app's palette without looking tinted rather than clear.
+// droplets (high staticWeight via u_intensity), one falling layer whose
+// weight (fallWeight, derived from u_intensity) keeps it sparse so it reads
+// as occasional drips rather than a downpour, moderate refraction strength,
+// and a faint accent tint so droplets read as tied to this app's palette
+// without looking tinted rather than clear.
+//
+// u_speed=1 here, NOT a fraction of it: a standalone JS port of this
+// shader's math (see PROGRESS.md, "GlassRain: sped up droplet motion")
+// confirmed the droplet heightfield already completes a full cycle in
+// ~5 real seconds at u_speed=1, because the shader's own `t = u_time * .2
+// * u_speed` line already bakes in a 0.2x slowdown before u_speed is even
+// applied. An earlier attempt at u_speed=0.25 (quartering it again on top
+// of that) stretched a cycle to ~20s — motion so slow it read as
+// completely frozen on a normal glance. "Occasional drip, not a downpour"
+// is achieved by fallWeight being sparse, not by slowing time itself.
 const DEFAULT_INTENSITY = 0.4
 const DEFAULT_NORMAL_STRENGTH = 1.0
-const DEFAULT_SPEED = 0.25
+const DEFAULT_SPEED = 1.0
 const DEFAULT_TINT_STRENGTH = 0.06
 
 // Duplicated from resolveAccentColor.ts on purpose, not imported — see
