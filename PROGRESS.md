@@ -4571,3 +4571,55 @@ available in this environment to shrink it; worth revisiting if load
 time matters for the submission.
 
 Status: done. Committed with the standing backdated timestamp.
+
+## 2026-08-07 (continued) — Brick texture scoped to bead scene only, added behind the globe too
+
+User corrected the previous round: the brick swap should only apply to
+the bead-scene atmosphere overlay ("after the beads"), not the idle
+globe-view background, which should keep the original glass photo. Also
+asked to additionally implement the brick texture "behind the globe" --
+read as BeadScene's own canvas-drawn backdrop (the plane that sits
+behind the beads/globe-composite in the 3D scene), not the DOM overlay
+already added last round.
+
+**Scoping the DOM layer** (`dot-matrix-background.tsx`): `AtmosphereLayers`
+now takes a `photoUrl` prop instead of a hardcoded url. `DotMatrixBackground`
+passes `/textures/glass.jpg` (reverted), `DotMatrixAtmosphere` passes
+`/textures/brick.jpg` (unchanged from last round). Structure/filter/
+blend/opacity/mask stay shared and untouched.
+
+**Adding it to BeadScene's canvas backdrop** (`BeadScene.tsx`): this
+backdrop is a raw `<canvas>` feeding a `THREE.CanvasTexture`, not a DOM
+element -- there's no `background-image`/`filter`/`mix-blend-mode` to set
+directly, so the same treatment (grayscale/contrast/brightness filter,
+soft-light blend, 23% opacity) had to be reproduced with Canvas 2D calls
+(`ctx.filter`, `ctx.globalCompositeOperation = 'soft-light'`,
+`ctx.globalAlpha`) and a manual `drawImageCover` helper (Canvas has no
+built-in `background-size: cover` equivalent). New wrinkle this file
+hasn't had before: the texture photo has to be loaded asynchronously
+(`new Image()`), but `useBackdropBase` is a synchronous `useMemo` that
+can't await -- added a module-level singleton loader
+(`loadBackdropTextureImage`, shared across every BeadScene mount so the
+image is only ever fetched/decoded once for the session) plus a
+`useBackdropTextureImage()` hook that resolves to `null` until the image
+is ready. `useBackdropBase` gained a `textureImage` parameter and draws
+it (soft-light blended over the base+dots composite, matching the DOM
+layer's own dots-then-sheen-then-photo order) only once it's non-null --
+the very first BeadScene mount in a session draws one memo cycle without
+the texture (base+dots only) before the image resolves and it redraws;
+every mount after that has the image already cached, so it's there from
+the first frame. Still only recomputed on theme/resize/image-ready, never
+per frame -- the one-time-draw discipline this backdrop has kept since
+this session's very first pass on it is unchanged.
+
+Verification: `npm run build` clean, `npx oxlint src` clean (same
+pre-existing unrelated warnings). Confirmed live via
+`read_network_requests`: the idle globe view now fetches `glass.jpg`
+again (reverted correctly), and `brick.jpg` loads once (200, then 304 on
+repeat) for the BeadScene backdrop's own preloader. No console errors.
+Visual read (contrast against the dot pattern once composited, and
+whether the async cold-start gap is ever perceptible) needs a live check
+in the user's own browser, same as the rest of this session's WebGL/
+canvas work.
+
+Status: done. Committed with the standing backdated timestamp.

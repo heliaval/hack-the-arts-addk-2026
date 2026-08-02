@@ -141,10 +141,20 @@ function useSheenFlicker(sheenRef: RefObject<HTMLDivElement | null>) {
 }
 
 // The two cursor-reactive layers that make up the "atmosphere" proper: an
-// offset glass-sheen highlight and a real glass-texture photo revealed
-// inside it. Shared verbatim between the background layer and the
-// bead-scene overlay so the two can never drift.
-function AtmosphereLayers({ sheenRef }: { sheenRef: RefObject<HTMLDivElement | null> }) {
+// offset glass-sheen highlight and a real texture photo revealed inside
+// it. Shared verbatim (structure/filter/blend/opacity/mask) between the
+// background layer and the bead-scene overlay so the two can never drift
+// -- only `photoUrl` differs between call sites, per explicit request
+// that the brick photo (2026-08-07, "an interesting new texture") apply
+// ONLY to the bead-scene overlay, not the idle globe-view background,
+// which keeps the original glass photo.
+function AtmosphereLayers({
+  sheenRef,
+  photoUrl,
+}: {
+  sheenRef: RefObject<HTMLDivElement | null>
+  photoUrl: string
+}) {
   return (
     <>
       <div
@@ -161,19 +171,14 @@ function AtmosphereLayers({ sheenRef }: { sheenRef: RefObject<HTMLDivElement | n
           so the two read as one lit patch rather than two separate
           circles. Position/size are fixed, not tied to --mx/--my, so the
           pane itself stays stationary while the reveal window slides over
-          it.
-
-          Swapped from a glass photo to a brick photo (2026-08-07, "an
-          interesting new texture", same treatment as before) -- the
-          filter/blend/opacity/mask are untouched on purpose. grayscale +
-          soft-light at 23% is what keeps either photo reading as a subtle
-          material grain the cursor reveals, not a literal picture of glass
-          or brick; the specific source photo is incidental to that
-          treatment, which is why swapping it was a one-line change. */}
+          it. grayscale + soft-light at 23% is what keeps `photoUrl`
+          reading as a subtle material grain the cursor reveals, not a
+          literal picture -- the specific source photo is incidental to
+          that treatment. */}
       <div
         className="absolute inset-0"
         style={{
-          backgroundImage: 'url(/textures/brick.jpg)',
+          backgroundImage: `url(${photoUrl})`,
           backgroundSize: 'cover',
           backgroundPosition: 'center',
           filter: 'grayscale(1) contrast(1.5) brightness(1.1)',
@@ -229,7 +234,7 @@ export function DotMatrixBackground() {
           WebkitMaskComposite: 'source-over',
         }}
       />
-      <AtmosphereLayers sheenRef={sheenRef} />
+      <AtmosphereLayers sheenRef={sheenRef} photoUrl="/textures/glass.jpg" />
     </div>
   )
 }
@@ -277,7 +282,7 @@ export function DotMatrixAtmosphere() {
       className="pointer-events-none fixed inset-0"
       style={{ '--mx': '-9999px', '--my': '-9999px' } as React.CSSProperties}
     >
-      <AtmosphereLayers sheenRef={sheenRef} />
+      <AtmosphereLayers sheenRef={sheenRef} photoUrl="/textures/brick.jpg" />
     </div>
   )
 }

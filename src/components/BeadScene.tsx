@@ -502,6 +502,76 @@ const BACKDROP_COLORS = {
   dark: { base: '#0d0d0d', dot: '#eeeeee' },
 } as const
 
+// Same treatment as the DOM atmosphere layer's texture photo
+// (AtmosphereLayers in dot-matrix-background.tsx: grayscale + contrast/
+// brightness filter, soft-light blend, 23% opacity) reproduced with
+// Canvas 2D calls, for the same reason the dot grid above is -- this
+// backdrop is a raw <canvas> feeding a THREE.CanvasTexture, no DOM
+// element to put a CSS filter/background-image on. "Behind the globe"
+// per explicit request, i.e. this backdrop specifically, not the DOM
+// overlay (DotMatrixAtmosphere) that already sits above the beads.
+const BACKDROP_TEXTURE_URL = '/textures/brick.jpg'
+const BACKDROP_TEXTURE_FILTER = 'grayscale(1) contrast(1.5) brightness(1.1)'
+const BACKDROP_TEXTURE_OPACITY = 0.23
+
+// Module-level singleton, not per-component-instance: the image only
+// ever needs to be fetched/decoded once for the whole app lifetime, and
+// multiple BeadScene mounts (one per country selection, see App.tsx's
+// `key={selectedIso3-selectedYear}`) must all reuse the same decoded
+// <img> rather than each re-fetching it.
+let backdropTextureImagePromise: Promise<HTMLImageElement> | null = null
+function loadBackdropTextureImage(): Promise<HTMLImageElement> {
+  if (!backdropTextureImagePromise) {
+    backdropTextureImagePromise = new Promise((resolve, reject) => {
+      const img = new Image()
+      img.onload = () => resolve(img)
+      img.onerror = () => reject(new Error(`failed to load ${BACKDROP_TEXTURE_URL}`))
+      img.src = BACKDROP_TEXTURE_URL
+    })
+  }
+  return backdropTextureImagePromise
+}
+
+// Returns null until the image has actually decoded -- the very first
+// BeadScene mount of a session will draw its backdrop WITHOUT the
+// texture layer (base + dots only) for one memo cycle, then redraw once
+// this resolves. Every mount after that resolves synchronously from the
+// cached promise before the first paint, since the image is already
+// decoded. Acceptable: this is a one-time, one-frame cold-start gap, not
+// a recurring cost, and BeadScene already has its own cold-start lead-in
+// (see TileTransition's LEAD_IN_FORWARD_MS) that this comfortably fits
+// inside.
+function useBackdropTextureImage(): HTMLImageElement | null {
+  const [image, setImage] = useState<HTMLImageElement | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    loadBackdropTextureImage()
+      .then((img) => {
+        if (!cancelled) setImage(img)
+      })
+      .catch(() => {
+        // Missing texture degrades to "no texture layer", not a crash --
+        // same fallback the one-memo-cycle cold-start gap above already
+        // exercises.
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+  return image
+}
+
+// Draws `img` into the current path/rect as CSS `background-size: cover`
+// would: scaled up (never down) just enough that the shorter axis exactly
+// fills its target dimension, centered, cropping the overflow on the
+// longer axis. Canvas has no built-in equivalent of `background-size`.
+function drawImageCover(ctx: CanvasRenderingContext2D, img: HTMLImageElement, w: number, h: number) {
+  const scale = Math.max(w / img.width, h / img.height)
+  const dw = img.width * scale
+  const dh = img.height * scale
+  ctx.drawImage(img, (w - dw) / 2, (h - dh) / 2, dw, dh)
+}
+
 // Static base only (the app's dot-matrix texture) -- memoized on
 // theme/viewport size alone, so it is NOT rebuilt every time the globe
 // rotates or the circle moves a pixel during layout. The live globe is
@@ -520,7 +590,12 @@ const BACKDROP_COLORS = {
 // viewport resize), never per frame: Backdrop wraps the returned canvas
 // in a CanvasTexture that uploads on construction and never has
 // needsUpdate set again. Keep it that way.
-function useBackdropBase(theme: 'light' | 'dark', width: number, height: number) {
+function useBackdropBase(
+  theme: 'light' | 'dark',
+  width: number,
+  height: number,
+  textureImage: HTMLImageElement | null,
+) {
   return useMemo(() => {
     if (width <= 0 || height <= 0) return null
     const canvas = document.createElement('canvas')
@@ -569,12 +644,26 @@ function useBackdropBase(theme: 'light' | 'dark', width: number, height: number)
         ctx.globalAlpha = 1
       }
     }
+    // Texture photo, soft-light blended over the base+dots composite so
+    // far -- same layering order as the DOM atmosphere layer (dots, then
+    // sheen, then photo on top). `ctx.filter` + `globalCompositeOperation`
+    // are the Canvas 2D equivalents of the DOM layer's `filter` and
+    // `mixBlendMode`; both are reset via save/restore immediately after,
+    // same discipline as the globalAlpha reset above.
+    if (textureImage) {
+      ctx.save()
+      ctx.filter = BACKDROP_TEXTURE_FILTER
+      ctx.globalCompositeOperation = 'soft-light'
+      ctx.globalAlpha = BACKDROP_TEXTURE_OPACITY
+      drawImageCover(ctx, textureImage, w, h)
+      ctx.restore()
+    }
     // The bokeh highlights that used to live here now live in the
     // Lightformer rig (BeadEnvironment) instead — same illuminating effect
     // on the beads, but no longer a shape visible directly in this backdrop.
     // See docs/superpowers/specs/2026-08-01-hidden-backdrop-glow-design.md.
     return canvas
-  }, [theme, width, height])
+  }, [theme, width, height, textureImage])
 }
 
 // Every other frame only (~30fps at a 60fps display) — the globe rotates
@@ -608,7 +697,8 @@ const Backdrop = memo(function Backdrop({
   globeElement: HTMLCanvasElement | null
 }) {
   const { width, height } = useThree((state) => state.size)
-  const base = useBackdropBase(theme, width, height)
+  const backdropTextureImage = useBackdropTextureImage()
+  const base = useBackdropBase(theme, width, height, backdropTextureImage)
 
   const gradientTexture = useMemo(() => {
     if (!base) return null
