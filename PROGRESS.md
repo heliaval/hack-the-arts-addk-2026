@@ -2913,3 +2913,15 @@ GLSL block in this file.
 
 Status: done, pending live visual confirmation. Commit backdated to
 2026-07-31T19:00:00 per standing instruction.
+
+## 2026-08-04 (continued) — Revert to GlobeRain [inline]
+
+User tried GlassRain live and said "it's alright, can you revert to the
+previous rain type?" — reverted the two-line App.tsx swap back to GlobeRain,
+exactly as designed for by GlassRain's explicit reversibility requirement.
+`GlassRain.tsx` itself is left in the repo, untouched and unused, in case it's
+worth revisiting later.
+
+Build/`oxlint` clean.
+
+Status: done. Commit backdated to 2026-07-31T19:00:00 per standing instruction.
