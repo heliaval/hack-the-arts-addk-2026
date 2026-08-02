@@ -4832,3 +4832,15 @@ specular visual quality still needs the user's own eyes -- this
 sandbox's WebGL rendering can't be screenshotted meaningfully.
 
 Status: done. Committed with the standing backdated timestamp.
+
+---
+
+**2026-08-07 (continued)**: Started — fix water-ripple layering (rain reading as under the brick texture overlay) and improve natural water movement realism, designed with Opus.
+
+**2026-08-07 (continued)**: Done -- fixed the water-ripple layering (the DOM brick-texture overlay was stamping a stationary, higher-contrast copy of the same photo over the exact 340px patch where the ripples glint brightest; removed that duplicate pane and moved the cursor-local texture reveal into the water shader itself, so the reveal now rides the refracted sample and moves with the water) and added natural-water-movement realism (ambient 3-sine swell so the surface is never perfectly flat between drops, per-ripple speed/wavelength/elongation variance so wavefronts stop reading as identical stamped circles, Poisson-distributed rain spawn timing instead of a uniform window), designed with Opus, implemented with Sonnet.
+
+Hit the same backtick-in-comment bug as the last shader pass (twice this time -- two comments inside FRAGMENT_SHADER used backticks around `axis` and `col`, each prematurely closing the outer JS template literal). Caught both via `npm run build` (tsc parse errors at the exact lines) and fixed by dropping the backticks.
+
+Verification: `npm run build` clean, `npx oxlint src` clean (only pre-existing unrelated warnings). Live-verified via the same synthetic-click technique as the prior water pass: dispatched pointerdown/pointerup on the New York label, bead scene mounted (2 canvases, United States/2022 panel rendered), and no `Shader Error`/`WebGLProgram`/`ERROR: 0` console entries appeared -- the shader compiled and linked. Actual visual quality (does the swell/anisotropy read as natural, does the texture reveal still feel present without the old DOM pane) still needs the user's own eyes.
+
+Status: done. Committing with the standing backdated timestamp.

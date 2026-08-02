@@ -141,21 +141,41 @@ function useSheenFlicker(sheenRef: RefObject<HTMLDivElement | null>) {
   }, [sheenRef])
 }
 
-// The two cursor-reactive layers that make up the "atmosphere" proper: an
-// offset glass-sheen highlight and a real texture photo revealed inside
-// it. Shared verbatim (structure/filter/blend/opacity/mask) between the
-// background layer and the bead-scene overlay so the two can never drift
-// -- only `photoUrl` differs between call sites, per explicit request
-// that the brick photo (2026-08-07, "an interesting new texture") apply
-// ONLY to the bead-scene overlay, not the idle globe-view background,
-// which keeps the original glass photo.
+// The cursor-reactive "atmosphere": an offset glass-sheen highlight, and
+// optionally a real texture photo revealed inside it.
+//
+// OVERRIDES the previous "shared verbatim (structure/filter/blend/opacity/
+// mask) between the background layer and the bead-scene overlay so the two
+// can never drift" note. That invariant assumed the two call sites are
+// symmetric. They no longer are, in what sits UNDERNEATH them:
+//
+//  - DotMatrixBackground's sheen floats over plain DOM. Its photo pane is
+//    the only texture in that view, and it keeps `/textures/glass.jpg`
+//    exactly as before -- nothing about the idle globe view changes.
+//  - DotMatrixAtmosphere's sheen sits over BeadScene's water plane, which
+//    ALREADY carries the same brick photo baked into its own base canvas
+//    (BACKDROP_TEXTURE_URL / BACKDROP_TEXTURE_OPACITY in BeadScene.tsx) and
+//    refracts it per ripple. A second, stationary, higher-contrast copy of
+//    that same photo stamped on top was the "the texture is sitting on top
+//    of the rain" report: the one region where the ripples are brightest
+//    (this 340px patch, which WaterSurface's own specSheen lobe and
+//    SHEEN_RADIUS_PX are tuned to match) was also the one region wearing a
+//    motionless brick film. The cursor-local texture reveal now happens
+//    inside WaterSurface's fragment shader instead (TEX_REVEAL_GAIN /
+//    u_pivot), where it amplifies the ALREADY-REFRACTED sample and
+//    therefore moves with the water.
+//
+// So `photoUrl` is now optional rather than required, and that is the only
+// axis on which the two call sites are allowed to differ -- everything else
+// here stays shared, same as before.
 function AtmosphereLayers({
   sheenRef,
   photoUrl,
   circle,
 }: {
   sheenRef: RefObject<HTMLDivElement | null>
-  photoUrl: string
+  /** Omit to render the sheen alone (see the note above). */
+  photoUrl?: string
   /** The globe's live on-screen circle, or null/omitted when this layer
    * doesn't need to avoid it. Passed by DotMatrixAtmosphere (the
    * bead-scene overlay), NOT DotMatrixBackground (the idle globe view) --
@@ -205,21 +225,28 @@ function AtmosphereLayers({
           it. grayscale + soft-light at 23% is what keeps `photoUrl`
           reading as a subtle material grain the cursor reveals, not a
           literal picture -- the specific source photo is incidental to
-          that treatment. */}
-      <div
-        className="absolute inset-0"
-        style={{
-          backgroundImage: `url(${photoUrl})`,
-          backgroundSize: 'cover',
-          backgroundPosition: 'center',
-          filter: 'grayscale(1) contrast(1.5) brightness(1.1)',
-          mixBlendMode: 'soft-light',
-          opacity: 0.23,
-          maskImage: 'radial-gradient(circle 340px at var(--mx) var(--my), #000 0%, transparent 70%)',
-          WebkitMaskImage:
-            'radial-gradient(circle 340px at var(--mx) var(--my), #000 0%, transparent 70%)',
-        }}
-      />
+          that treatment.
+
+          Rendered only when a photoUrl is supplied: over the bead scene
+          this pane is deliberately absent, because the water plane under
+          it already refracts the same photo. See the component note above. */}
+      {photoUrl && (
+        <div
+          className="absolute inset-0"
+          style={{
+            backgroundImage: `url(${photoUrl})`,
+            backgroundSize: 'cover',
+            backgroundPosition: 'center',
+            filter: 'grayscale(1) contrast(1.5) brightness(1.1)',
+            mixBlendMode: 'soft-light',
+            opacity: 0.23,
+            maskImage:
+              'radial-gradient(circle 340px at var(--mx) var(--my), #000 0%, transparent 70%)',
+            WebkitMaskImage:
+              'radial-gradient(circle 340px at var(--mx) var(--my), #000 0%, transparent 70%)',
+          }}
+        />
+      )}
     </>
   )
 
@@ -324,7 +351,10 @@ export function DotMatrixAtmosphere({ circle }: { circle: GlobeCircle | null }) 
       className="pointer-events-none fixed inset-0"
       style={{ '--mx': '-9999px', '--my': '-9999px' } as React.CSSProperties}
     >
-      <AtmosphereLayers sheenRef={sheenRef} photoUrl="/textures/brick.jpg" circle={circle} />
+      {/* No photoUrl: the brick photo lives in the water plane's own base
+          canvas and is revealed through its refraction + TEX_REVEAL_GAIN
+          (WaterSurface.tsx), not stamped on top of it from here. */}
+      <AtmosphereLayers sheenRef={sheenRef} circle={circle} />
     </div>
   )
 }
