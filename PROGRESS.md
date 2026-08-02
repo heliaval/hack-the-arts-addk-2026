@@ -2697,3 +2697,18 @@ Verified live via computed style: sheen's radial-gradient center matches the
 tracked cursor position exactly (no offset). Build/`oxlint` clean.
 
 Status: done. Commit backdated to 2026-07-31T19:00:00 per standing instruction.
+
+## 2026-08-03 (continued) — Dot-matrix background: sheen made circular [inline]
+
+User asked why the illuminated area wasn't circular. Root cause: the dot-reveal
+mask was genuinely circular (`circle` keyword forces a true circle regardless of
+box aspect ratio), but the sheen was still an `ellipse 420px 260px` — wider than
+tall, a leftover from when it was deliberately offset to look like an
+angled reflection. Now that it's centered on the cursor (previous entry), the
+elliptical shape just distorted the combined glow into an oval instead. Changed
+to `circle 260px` so it matches the dots' circular footprint.
+
+Verified live via computed style: sheen's gradient now reports a single-radius
+`circle 260px`. Build/`oxlint` clean.
+
+Status: done. Commit backdated to 2026-07-31T19:00:00 per standing instruction.
