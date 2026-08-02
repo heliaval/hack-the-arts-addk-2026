@@ -19,8 +19,8 @@ import type { GlobeCircle } from '@/components/ui/cobe-globe'
 // LEAD_IN_FORWARD_MS is a starting estimate for that cold-start cost, not
 // a measured value -- if a transparent-hole flash is ever visible on a
 // cold selection, this is the first constant to raise.
-const COLUMNS = 8
-const ROWS = 6
+const COLUMNS = 4
+const ROWS = 3
 const LEAD_IN_FORWARD_MS = 220
 const LEAD_IN_REVERSE_MS = 180
 const TILE_FLIP_MS = 460
@@ -41,29 +41,21 @@ const TRAILING_SLACK_MS = 80
 // -- snapping every tile back to flat uniformly reads better than
 // continuing to honor the forward sweep's per-tile delays in reverse.
 const RETRIGGER_COVER_MS = 220
-// Deliberately NOT cube-flip-toggle's overshoot easing
-// (cubic-bezier(0.34, 1.56, 0.64, 1)): backfaceVisibility hides each face
-// at 90deg, which that curve only reaches ~45% of the way through the
-// duration -- the back half of the animation (including the springy
-// settle it exists for) would happen to an already-invisible face.
-// Symmetric ease-in-out instead, so the whole visible ramp (0-90deg) is
-// spread across the full duration.
-const FLIP_EASING = 'cubic-bezier(0.45, 0, 0.55, 1)'
+// Matches cube-flip-toggle's own overshoot easing, per explicit request to
+// make this read as the same mechanical "bounce" as that button. An
+// earlier version of this file used a symmetric ease-in-out instead,
+// reasoning that backfaceVisibility hides each face at 90deg before the
+// curve's springy settle plays out -- true, but that settle happens
+// entirely past the invisibility threshold (the curve overshoots the
+// target then eases back DOWN to it, never re-crossing below), so nothing
+// ever renders during it -- same geometry as cube-flip-toggle's own
+// rotateX(-90deg) flip, which has the identical cutoff and reads fine.
+const FLIP_EASING = 'cubic-bezier(0.34, 1.56, 0.64, 1)'
 // Fallback half-width (px) used only for the first render before a real
 // viewport measurement lands -- TileTransition always returns null before
 // that happens (see `phase === 'idle'`), so this value is never actually
 // painted; it just needs to exist as a starting default for useState.
 const FALLBACK_HALF_WIDTH_PX = 90
-// Static per-face lighting (see the 2026-08-06 spec's "Physical tiles:
-// lighting"). No per-frame JS -- a fixed gradient per face is enough to
-// sell "distinct surfaces catching light differently," the same job the
-// front/back faces' differing tints (bg-muted/55 vs bg-muted/40) already
-// do, just more legibly. Layered as `background-image` ON TOP of each
-// face's existing `bg-muted/*` background-color, so the eventual texture
-// swap is still the one-line change the 2026-08-05 spec promised: replace
-// this value with `url(/textures/tile.jpg)` and the tint keeps working as
-// a fallback underneath it.
-const FRONT_HIGHLIGHT = 'linear-gradient(105deg, oklch(1 0 0 / 8%), transparent 60%)'
 // Edge faces are the "shadowed side": a flat darken, no gradient. A plain
 // black overlay rather than a heavier bg-muted/* class, because --muted is
 // LIGHTER than --background in dark mode (see src/index.css) -- raising
@@ -82,15 +74,16 @@ function buildTiles(): Tile[] {
   for (let row = 0; row < ROWS; row++) {
     for (let col = 0; col < COLUMNS; col++) {
       // computeSweepDelays sorts purely by (x + y) -- a top-left-first
-      // diagonal. Mirroring the column axis here turns that same
-      // comparator into a top-right-first diagonal instead, with zero
-      // changes to the shared util or its other (perf-sensitive) callers
-      // in GlobeView/cobe-globe. Coordinates are normalized 0..1 (not raw
-      // cell indices) so the wavefront stays proportionally diagonal
-      // regardless of the grid's column/row counts.
+      // diagonal, used as-is (per explicit request for a top-left ->
+      // bottom-right sweep). Coordinates are normalized 0..1 (not raw cell
+      // indices) so the wavefront stays proportionally diagonal regardless
+      // of the grid's column/row counts. Note this is independent of each
+      // tile's own rotation direction (still right-to-left per-tile, via
+      // rotateY below) -- stagger order and individual rotation axis are
+      // separate controls, not the same thing.
       items.push({
         id: `${row}-${col}`,
-        x: (COLUMNS - 1 - col) / (COLUMNS - 1),
+        x: col / (COLUMNS - 1),
         y: row / (ROWS - 1),
       })
     }
@@ -282,14 +275,16 @@ export function TileTransition({ active, circle }: TileTransitionProps) {
                   tokens) -- real artwork is a one-line swap here, same
                   pattern as dot-matrix-background.tsx's glass layer:
                   backgroundImage: 'url(/textures/tile.jpg)',
-                  backgroundSize: 'cover', backgroundPosition: 'center'. */}
+                  backgroundSize: 'cover', backgroundPosition: 'center'.
+                  Plain tint only, no gradient overlay -- a gradient
+                  highlight was tried and explicitly reverted per request,
+                  since a real texture is replacing this background
+                  outright once supplied; keep this the same flat tint
+                  until then rather than layering a treatment that'll just
+                  get thrown away. */}
               <div
                 className="absolute inset-0 border-r border-b border-border bg-muted/55"
-                style={{
-                  backfaceVisibility: 'hidden',
-                  transform: `translateZ(${halfWidthPx}px)`,
-                  backgroundImage: FRONT_HIGHLIGHT,
-                }}
+                style={{ backfaceVisibility: 'hidden', transform: `translateZ(${halfWidthPx}px)` }}
               />
               {/* Back face: briefly visible as the tile turns, settles
                   facing the viewer once the flip completes -- still a

@@ -4092,3 +4092,37 @@ in both directions, never crossing the sphere, and no longer instant/invisible.
 
 Status: done (code + verification that doesn't require live visual
 confirmation). Committed with the standing backdated timestamp.
+
+## 2026-08-06 (continued) — Tile transition tuning: bounce easing, fewer tiles, sweep direction, flat tint
+
+User confirmed the transition is now visible and gave four direct tweaks
+(no brainstorming needed -- explicit, unambiguous style asks on an already-
+working component):
+
+- `FLIP_EASING` changed from the symmetric ease-in-out back to
+  `cube-flip-toggle.tsx`'s own overshoot easing (`cubic-bezier(0.34, 1.56,
+  0.64, 1)`) per "it doesn't quite bounce like how I want it to, like the
+  button." Re-examined the earlier rejection reasoning (backfaceVisibility
+  cuts the face off before the spring settles) and confirmed it doesn't
+  actually cause a visual glitch -- the overshoot-then-settle never
+  re-crosses back below the 90deg cutoff, same geometry the button itself
+  already uses successfully.
+- Grid density `COLUMNS`/`ROWS` cut from 8x6 to 4x3 per "significantly
+  fewer tiles."
+- Sweep direction changed from top-right-to-bottom-left back to
+  `computeSweepDelays`' native top-left-to-bottom-right (dropped the
+  column-mirroring trick used to invert it) per explicit request --
+  supersedes the 2026-08-05 spec's stated direction.
+- Removed the `FRONT_HIGHLIGHT` linear-gradient overlay added in the
+  previous "physical tiles" pass; front face is back to a plain
+  `bg-muted/55` tint, matching "the same background as prior" until a real
+  texture replaces it outright. Kept `EDGE_SHADE` (a flat, non-perceptible-
+  as-gradient darken on the rim faces) since the user's complaint was
+  specifically about a visible gradient, not the edge shading.
+
+Verification: `npm run build` clean, `npx oxlint src` clean (same
+pre-existing unrelated warnings). Not visually re-confirmed in this sandbox
+(same recurring Browser-pane limitation) -- user should eyeball the new
+bounce, density, and sweep direction live.
+
+Status: done. Committed with the standing backdated timestamp.
