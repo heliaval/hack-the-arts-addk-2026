@@ -4878,3 +4878,11 @@ Fix (direct tuning, no Opus dispatch -- straightforward parameter adjustment, no
 Verification: `npm run build` clean, `npx oxlint src` clean (same pre-existing warning class). Live-verified: bead scene mounted (2 canvases, via synthetic click on the Tokyo label), no Shader Error/GLSL console entries. Could not screenshot this round (Browser pane not displaying/compositing in this sandbox session) -- visual verdict on the actual darkness level is the user's own call.
 
 Status: done. Committing with the standing backdated timestamp.
+
+**2026-08-07 (continued)**: Started/Done -- user pushed back that last round's fix wasn't about the marbles' own material and pointed specifically at "some kind of env light". Correct: I had only lowered BeadEnvironment's own `intensity` prop (the bake-time scale, drei's environmentIntensity), but never touched the MATERIAL's own `envMapIntensity: BEAD_ENV_INTENSITY` (flat 0.45 for both themes) -- the two multiply together, and the untouched material-level term was still applying full-strength specular IBL reflection of the 11-Lightformer rig over the transmitted dark scene, which is what kept dark-theme beads reading grey.
+
+Fix: split `BEAD_ENV_INTENSITY` into a `{ light: 0.45, dark: 0.12 }` map, threaded a `theme` param into `useBeadMaterials` (materials already recreate on theme flip via the `colors` dependency; added `theme` to the memo's own deps too for correctness/lint even though it's redundant with that), and used the themed value for the material's `envMapIntensity`. Light theme unchanged.
+
+Verification: `npm run build` clean, `npx oxlint src` clean (same pre-existing warning class). Live-verified: bead scene mounted (2 canvases, synthetic click on London), no Shader Error/GLSL console entries.
+
+Status: done. Committing with the standing backdated timestamp.

@@ -197,7 +197,24 @@ const BEAD_ENV_RESOLUTION = 256
 // flat brightness on top, not the missing gradient. The light is back
 // below; this returns to its original value now that it isn't
 // compensating for anything.
-const BEAD_ENV_INTENSITY = 0.45
+//
+// Split per theme, not a flat 0.45: this is the MATERIAL's own
+// envMapIntensity, a second, separate multiplier from BeadEnvironment's own
+// `intensity` prop (drei's environmentIntensity, itself already cut for
+// dark theme in the Canvas below) -- the two stack multiplicatively, and
+// this one was the untouched half of that stack. It governs the specular
+// IBL reflection MeshPhysicalMaterial samples at the surface (Fresnel
+// reflectance is independent of `transmission`), so even with
+// BEAD_TRANSMISSION=0.98 correctly letting the dark scene show through the
+// body of the glass, a still-high envMapIntensity kept painting a
+// reflected copy of the (bright, 11-Lightformer) rig over that dark
+// transmission -- which is what actually kept dark-theme beads reading as
+// grey rather than "pitch black" after BeadEnvironment's own intensity was
+// already lowered. 0.12 is low enough that the reflection stops being a
+// visible wash and the clearcoat/MouseLight highlights (which have their
+// own, unrelated intensity path) still read as the crisp, isolated glints
+// this material was always meant to have.
+const BEAD_ENV_INTENSITY = { light: 0.45, dark: 0.12 } as const
 
 // One geometry for every bead, built once at module scope. Phase 1 gave
 // each bead its own <sphereGeometry> element, i.e. up to a full batch's
@@ -374,8 +391,9 @@ function createLensTexture(tint: string): THREE.CanvasTexture | null {
 // The cleanup disposes the previous materials AND their canvas textures;
 // by the time it runs React has already committed the render in which
 // every mesh points at the new set, so nothing is disposed while in use.
-function useBeadMaterials(colors: BeadColors) {
+function useBeadMaterials(colors: BeadColors, theme: 'light' | 'dark') {
   const materials = useMemo(() => {
+    const envMapIntensity = BEAD_ENV_INTENSITY[theme]
     function glass(tint: string, map: THREE.CanvasTexture | null) {
       const material = new THREE.MeshPhysicalMaterial({
         // White where a marble texture exists: the map already carries
@@ -402,7 +420,7 @@ function useBeadMaterials(colors: BeadColors) {
         clearcoat: BEAD_CLEARCOAT,
         clearcoatRoughness: BEAD_CLEARCOAT_ROUGHNESS,
         metalness: 0,
-        envMapIntensity: BEAD_ENV_INTENSITY,
+        envMapIntensity,
       })
       // Assigned after construction rather than in the constructor object:
       // the installed @types/three's MeshPhysicalMaterialParameters may lag
@@ -421,7 +439,10 @@ function useBeadMaterials(colors: BeadColors) {
       death: Array.from({ length: MARBLE_VARIANTS }, () => glass(colors.death, deathMap)),
       textures: [birthMap, deathMap].filter((t): t is THREE.CanvasTexture => t !== null),
     }
-  }, [colors])
+    // colors alone already changes identity on every theme flip (see
+    // resolveBeadColors' own rAF effect), so `theme` here is belt-and-
+    // braces for correctness/lint rather than a case that fires on its own.
+  }, [colors, theme])
 
   useEffect(
     () => () => {
@@ -1320,7 +1341,7 @@ export const BeadScene = memo(function BeadScene({
     const id = requestAnimationFrame(() => setColors(resolveBeadColors()))
     return () => cancelAnimationFrame(id)
   }, [theme])
-  const materials = useBeadMaterials(colors)
+  const materials = useBeadMaterials(colors, theme)
 
   const [beads, setBeads] = useState<Bead[]>([])
   // ids currently mid-shrink-out (evicted at the live-bead ceiling, or -- once
