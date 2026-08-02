@@ -23,14 +23,18 @@ function randomGlyph(): string {
   return GLYPHS[Math.floor(Math.random() * GLYPHS.length)]
 }
 
-// How far around the globe's silhouette (in radians) a wrapping drop travels
-// before peeling back off into a straight fall. Randomized per drop, and
-// capped below π (the exact bottom pole) — without this every wrapping drop
-// would ride the curve all the way to the same (centerX, centerY + radius)
-// point and release from that single pixel, which is what made the effect
-// read as unnaturally synchronized rather than like independent rivulets.
-const MIN_WRAP_SPAN_RAD = Math.PI * 0.35
-const MAX_WRAP_SPAN_RAD = Math.PI * 0.95
+// The angle (in radians, 0 = top pole, π = bottom pole) at which a wrapping
+// drop peels back off the silhouette into a straight fall is randomized
+// into this window, independent of where it entered — bounding it this way
+// (rather than adding a random span on top of the entry angle) guarantees a
+// wide spread of exit points along the lower silhouette regardless of how
+// close to dead-center a drop happened to enter, which is what previously
+// let most drops release from nearly the same pixel: entry angles cluster
+// near 0 when spawns are biased toward the globe's own x-band (most drops
+// fall almost straight down through the top of the circle), so an
+// entry-relative span still converged most exits toward the same region.
+const WRAP_EXIT_ANGLE_MIN_RAD = Math.PI * 0.45
+const WRAP_EXIT_ANGLE_MAX_RAD = Math.PI
 
 // Fraction of spawns pulled toward the globe's own horizontal band rather
 // than scattered uniformly across the full viewport width — otherwise, on a
@@ -112,16 +116,18 @@ export function spawnDropAbove(viewportWidth: number, globe: GlobeCircleLike | n
 
 // Snaps a drop that has just crossed into the globe's circle into the
 // 'wrap' phase, deriving wrapAngle/wrapSide from the (x, y) it crossed at,
-// and picks a randomized wrapExitAngle (see its field comment) at least as
-// far around as the entry angle, so the drop always makes forward progress.
+// and picks a wrapExitAngle from the fixed WRAP_EXIT_ANGLE window (clamped
+// to be at least the entry angle, so the drop always makes forward
+// progress even if it entered unusually late).
 // y = centerY - radius*cos(angle)  =>  cos(angle) = (centerY - y) / radius
 function enterWrap(drop: Drop, x: number, y: number, globe: GlobeCircleLike): void {
   const side: -1 | 1 = x >= globe.centerX ? 1 : -1
   const cosAngle = Math.min(1, Math.max(-1, (globe.centerY - y) / globe.radius))
   const entryAngle = Math.acos(cosAngle)
+  const exitLow = Math.max(entryAngle, WRAP_EXIT_ANGLE_MIN_RAD)
   drop.phase = 'wrap'
   drop.wrapAngle = entryAngle
-  drop.wrapExitAngle = Math.min(Math.PI, entryAngle + randomBetween(MIN_WRAP_SPAN_RAD, MAX_WRAP_SPAN_RAD))
+  drop.wrapExitAngle = randomBetween(exitLow, WRAP_EXIT_ANGLE_MAX_RAD)
   drop.wrapSide = side
 }
 
@@ -252,7 +258,7 @@ function resolveRainColors(): RainColors {
   }
 }
 
-const DROP_COUNT = 80
+const DROP_COUNT = 130
 // Capped like BeadScene's Canvas dpr (see BeadScene.tsx's <Canvas dpr={[1, 1.5]}>)
 // for the same reason: crisp lines without paying for a full 2-3x device
 // pixel ratio's worth of fragments on every frame.
@@ -317,7 +323,7 @@ export interface GlobeRainProps {
 }
 
 // Plain 2D canvas, not a second react-three-fiber <Canvas>: this effect is
-// procedural curve math over ~80 drops, not physics, so a second WebGL
+// procedural curve math over ~130 drops, not physics, so a second WebGL
 // context (and its own render overhead, mirroring what BeadScene already
 // pays for the beads) would buy nothing. GlobeRain and BeadScene are
 // mount-exclusive (see App.tsx), so they never compete for a GPU context
