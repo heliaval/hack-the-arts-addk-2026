@@ -185,10 +185,19 @@ const BEAD_CLEARCOAT_ROUGHNESS = 0.04
 const BEAD_ENV_RESOLUTION = 256
 // Lowered from 1.4 with the move to a 256px map and a clearcoat layer:
 // both add specular energy, and the previous value blows the highlights
-// out into white discs. Raised again, 0.45 -> 0.52, to compensate for the
-// removed <directionalLight> in the Canvas below: the baked rig now has to
-// carry the directional shading on its own.
-const BEAD_ENV_INTENSITY = 0.52
+// out into white discs.
+//
+// Was briefly raised to 0.52 to compensate for a removed
+// <directionalLight> (a bead-count perf pass). Reverted: the baked rig's
+// IBL supplies reflections and ambient fill, but not the same thing a
+// real-time light with a fixed screen-space direction gives -- a Lambert
+// shading gradient that sweeps visibly across each bead's surface as it
+// rolls. Without it beads read as flat, low-contrast discs instead of
+// three-dimensional glass, and the raised env intensity only added more
+// flat brightness on top, not the missing gradient. The light is back
+// below; this returns to its original value now that it isn't
+// compensating for anything.
+const BEAD_ENV_INTENSITY = 0.45
 
 // One geometry for every bead, built once at module scope. Phase 1 gave
 // each bead its own <sphereGeometry> element, i.e. up to a full batch's
@@ -1049,11 +1058,9 @@ const MOUSE_LIGHT_LERP = 0.25
 // three's point/spot lights have used physically-based inverse-square decay
 // (intensity / distance^2, in candela) since r155 — there is no
 // "physicallyCorrectLights" toggle to opt out of it anymore. So this has to
-// scale with MOUSE_LIGHT_DISTANCE^2 to land in the same visible range as a
-// light with no distance falloff at all (the scene's own baked Lightformer
-// rig, since the Canvas's static <directionalLight> this was originally
-// pinned against was removed -- see BEAD_ENV_INTENSITY's own comment),
-// rather than being a small unitless number like that removed light's 0.4.
+// scale with MOUSE_LIGHT_DISTANCE^2 to land in the same visible range as
+// the directionalLight above (which has no distance falloff at all), rather
+// than being a small unitless number like that light's 0.4.
 const MOUSE_LIGHT_DISTANCE = BEAD_RADIUS * 12
 const MOUSE_LIGHT_INTENSITY = 0.5 * MOUSE_LIGHT_DISTANCE * MOUSE_LIGHT_DISTANCE
 
@@ -1488,20 +1495,22 @@ export const BeadScene = memo(function BeadScene({
             a bead's surface — they only exist to keep the clearcoat/
             transmission shading from going flat (see the "stripped"
             comparison this was restored from). MouseLight supplies the one
-            highlight that IS meant to be seen, tracking the cursor.
-
-            The static <directionalLight intensity={0.4}> that used to sit
-            here is gone. MeshPhysicalMaterial evaluates a full direct-light
-            block per light per fragment -- Lambert + BRDF_GGX + a second
-            GGX lobe for the clearcoat layer -- and at the much larger
-            transmissive screen coverage capacityFor() now targets, that is
-            the largest per-fragment cut available that doesn't touch the
-            material itself. BEAD_ENV_INTENSITY (0.45 -> 0.52) compensates:
-            the baked rig's own 700x320 top rect already supplies the same
-            top-down key direction, at zero per-frame cost (frames={1}). If
-            the beads read flat after this, revert THIS line first, before
-            touching BEAD_CLEARCOAT. */}
+            highlight that IS meant to be seen, tracking the cursor. */}
         <BeadEnvironment intensity={theme === 'dark' ? 0.35 : 0.55} resolution={BEAD_ENV_RESOLUTION} />
+        {/* Was briefly removed as a bead-count perf cut, then restored: the
+            baked Lightformer rig above supplies IBL (reflections + ambient
+            fill via envMapIntensity) but not a real-time Lambert shading
+            gradient with a fixed screen-space direction -- without this,
+            beads lose the visible light/shadow sweep across their surface
+            as they roll and read as flat, low-contrast discs instead of
+            three-dimensional glass. Raising BEAD_ENV_INTENSITY to
+            compensate only added flat brightness, not the missing
+            gradient, so that was reverted alongside restoring this. If the
+            frame cost of the larger bead count needs trimming again, look
+            at BEAD_CLEARCOAT or gl.transmissionResolutionScale first --
+            this light is what keeps the beads reading as glass, not just
+            reflective blobs. */}
+        <directionalLight position={[200, 400, 300]} intensity={0.4} />
         <MouseLight />
         <Backdrop theme={theme} circle={globeCircle} globeElement={globeElement} />
         {/* Rapier's WASM is loaded via suspend-react, so Physics suspends. */}

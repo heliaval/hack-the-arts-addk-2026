@@ -144,11 +144,6 @@ const vec2 SWELL_D2 = vec2(-0.4322,  0.9018);
 const vec2 SWELL_D3 = vec2( 0.8823, -0.4707);
 const float SWELL_AMP = 0.007;
 
-// Per-ripple elongation, as a fraction: +ANISO along a per-ripple axis,
-// -ANISO across it, so wavefronts are ellipses of ~1.25:1 at random
-// orientations instead of ten identical stamped circles.
-const float ANISO = 0.11;
-
 // Cursor-local texture reveal, the shader-side replacement for the DOM
 // atmosphere layer's brick pane (removed -- see dot-matrix-background.tsx's
 // AtmosphereLayers note). Multiplies each fragment's deviation from the
@@ -249,41 +244,24 @@ vec3 waterColor(vec2 p) {
     float speed = RIPPLE_SPEED_PX_S * (0.72 + 0.24 * ripple.w);
 
     vec2 delta = p - ripple.xy;
+    float dist = length(delta);
 
-    // CONSERVATIVE circular band test, widened by ANISO on both sides.
-    // This is what preserves the original early-out contract: the
-    // elliptical distance below is bounded by (1 +/- ANISO) * this circular
-    // one, so this test can never reject a fragment the exact test would
-    // have accepted -- and an off-band ripple still costs exactly one
-    // length() plus scalar compares, never the hash/ellipse work below.
-    float distC = length(delta);
-    float dC = age * speed - distC;
-    if (dC < -ANISO * distC || dC > PACKET_PX + ANISO * distC) continue;
-
-    // Per-ripple elongation axis, hashed off the two independent random
-    // fields the slot already carries (birth time, amplitude). Two fract()
-    // products rather than the usual sin(dot(...))*43758.5453 -- no
-    // transcendental, and the quality bar here is "ripples don't share an
-    // axis", not statistical soundness.
-    vec2 raw = vec2(
-      fract(ripple.z * 12.9898 + ripple.w * 78.233),
-      fract(ripple.z * 39.3467 + ripple.w * 11.135)
-    ) - 0.5;
-    vec2 axis = raw * inversesqrt(dot(raw, raw) + 1e-4);
-
-    // Symmetric stretch M: +ANISO along axis, -ANISO across it. Written
-    // out as (1-a)*v + 2a*dot(v,axis)*axis, which is M*v without building a
-    // mat2. M is symmetric, so M == transpose(M) -- which is why the SAME
-    // expression serves both here (transforming delta into the ripple's own
-    // metric) and at the bottom of the loop, where the chain rule needs
-    // transpose(M) to pull the radial gradient direction back into screen
-    // space. Getting that second application wrong would tilt every
-    // wavefront's normal away from its own slope.
-    float along = dot(delta, axis);
-    vec2 q = (1.0 - ANISO) * delta + (2.0 * ANISO * along) * axis;
-    float dist = length(q);
+    // Distance BEHIND the expanding leading edge. The two rejects (this one
+    // and the one after the envelope/wavelength hash below) are what keep
+    // the real cost far under the worst case: a fragment only pays for the
+    // sin/cos work of ripples whose 90px-thick wavefront is currently
+    // crossing it.
     float d = age * speed - dist;
     if (d < 0.0 || d > PACKET_PX) continue;
+
+    // Per-ripple wavelength hash, off the two independent random fields the
+    // slot already carries (birth time, amplitude) -- a fract() product
+    // rather than the usual sin(dot(...))*43758.5453, no transcendental,
+    // and the quality bar here is "ripples don't share a wavelength", not
+    // statistical soundness. Ripples stay CIRCULAR (no per-ripple
+    // elongation/orientation) -- wavefronts are perfect expanding rings,
+    // varied only in speed, amplitude and this wavelength jitter.
+    float wobble = fract(ripple.z * 12.9898 + ripple.w * 78.233);
 
     float decay = 1.0 - age / RIPPLE_LIFE_S;
     decay *= decay;
@@ -295,17 +273,14 @@ vec3 waterColor(vec2 p) {
     float envDeriv = 2.0 * envRoot * cos(PI * d / PACKET_PX) * (PI / PACKET_PX);
 
     // Per-ripple wavelength, +/-10%: 2.7..3.3 crests inside the same 90px
-    // packet instead of exactly 3 every time. Taken off raw.x (already
-    // computed above, so free) rather than off ripple.w, so it does not
-    // correlate with the amplitude and speed that already do.
-    float k = (2.0 * PI / WAVELENGTH_PX) * (0.90 + 0.20 * (raw.x + 0.5));
+    // packet instead of exactly 3 every time.
+    float k = (2.0 * PI / WAVELENGTH_PX) * (0.90 + 0.20 * wobble);
     float carrier = cos(k * d);
     float carrierDeriv = sin(k * d);
 
     // d(env*carrier)/dr, with dd/dr = -1.
     float dhdr = -weight * (envDeriv * carrier - env * k * carrierDeriv);
-    vec2 nq = q / max(dist, 1.0);
-    grad += dhdr * ((1.0 - ANISO) * nq + (2.0 * ANISO * dot(nq, axis)) * axis);
+    grad += dhdr * (delta / max(dist, 1.0));
   }
 
   // Crest steepening, the one non-linear step -- see CREST_SOLO's own
