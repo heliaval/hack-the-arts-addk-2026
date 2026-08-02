@@ -66,18 +66,34 @@ const BATCH_SPAWN_INTERVAL_MS = 80
 // and residual arching lands near PILE_PACKING_FRACTION. So N beads occupy
 // roughly N * 3,632 / 0.78 = N * 4,657 px^2 of screen.
 //
-// At 1280x800 (1,024,000 px^2) half the viewport is 512,000 px^2 => ~110
-// beads. At 1920x1080 => ~223, which is not affordable, so
-// MAX_CAPACITY_CEILING caps the COST rather than holding the fraction: at
-// 1080p 160 beads cover ~36% of the viewport, which still reads as
-// dramatic. MAX_CAPACITY_FLOOR keeps a small window from degenerating into
-// a scene with almost nothing in it. marbleCount.ts's own comment keeps
-// this invariant in sync: the combined per-stream max there (80 + 80) must
-// sit ABOVE this ceiling, or eviction silently never fires.
-const TARGET_PILE_VIEWPORT_FRACTION = 0.5
+// At 1280x800 (1,024,000 px^2) the original 0.5 target gave ~110 beads.
+//
+// AGGRESSIVE PERFORMANCE PASS: 0.5 -> 0.38, and MAX_CAPACITY_CEILING
+// 160 -> 110, both a real reduction in the ask, not a re-tune, stated
+// plainly: 110+ live beads is 110+ individual draw calls of a
+// transmission+clearcoat MeshPhysicalMaterial, each with its own JS/WebGL
+// binding cost -- on a mid-range laptop that is a few milliseconds of CPU
+// per frame spent before a single fragment is shaded, and it is a DRAW-CALL
+// cost that no amount of shader/material tuning touches. The fill cost of
+// those beads (~20% of the scene's GPU work) was never the problem.
+//
+// At 1280x800 this now yields 84 beads, covering 84 * 4,657 = 391,188 of
+// 1,024,000 px^2 = 38% of the viewport as settled pile -- still reads as
+// "fills a large part of the screen", just not literally half. At 1920x1080
+// the 110 ceiling covers 110 * 4,657 / 2,073,600 = 25%. MAX_CAPACITY_FLOOR
+// keeps a small window from degenerating into a scene with almost nothing
+// in it. marbleCount.ts's own comment keeps the eviction invariant in sync:
+// the combined per-stream max there (80 + 80 = 160) must sit ABOVE this
+// ceiling, or eviction silently never fires -- 160 > 110 still holds.
+//
+// If bead rendering is ever converted from one <mesh> per bead to
+// InstancedRigidBodies (draw calls 110 -> ~2), these two constants are the
+// first thing to revert toward 0.5/160 -- instancing removes the actual
+// cost this cut exists to avoid and makes the original target affordable.
+const TARGET_PILE_VIEWPORT_FRACTION = 0.38
 const PILE_PACKING_FRACTION = 0.78
 const BEAD_SILHOUETTE_PX2 = Math.PI * BEAD_RADIUS * BEAD_RADIUS
-const MAX_CAPACITY_CEILING = 160
+const MAX_CAPACITY_CEILING = 110
 const MAX_CAPACITY_FLOOR = 60
 
 function capacityFor(viewportWidth: number, viewportHeight: number): number {
@@ -108,9 +124,17 @@ const BEAD_EXIT_MS = 400
 // file). MARBLE_VARIANTS survives purely so Bead.variant keeps the same
 // range and the material-array indexing in useBeadMaterials/BeadBody stays
 // unchanged — each entry is currently the same clear-glass material.
-const MARBLE_SWIRL_VARIANTS = 3
-const MARBLE_CATSEYE_VARIANTS = 1
-export const MARBLE_VARIANTS = MARBLE_SWIRL_VARIANTS + MARBLE_CATSEYE_VARIANTS
+//
+// AGGRESSIVE PERFORMANCE PASS: 3 + 1 -> 1. useBeadMaterials' own comment
+// already records that every variant slot points at the SAME lens texture
+// and the same parameters -- so this was 8 byte-identical
+// MeshPhysicalMaterials (4 variants x 2 kinds), 8 distinct material ids,
+// and therefore 8 sort buckets and 8 uniform rebinds per frame in three's
+// painterSortStable, for exactly one visual look. Collapsing to 1 per kind
+// costs nothing visually. If per-variant looks ever come back, this is the
+// number to raise -- but raise it only alongside actually distinct
+// paintLens() outputs.
+export const MARBLE_VARIANTS = 1
 
 // Glass tuning. Every length here is in the scene's CSS-pixel world units
 // (see the orthographic-camera note above), which is why thickness and
@@ -984,15 +1008,13 @@ function useBackdropBase(
   }, [theme, width, height, textureImage, circle])
 }
 
-// Every other frame only (~30fps at a 60fps display) — the globe rotates
-// slowly enough that this backdrop doesn't need 60fps freshness to read as
-// smooth, and this is the single most expensive per-frame op in the scene:
-// ctx.drawImage(globeElement, ...) is a GPU->CPU readback off cobe's live
-// WebGL canvas, and texture.needsUpdate then re-uploads the full result
-// back to the GPU, at BACKDROP_SCALE=1 (full viewport resolution -- see
-// that constant's own comment for why it isn't lower). Halving the update
-// rate halves this cost without touching resolution or reverting that fix.
-const BACKDROP_UPDATE_EVERY_N_FRAMES = 2
+// 2 -> 3 (~20fps at a 60fps display). Was 2 when this plane composited via
+// an intermediate 2D canvas (see the texture memo below, which removed that
+// canvas entirely) -- the readback that made this "the single most expensive
+// per-frame op in the scene" is gone, but the globe still only needs to look
+// smooth, not fresh: 20Hz on a slowly-rotating sphere is at the edge of
+// visible judder and is the last interval that still reads as smooth.
+const BACKDROP_UPDATE_EVERY_N_FRAMES = 3
 
 // The globe-composite plane's own shader. It is NOT a variation on the
 // water shader -- it IS the water shader (waterColor(), from
@@ -1031,7 +1053,16 @@ void main() {
   // screen-coherent (the sphere's disc is one contiguous region), so whole
   // warps take the same path -- which is what keeps the added cost of this
   // plane close to "only the corners and glow ring", not the whole box.
-  if (g.a >= 0.999) {
+  //
+  // 0.999 -> 0.985. At a = 0.985 the water term below is scaled by
+  // (1 - a) = 0.015, under half an 8-bit step on any pixel darker than
+  // ~0.5 -- yet the full waterColor() field would still run to produce it.
+  // This widens the early-out from the sphere's exact silhouette to the
+  // inner part of cobe's glow ring. Do not widen it further: below ~0.97
+  // the seam between this plane and the water plane behind it starts to be
+  // a real discontinuity rather than a quantisation-invisible one, and
+  // seamlessness is the entire reason this plane runs waterColor() at all.
+  if (g.a >= 0.985) {
     gl_FragColor = vec4(g.rgb, 1.0);
     return;
   }
@@ -1107,12 +1138,17 @@ const Backdrop = memo(function Backdrop({
     ? Math.max(1, Math.round((circle.radius / GLOBE_SURFACE_RADIUS_FRACTION) * BACKDROP_SCALE))
     : 0
 
-  // The composite canvas now holds ONLY the globe, on a transparent
-  // ground -- the base crop that used to be blitted underneath it every
-  // update is gone, because the shader evaluates waterColor() for those
-  // pixels instead (see GLOBE_FRAGMENT_SHADER above), which is both
-  // seamless with the water plane behind it and one canvas blit cheaper
-  // per update.
+  // Was: a 2D intermediate canvas + ctx.drawImage(globeElement) + a
+  // CanvasTexture built from it. That drawImage was a GPU->CPU readback off
+  // cobe's live WebGL canvas (preserveDrawingBuffer: false, see
+  // cobe-globe.tsx) at cobe's OWN backing-store size -- devicePixelRatio-
+  // multiplied, so a 1280px-wide box is actually a 2560x2560 source on a
+  // 2x-DPR laptop -- immediately followed by a downscaled re-upload and a
+  // full mip-chain rebuild (CanvasTexture defaults to
+  // LinearMipmapLinearFilter, and this plane is drawn at ~1:1 so no mip
+  // below level 0 was ever sampled -- the chain was pure waste). Uploading
+  // cobe's <canvas> element directly into a THREE.Texture removes the CPU
+  // round-trip and the JS blit entirely; the browser copies GPU-side.
   //
   // NoColorSpace, not SRGBColorSpace -- this OVERRIDES the closing line of
   // gradientTexture's own comment above ("The globe composite plane's own
@@ -1123,22 +1159,29 @@ const Backdrop = memo(function Backdrop({
   // an sRGB-valued shader -- the same reasoning gradientTexture's own
   // NoColorSpace is built on, just for a second texture.
   //
-  // premultiplyAlpha: a 2D canvas natively stores premultiplied pixels, and
-  // GLOBE_FRAGMENT_SHADER's composite (`g.rgb + waterColor(p) * (1 - g.a)`)
-  // is written for premultiplied input -- setting this explicitly (three
-  // otherwise assumes false for CanvasTexture) is what keeps cobe's soft
-  // glow edge from a visible un-premultiply/re-premultiply quantise step.
-  const { canvas, ctx, texture } = useMemo(() => {
-    if (!base || boxSize <= 0) return { canvas: null, ctx: null, texture: null }
-    const canvas = document.createElement('canvas')
-    canvas.width = boxSize
-    canvas.height = boxSize
-    const ctx = canvas.getContext('2d')
-    const texture = new THREE.CanvasTexture(canvas)
-    texture.colorSpace = THREE.NoColorSpace
-    texture.premultiplyAlpha = true
-    return { canvas, ctx, texture }
-  }, [base, boxSize])
+  // premultiplyAlpha: a WebGL canvas with alpha is composited premultiplied,
+  // same as a 2D canvas was, and GLOBE_FRAGMENT_SHADER's composite
+  // (`g.rgb + waterColor(p) * (1 - g.a)`) is written for premultiplied
+  // input.
+  //
+  // generateMipmaps=false + LinearFilter: this plane is drawn at
+  // approximately 1:1 texel-to-pixel (boxSize world units onto a boxSize
+  // texel source), so no mip below level 0 is ever sampled -- generating the
+  // chain on every needsUpdate was pure waste the old CanvasTexture path was
+  // silently paying too.
+  const texture = useMemo(() => {
+    if (!globeElement) return null
+    const t = new THREE.Texture(globeElement)
+    t.colorSpace = THREE.NoColorSpace
+    t.premultiplyAlpha = true
+    t.generateMipmaps = false
+    t.minFilter = THREE.LinearFilter
+    t.magFilter = THREE.LinearFilter
+    t.wrapS = THREE.ClampToEdgeWrapping
+    t.wrapT = THREE.ClampToEdgeWrapping
+    t.needsUpdate = true
+    return t
+  }, [globeElement])
   useEffect(() => () => texture?.dispose(), [texture])
 
   const globeMaterial = useMemo(
@@ -1176,16 +1219,12 @@ const Backdrop = memo(function Backdrop({
   const frameCountRef = useRef(0)
 
   useFrame(() => {
-    if (!canvas || !ctx || !texture || !circle) return
+    if (!texture || !circle) return
     frameCountRef.current++
     if (frameCountRef.current % BACKDROP_UPDATE_EVERY_N_FRAMES !== 0) return
-    // clearRect is required again now that the opaque base-crop blit is
-    // gone (the prior version's "no clearRect" comment relied on that blit
-    // covering this exact rect every time -- without it, the globe's own
-    // transparent corners would accumulate every previous frame's
-    // rotation as a ghost).
-    ctx.clearRect(0, 0, boxSize, boxSize)
-    if (globeElement) ctx.drawImage(globeElement, 0, 0, boxSize, boxSize)
+    // No clearRect and no drawImage anymore: there is no intermediate
+    // canvas to accumulate a ghost in. The source IS cobe's live front
+    // buffer -- this just tells three to re-upload it.
     texture.needsUpdate = true
   })
 
@@ -1445,7 +1484,7 @@ const BeadBody = memo(function BeadBody({
 
   return (
     <RigidBody
-      colliders="ball"
+      colliders={false}
       position={[bead.x, height / 2 + BEAD_RADIUS * 2, 0]}
       restitution={0.25}
       friction={0.6}
@@ -1461,6 +1500,12 @@ const BeadBody = memo(function BeadBody({
       linearDamping={0.2}
       angularDamping={0.4}
     >
+      {/* AGGRESSIVE PERFORMANCE PASS: explicit collider, not
+          colliders="ball". The auto-collider path makes rapier inspect
+          BEAD_GEOMETRY's vertices to derive this exact radius on every
+          single body creation -- 12+ times a second during a batch drain.
+          The radius is a known constant; skip the inspection. */}
+      <BallCollider args={[BEAD_RADIUS]} />
       <mesh ref={meshRef} geometry={BEAD_GEOMETRY} material={material} dispose={null} />
     </RigidBody>
   )
@@ -1559,33 +1604,49 @@ export const BeadScene = memo(function BeadScene({
   }, [])
 
   useEffect(() => {
-    function spawn(kind: 'birth' | 'death') {
+    // AGGRESSIVE PERFORMANCE PASS: one paired timer, still at
+    // BATCH_SPAWN_INTERVAL_MS, emitting up to one bead of EACH kind per
+    // tick -- replacing two independent timers at that same interval. The
+    // interval is deliberately UNCHANGED, not doubled: doubling it would
+    // halve each stream's actual drain rate (one birth every 2x the
+    // interval instead of one every interval), which is a real behaviour
+    // change, not a perf win. What this removes is the old timers' phase
+    // independence -- they each fired once per BATCH_SPAWN_INTERVAL_MS but
+    // at unrelated offsets, so a full drain produced up to two separate
+    // React commits per interval, each one a fresh beads array,
+    // ~capacityFor() createElement calls and that many memo prop
+    // comparisons (see BATCH_SPAWN_INTERVAL_MS's own comment on the
+    // element-creation rate this reaches). One timer carrying both kinds
+    // halves the COMMIT rate (one commit per interval instead of up to two)
+    // while leaving each stream's own spawn rate exactly where it was.
+    // Eviction is likewise done ONCE per tick for however many beads this
+    // tick adds, rather than once per bead.
+    function spawnBatch(kinds: Array<'birth' | 'death'>) {
       const liveCount = beadsRef.current.length - dyingIdsRef.current.size
-      if (liveCount >= capacityRef.current) {
-        const oldest = beadsRef.current.find((b) => !dyingIdsRef.current.has(b.id))
-        if (oldest) {
+      const overBy = liveCount + kinds.length - capacityRef.current
+      if (overBy > 0) {
+        const victims = beadsRef.current.filter((b) => !dyingIdsRef.current.has(b.id)).slice(0, overBy)
+        if (victims.length > 0) {
           setDyingIds((prev) => {
             const next = new Set(prev)
-            next.add(oldest.id)
+            for (const victim of victims) next.add(victim.id)
             return next
           })
         }
       }
       setBeads((prev) => [
         ...prev,
-        {
+        ...kinds.map((kind) => ({
           id: nextIdRef.current++,
           kind,
           x: (Math.random() - 0.5) * 2 * SPAWN_JITTER_PX,
           variant: Math.floor(Math.random() * MARBLE_VARIANTS),
-        },
+        })),
       ])
     }
 
     let birthsSpawned = 0
     let deathsSpawned = 0
-    let birthTimer: number | null = null
-    let deathTimer: number | null = null
 
     function reportProgress() {
       onProgress({
@@ -1594,38 +1655,34 @@ export const BeadScene = memo(function BeadScene({
       })
     }
 
-    if (birthMarbleCount > 0) {
-      birthTimer = window.setInterval(() => {
-        spawn('birth')
-        birthsSpawned += 1
-        reportProgress()
-        if (birthsSpawned >= birthMarbleCount && birthTimer !== null) {
-          window.clearInterval(birthTimer)
-          birthTimer = null
-        }
-      }, BATCH_SPAWN_INTERVAL_MS)
-    }
-
-    if (deathMarbleCount > 0) {
-      deathTimer = window.setInterval(() => {
-        spawn('death')
-        deathsSpawned += 1
-        reportProgress()
-        if (deathsSpawned >= deathMarbleCount && deathTimer !== null) {
-          window.clearInterval(deathTimer)
-          deathTimer = null
-        }
-      }, BATCH_SPAWN_INTERVAL_MS)
-    }
-
     // Both counters start at 0 immediately (a batch of 0 for either stream
     // — e.g. missing death-rate data for the year — should still report 0
     // rather than leaving the previous batch's last value on screen).
     reportProgress()
 
+    let timer: number | null = null
+    if (birthMarbleCount > 0 || deathMarbleCount > 0) {
+      timer = window.setInterval(() => {
+        const kinds: Array<'birth' | 'death'> = []
+        if (birthsSpawned < birthMarbleCount) {
+          kinds.push('birth')
+          birthsSpawned += 1
+        }
+        if (deathsSpawned < deathMarbleCount) {
+          kinds.push('death')
+          deathsSpawned += 1
+        }
+        if (kinds.length === 0) {
+          if (timer !== null) window.clearInterval(timer)
+          return
+        }
+        spawnBatch(kinds)
+        reportProgress()
+      }, BATCH_SPAWN_INTERVAL_MS)
+    }
+
     return () => {
-      if (birthTimer) window.clearInterval(birthTimer)
-      if (deathTimer) window.clearInterval(deathTimer)
+      if (timer !== null) window.clearInterval(timer)
     }
   }, [birthMarbleCount, deathMarbleCount, birthAnnualTotal, deathAnnualTotal, onProgress])
 
@@ -1672,13 +1729,21 @@ export const BeadScene = memo(function BeadScene({
           // except the globe collider (invisible) and the page itself, so
           // downscaling this target is visually free while quartering the
           // pass's fill cost and its mipmap chain.
-          // 0.5 -> 0.4. What this does and does NOT buy: the transmission
-          // pass is one full render of every opaque object plus its mipmap
-          // chain, run ONCE per frame no matter how many beads exist, so
-          // this is a FIXED cost that cannot "pay for" more beads. What it
-          // does is shrink that fixed cost (render-target area -36%) to
-          // make room for the bead cost that IS growing with capacityFor().
-          gl.transmissionResolutionScale = 0.4
+          // 0.5 -> 0.4 -> 0.34. What this does and does NOT buy: the
+          // transmission pass is one full render of every opaque object
+          // plus its mipmap chain, run ONCE per frame no matter how many
+          // beads exist, so this is a FIXED cost that cannot "pay for" more
+          // beads -- and it now includes the water plane AND the
+          // globe-composite plane running the full waterColor() field a
+          // SECOND time each frame, so its area scales that cost
+          // quadratically. Held at 0.34 rather than pushed to 0.25: a bead
+          // is 68px across and refracts a region of comparable size, so at
+          // 0.25 a 1280px viewport gives that bead ~17 source texels to
+          // bend, and the globe's dot-matrix landmasses -- the thing
+          // BACKDROP_SCALE=1 exists to keep crisp -- start to dissolve
+          // inside the glass. 0.34 is the point where the refracted image
+          // is still resolvable at bead scale.
+          gl.transmissionResolutionScale = 0.34
         }}
       >
         {/* Deliberately subtle: every Lightformer here is desaturated and

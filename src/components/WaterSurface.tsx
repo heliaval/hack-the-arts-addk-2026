@@ -50,10 +50,32 @@ void main() {
 }
 `
 
-// Must match the shader's own RIPPLE_LIFE_S (WATER_COMMON_GLSL) and is
-// injected into WATER_UNIFORMS_GLSL below, so the two can never drift.
-export const MAX_RIPPLES = 44
-const RIPPLE_LIFE_S = 2.6
+// 44 -> 26, and RIPPLE_LIFE_S 2.6 -> 1.3 with it. These MUST move together
+// and SPAWN_MEAN_MS must NOT move with them -- that is the whole point of
+// this cut. Performance pass, trading ripple DURATION for ripple COUNT at
+// an unchanged arrival rate: SPAWN_MEAN_MS's own comment records that at 44
+// slots with ~31.7 live, a fragment spends ~72% of the ripple loop's ops
+// REJECTING ripples that don't touch it, paid across the whole viewport
+// (both the water plane and the globe-composite plane) every frame. That
+// rejection tax scales with POPULATION, and population =
+// RIPPLE_LIFE_S / effective_mean_gap. Cutting the numerator instead of
+// raising the denominator keeps drops/second exactly where "drastically
+// more rain" put it (12.2/s, unchanged) while roughly halving the tax.
+//
+// Population: 1300/82.0 = 15.9 live (was 2600/82.0 = 31.7). 26 slots sits
+// at mean + 2.5 sigma against an upper bound sigma <= sqrt(15.9) = 3.99,
+// i.e. more headroom than 44 gave 31.7 (2.2 sigma). The evict-oldest rule
+// stays invisible: the victim's age is 1.3 * 25/26 = 1.25s, decay =
+// (1 - 1.25/1.3)^2 = 0.0015.
+//
+// Mean ripple radius also halves (RIPPLE_SPEED_PX_S * RIPPLE_LIFE_S / 2:
+// 205px -> 103px), so each ripple's in-band annulus area falls on top of
+// the halved count -- coverage drops faster than population alone would
+// suggest. Must match the shader's own RIPPLE_LIFE_S (WATER_COMMON_GLSL)
+// and is injected into WATER_UNIFORMS_GLSL below, so the two can never
+// drift.
+export const MAX_RIPPLES = 26
+const RIPPLE_LIFE_S = 1.3
 
 // Every length here is in CSS pixels, matching the rest of BeadScene (see
 // that file's top-of-file orthographic-camera note).
@@ -98,7 +120,7 @@ uniform vec3 u_sheen;
 // the seam between the two planes: there is nothing to blend or feather,
 // because both planes compute the same number for the same pixel.
 export const WATER_COMMON_GLSL = `
-const float RIPPLE_LIFE_S = 2.6;
+const float RIPPLE_LIFE_S = 1.3;
 const float RIPPLE_SPEED_PX_S = 165.0;
 // Per-ripple wavefront envelope width, replacing the old flat
 // PACKET_PX = 90.0 ("a 90px-thick annulus"). Drawn per ripple from the
@@ -489,10 +511,12 @@ void main() {
 // = 35*0.3729 + 110*0.6271 = 82.0, less a correction from the upper clamp
 // that is now truly negligible (P(Exp(75) > 1400) = e^-18.7 = 8e-9).
 //
-// 260 -> 75, i.e. "drastically more rain", not another modest bump. Steady-
-// state population goes 2600/273.9 = 9.5 live to RIPPLE_LIFE_S /
-// effective_mean_gap = 2600/82.0 = 31.7 live, a 3.3x increase, at 12.2
-// drops/second.
+// 260 -> 75, i.e. "drastically more rain", not another modest bump: at
+// 12.2 drops/second, this is the arrival-RATE half of that ask. The live
+// POPULATION half (how many are alive at once, i.e. what the ripple loop
+// actually pays for) is controlled by RIPPLE_LIFE_S/MAX_RIPPLES instead,
+// not by this constant -- see that pair's own comment for why the two are
+// kept as separate knobs and for the current population/cost numbers.
 //
 // SPAWN_MIN_MS 90 -> 35 is NOT cosmetic and must move with the mean. At a
 // 75ms mean, P(Exp(75) < 90) = 70%, so a 90ms floor would clamp seven gaps
@@ -501,36 +525,10 @@ void main() {
 // short lulls" property this whole distribution exists for, at exactly the
 // density where clustering is most visible. 35ms is ~2 frames at 60fps, and
 // its original justification (a sub-frame gap "wastes a slot") has largely
-// lapsed: MAX_RIPPLES more than tripled below, so slots are no longer the
+// lapsed: MAX_RIPPLES has enough headroom that slots are no longer the
 // scarce resource, and two drops in one frame at two different
 // pickSpawnPoint()s read as two drops, not as one. At 35ms the clamp fires
 // on 37% of draws and the tail is otherwise intact.
-//
-// 14 -> 44. The standard is the one MAX_RIPPLES already used: enough
-// headroom that the evict-oldest rule is invisible. Population 31.7, an
-// upper bound sigma <= sqrt(31.7) = 5.6 (the min clamp makes the renewal
-// process sub-Poisson, so the true variance is lower), so 44 sits at
-// mean + 2.2 sigma, MORE conservative than the old 14's mean + 1.45 sigma.
-// And when it does evict, the victim is the oldest of forty-four spread
-// over RIPPLE_LIFE_S, i.e. age ~= 2.6 * 43/44 = 2.54s, where
-// decay = (1 - 2.54/2.6)^2 = 0.0005 -- an order of magnitude below the old
-// 0.006.
-//
-// PER-FRAGMENT COST, honestly. Two terms move in opposite directions: the
-// per-ripple sin/cos work an in-band ripple pays goes UP with population
-// but DOWN per-ripple thanks to PACKET_MIN_PX/MAX_PX's thinner mean
-// envelope (see that constant's own comment), landing around 1.9x today's
-// in-band cost; the ripple LOOP ITSELF (a compile-time-unrolled 44
-// iterations instead of 14, each occupied-but-off-band slot paying the age
-// test, speed multiply, delta subtract, length() and compares) is the
-// larger mover, at roughly 2.6x. Against the rest of this shader (three
-// cos() of ambient swell, one texture fetch, two pow(48) specular lobes, a
-// normalize) the whole water fragment lands around 2x its previous cost.
-// This is a FULL-VIEWPORT term that does not scale with the bead count,
-// unlike everything BeadScene.tsx's own perf comments are about. If it ever
-// needs trimming, cut MAX_RIPPLES before SPAWN_MEAN_MS -- the population is
-// what you see, the headroom is not (at 36 the evicted ripple's decay is
-// still only 0.001).
 const SPAWN_MEAN_MS = 75
 const SPAWN_MIN_MS = 35
 const SPAWN_MAX_MS = 1400
