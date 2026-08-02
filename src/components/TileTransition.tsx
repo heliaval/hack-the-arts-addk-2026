@@ -28,6 +28,13 @@ const reducedMotionQuery =
 // LEAD_IN_FORWARD_MS is a starting estimate for that cold-start cost, not
 // a measured value -- if a transparent-hole flash is ever visible on a
 // cold selection, this is the first constant to raise.
+//
+// NOTE (2026-08-08): the `onSettled` prop below does NOT relax any of the
+// above. BeadScene still MOUNTS in the same commit `active` flips, exactly
+// as this paragraph requires -- its WebGL canvas still gets the full
+// lead-in + flip + fade window (~2.03s forward) to init, compile shaders and
+// bake its cubemap before the reveal. onSettled gates only BeadScene's
+// marble SPAWN TIMER, which is a separate thing from its mount.
 // ROWS is NOT a constant -- see FALLBACK_ROWS and the layout effect below.
 // Tiles must render square regardless of viewport aspect ratio, so only
 // the column count is fixed; row count is derived at measurement time from
@@ -219,6 +226,28 @@ interface TileTransitionProps {
    * comment on the grid container below for why this exists instead of a
    * stacking-order trick. */
   circle: GlobeCircle | null
+  /** Fired exactly once per cover->reveal cycle, at the instant `phase`
+   * returns to 'idle' -- i.e. the last tile has finished its flip AND the
+   * grid's fade-out has completed AND this component has stopped rendering
+   * anything at all. That is the only instant at which the frame budget is
+   * genuinely free again; `phase === 'revealing'` is emphatically NOT it
+   * (that transition is what STARTS the flip, ~1.2s before it ends).
+   *
+   * Fires on BOTH directions and on the mid-flight retrigger path, because
+   * all three schedule the same `t3` -- the consumer is expected to key its
+   * own reaction off the same `active` expression it already owns, rather
+   * than this callback trying to describe which cycle just ended.
+   *
+   * Guaranteed to fire at most once per cycle and never on an unrelated
+   * re-render: `t3` is only ever created inside the `[active]` layout effect
+   * below, which early-returns unless `active` actually changed, and whose
+   * cleanup clears it if the cycle is superseded before it lands.
+   *
+   * Pass a STABLE reference (useCallback with an empty dep list). This
+   * component is memo()'d specifically because App re-renders ~11x/sec
+   * during a batch drain -- a fresh arrow function here would defeat that
+   * memo on every one of those renders. */
+  onSettled?: () => void
 }
 
 type Phase = 'idle' | 'covering' | 'revealing' | 'fadingOut'
@@ -231,7 +260,15 @@ type Phase = 'idle' | 'covering' | 'revealing' | 'fadingOut'
 // for no output change. `circle` is already deduped upstream in
 // GlobeView (stable reference unless the globe's on-screen box actually
 // moves), so this comparison is cheap and almost always short-circuits.
-export const TileTransition = memo(function TileTransition({ active, circle }: TileTransitionProps) {
+// The `onSettled` prop added alongside `active`/`circle` does not weaken
+// this: App passes a useCallback-with-no-deps handler, so it is reference-
+// stable for the app's lifetime and the shallow comparison still
+// short-circuits on every one of those renders.
+export const TileTransition = memo(function TileTransition({
+  active,
+  circle,
+  onSettled,
+}: TileTransitionProps) {
   // Row count is derived from the viewport, not fixed -- see the layout
   // effect below, which sets this alongside halfWidthPx so both stay in
   // sync (rows changing without a matching halfWidthPx update, or vice
@@ -274,6 +311,15 @@ export const TileTransition = memo(function TileTransition({ active, circle }: T
   // that effect on every phase change the effect itself causes.
   const phaseRef = useRef(phase)
   phaseRef.current = phase
+  // Same discipline as phaseRef directly above: assigned during render and
+  // READ (never depended on) inside the layout effect. The effect's
+  // dependency array is deliberately `[active]` and nothing else -- see the
+  // long maxDelayMs comment inside it for why widening that array has
+  // already caused one infinite-loop / stuck-overlay bug -- so the callback
+  // cannot be listed there, and capturing it in the closure directly would
+  // pin whatever reference existed when `active` last changed.
+  const onSettledRef = useRef(onSettled)
+  onSettledRef.current = onSettled
 
   // useLayoutEffect, not useEffect: this hook is what actually makes the
   // overlay appear/disappear. A passive effect runs AFTER the browser has
@@ -336,10 +382,14 @@ export const TileTransition = memo(function TileTransition({ active, circle }: T
       () => setPhase('fadingOut'),
       leadIn + maxDelayMs + TILE_FLIP_MS + TRAILING_SLACK_MS,
     )
-    const t3 = window.setTimeout(
-      () => setPhase('idle'),
-      leadIn + maxDelayMs + TILE_FLIP_MS + TRAILING_SLACK_MS + FADE_OUT_MS,
-    )
+    const t3 = window.setTimeout(() => {
+      setPhase('idle')
+      // Same tick as the phase flip, deliberately: 'idle' is what makes
+      // this component return null, so firing here means "the overlay is
+      // gone as of this commit", not "the overlay will be gone shortly".
+      // Nothing downstream may assume a painted frame has happened yet.
+      onSettledRef.current?.()
+    }, leadIn + maxDelayMs + TILE_FLIP_MS + TRAILING_SLACK_MS + FADE_OUT_MS)
     return () => {
       window.clearTimeout(t1)
       window.clearTimeout(t2)

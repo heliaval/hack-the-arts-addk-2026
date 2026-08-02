@@ -33,23 +33,70 @@ const WALL_THICKNESS = 40
 // height that actually reads as "fills the screen".
 export const SPAWN_JITTER_PX = 420
 
-// Fixed cadence for the year-batch drain — was 120 (a documentation link to
-// beadSpawnRate.ts's FASTEST_SPAWN_INTERVAL_MS, not an import; that link is
-// now broken on purpose). The batch has to actually REACH the live ceiling
-// before it drains, or a populous country never shows the pile that ceiling
-// was raised for: two parallel streams at 80ms is 25 beads/s, so a ~110
-// ceiling is reached in ~4.4s and a full 80+80 marbleCount.ts batch drains
-// in ~6.4s. Not lowered further: every spawn is a setBeads call, i.e. a
-// BeadScene re-render that recreates every live BeadBody element (memo()'d,
-// so they bail out of re-rendering, but createElement still runs for each),
-// and at ~110 live beads 25 spawns/s is already ~2,750 element creations
-// per second.
+// Year-batch drain pacing. REPLACES the flat BATCH_SPAWN_INTERVAL_MS = 80
+// setInterval this file carried through the last performance pass.
 //
-// This is a DIFFERENT system from WaterSurface.tsx's SPAWN_MEAN_MS -- that
-// one is ambient rain on the backdrop, deliberately decoupled from this
-// cadence (see its own comment). Changing one must never be reasoned about
-// as changing the other.
-const BATCH_SPAWN_INTERVAL_MS = 80
+// This DIRECTLY CONTRADICTS the comment that sat on the old spawn effect
+// ("The interval is deliberately UNCHANGED, not doubled: doubling it would
+// halve each stream's actual drain rate ... which is a real behaviour
+// change, not a perf win"), and the contradiction is intentional, not an
+// oversight: that pass was forbidden from changing the batch's playback
+// speed, and this one was explicitly ASKED for a slower, longer-playing
+// batch ("the overall transition plays out over a longer time, and is
+// faster at the start ... that way it's also more beautiful"). The
+// behaviour change IS the feature now.
+//
+// The gap between spawn ticks GROWS across the batch, so the rate eases
+// OUT -- fast at the start, decelerating to the end:
+//
+//   gap(u) = START + (END - START) * u^CURVE,  u = ticksFired / totalTicks
+//
+// Gap-as-a-function-of-progress, NOT the more obvious
+// t_k = T * (1 - (1-k/n)^(1/p)) time-as-a-function-of-index form. The
+// reason is the whole point of this change: a power-p ease-out's
+// instantaneous rate at t=0 is p times its MEAN rate, so at any total
+// duration under ~19s a cubic ease-out over an 80-marble batch is BUSIER
+// at its busiest moment than the flat 80ms cadence it replaces. Making the
+// gap the primitive puts the worst-case commit rate in a named constant
+// (1 / SPAWN_GAP_START_MS) instead of leaving it emergent.
+//
+// 88ms start, not 80: strictly ABOVE the old flat interval, so the busiest
+// instant of the new schedule is measurably calmer than the busiest
+// instant of the old one -- 11.4 commits/s peak vs 12.5, and a mean of
+// 7.3/s across a full batch, a 42% cut in average commit rate. That is the
+// actual lag mechanism; the easing is what makes it read as intentional
+// rather than just slow.
+//
+// Duration is emergent but closed-form: n * (START + (END-START)/(CURVE+1))
+// = n * 138.7ms.
+//   n = 80 (a populous country) -> 11.0s   (was 80 * 80ms = 6.4s)
+//   n = 40                      ->  5.5s
+//   n = 10 (a micro-state)      ->  1.3s
+// Plus the ~2.03s tile-transition gate that now precedes it (see
+// BeadSceneProps.spawnEnabled), a worst-case selection is ~13.0s
+// click-to-last-marble. If that reads as too long, lower SPAWN_GAP_END_MS
+// first -- it costs nothing at the busy end of the batch, which is where
+// all the frame budget actually goes.
+//
+// CURVE = 2 (quadratic). 1 would be a linear ramp, which reads as a
+// uniform slow-down rather than a curve; 3 keeps the fast cadence for
+// longer and then drops off sharply at the very end (mean gap 126ms, total
+// 10.1s at n=80) and is the obvious first alternative if the deceleration
+// wants to be more dramatic.
+//
+// Still a DIFFERENT system from WaterSurface.tsx's SPAWN_MEAN_MS -- that
+// one is ambient rain with no batch length to drain, which is precisely
+// why it is Poisson/memoryless and this is deterministic. Changing one
+// must never be reasoned about as changing the other.
+const SPAWN_GAP_START_MS = 88
+const SPAWN_GAP_END_MS = 240
+const SPAWN_GAP_CURVE = 2
+
+/** Delay before the next spawn tick, at fractional batch progress `u`. */
+function spawnGapMs(u: number): number {
+  const t = u <= 0 ? 0 : u >= 1 ? 1 : u
+  return SPAWN_GAP_START_MS + (SPAWN_GAP_END_MS - SPAWN_GAP_START_MS) * Math.pow(t, SPAWN_GAP_CURVE)
+}
 
 // Restores the per-bead eviction the leaf-departure effect was originally
 // designed around (see docs/superpowers/specs/2026-08-01-leaf-departure-
@@ -631,7 +678,8 @@ function useBeadMaterials(colors: BeadColors, theme: 'light' | 'dark') {
 // memo() is load-bearing, not hygiene. drei's <Environment> re-runs its
 // layout effect — and with frames={1} that effect re-renders the whole
 // cube map — whenever its `children` element identity changes. BeadScene
-// re-renders on every spawn (up to ~8/second), so without this memo the
+// re-renders on every spawn (peak 11.4/second, eased down to ~4/second by
+// the end of a batch), so without this memo the
 // cube map would be re-baked several times a second forever. That was
 // already true at 64px; at 256px it would be catastrophic.
 //
@@ -1336,8 +1384,8 @@ function MouseLight() {
 // pile stays readable from a flat orthographic camera. No ceiling — the
 // spawn point is above the top edge.
 // memo() with no props means this re-renders only when its own useThree
-// size subscription fires, not on every one of BeadScene's ~8/second spawn
-// re-renders. Five fixed RigidBodies is not much to reconcile, but it is
+// size subscription fires, not on every one of BeadScene's spawn
+// re-renders (peak 11.4/second). Five fixed RigidBodies is not much to reconcile, but it is
 // exactly zero work to avoid.
 const Boundaries = memo(function Boundaries() {
   const { width, height } = useThree((state) => state.size)
@@ -1521,6 +1569,19 @@ interface BeadSceneProps {
   deathMarbleCount: number
   birthAnnualTotal: number
   deathAnnualTotal: number
+  /** Gate on the marble spawn timer ONLY -- this component still mounts in
+   * the same commit TileTransition goes active, because its WebGL canvas
+   * needs that whole window to init (see TileTransition's
+   * LEAD_IN_FORWARD_MS). False means "the tile grid is still on screen":
+   * spawning under it costs a React commit, two Rapier body creations and a
+   * growing glass draw load per tick, all invisible behind an opaque z-40
+   * overlay, competing for frame budget with 24 tiles x 5 faces of CSS 3D
+   * compositing. At the ~2.03s the forward cycle takes and the pacing
+   * below, that is ~23 wasted commits and ~46 wasted bodies. Owned by App
+   * and keyed to `beadSceneVisible`, NOT derived here -- see App's own
+   * comment on tilesSettled for why a year switch breaks any
+   * component-local version of this flag. */
+  spawnEnabled: boolean
   onProgress: (progress: { births: number; deaths: number }) => void
   theme: 'light' | 'dark'
   /** The globe's on-screen circle, measured by GlobeView. Null until the
@@ -1545,6 +1606,7 @@ export const BeadScene = memo(function BeadScene({
   deathMarbleCount,
   birthAnnualTotal,
   deathAnnualTotal,
+  spawnEnabled,
   onProgress,
   theme,
   globeCircle,
@@ -1609,23 +1671,25 @@ export const BeadScene = memo(function BeadScene({
   }, [])
 
   useEffect(() => {
-    // AGGRESSIVE PERFORMANCE PASS: one paired timer, still at
-    // BATCH_SPAWN_INTERVAL_MS, emitting up to one bead of EACH kind per
-    // tick -- replacing two independent timers at that same interval. The
-    // interval is deliberately UNCHANGED, not doubled: doubling it would
-    // halve each stream's actual drain rate (one birth every 2x the
-    // interval instead of one every interval), which is a real behaviour
-    // change, not a perf win. What this removes is the old timers' phase
-    // independence -- they each fired once per BATCH_SPAWN_INTERVAL_MS but
-    // at unrelated offsets, so a full drain produced up to two separate
-    // React commits per interval, each one a fresh beads array,
-    // ~capacityFor() createElement calls and that many memo prop
-    // comparisons (see BATCH_SPAWN_INTERVAL_MS's own comment on the
-    // element-creation rate this reaches). One timer carrying both kinds
-    // halves the COMMIT rate (one commit per interval instead of up to two)
-    // while leaving each stream's own spawn rate exactly where it was.
-    // Eviction is likewise done ONCE per tick for however many beads this
-    // tick adds, rather than once per bead.
+    // The merge from the last performance pass is PRESERVED EXACTLY, and
+    // this is the load-bearing claim of this rewrite: ONE timer, ONE
+    // spawnBatch call per tick, carrying up to one bead of EACH kind, so a
+    // tick is one React commit -- one fresh beads array, ~capacityFor()
+    // createElement calls and that many memo prop comparisons -- no matter
+    // how many kinds it emits. Eviction is likewise still done once per
+    // tick for however many beads that tick adds, not once per bead.
+    //
+    // What changed is only WHEN the ticks land: setInterval -> a chained
+    // setTimeout, because the gap between ticks now varies (see
+    // spawnGapMs). Going back to two independent timers -- one per stream,
+    // each eased over its own count -- was considered and REJECTED: at
+    // t = 0 both streams sit at SPAWN_GAP_START_MS regardless of their
+    // counts and drift out of phase, so the peak would be 2 / 88ms = 22.7
+    // commits/s, worse than the 12.5/s this replaces AND worse than the
+    // 25/s the merge was introduced to fix. A merged priority-queue tick
+    // doesn't rescue it either: two due-times 40ms apart are still two
+    // commits. So the two streams share ONE timeline instead (below), which
+    // is what keeps the peak at exactly 1 / 88ms = 11.4 commits/s.
     function spawnBatch(kinds: Array<'birth' | 'death'>) {
       const liveCount = beadsRef.current.length - dyingIdsRef.current.size
       const overBy = liveCount + kinds.length - capacityRef.current
@@ -1663,33 +1727,91 @@ export const BeadScene = memo(function BeadScene({
     // Both counters start at 0 immediately (a batch of 0 for either stream
     // — e.g. missing death-rate data for the year — should still report 0
     // rather than leaving the previous batch's last value on screen).
+    // Deliberately ABOVE the spawnEnabled gate: the reset has to happen on
+    // mount, which is ~2s before the gate opens.
     reportProgress()
 
-    let timer: number | null = null
-    if (birthMarbleCount > 0 || deathMarbleCount > 0) {
-      timer = window.setInterval(() => {
-        const kinds: Array<'birth' | 'death'> = []
-        if (birthsSpawned < birthMarbleCount) {
-          kinds.push('birth')
-          birthsSpawned += 1
-        }
-        if (deathsSpawned < deathMarbleCount) {
-          kinds.push('death')
-          deathsSpawned += 1
-        }
-        if (kinds.length === 0) {
-          if (timer !== null) window.clearInterval(timer)
-          return
-        }
-        spawnBatch(kinds)
-        reportProgress()
-      }, BATCH_SPAWN_INTERVAL_MS)
+    if (!spawnEnabled) return
+
+    // ONE shared timeline for both streams, length set by the LARGER of the
+    // two. The larger stream emits exactly one bead per tick (identical to
+    // the old behaviour); the smaller emits on a rounded subset of the same
+    // ticks, spread evenly across the same total duration.
+    //
+    // Chosen over "each stream eases out over its own duration" for two
+    // reasons beyond the commit-rate math above. (1) Both streams reach
+    // 100% on the SAME final tick, so the two YearCounters advance in
+    // proportion and finish together -- with independent durations, a
+    // country with 80 births and 15 deaths would freeze its death counter
+    // at the final value while births were still 20% done, which for a
+    // visualization about the births-vs-deaths ratio is an active misread.
+    // (2) The on-screen red:grey bead ratio is the true data ratio at every
+    // instant. The objection to a shared timeline is that a small stream
+    // reads as sparse -- true, but the baseline it's being compared against
+    // is worse: the OLD merged timer gave the small stream no easing at
+    // all, dumping all 15 deaths on the first 15 ticks and then nothing,
+    // which is a clump rather than a pacing. And because the timeline's
+    // length scales with the larger count, a genuinely small batch (10+10)
+    // still drains in 1.3s, not 11s -- sparseness only appears when the
+    // counts really are lopsided, where it is honest.
+    const totalTicks = Math.max(birthMarbleCount, deathMarbleCount)
+    if (totalTicks <= 0) return
+
+    /** How many of `streamTotal` should have spawned once `ticksFired`
+     * ticks have landed. Math.round (not floor/ceil) centres the smaller
+     * stream's spawns within the timeline instead of front- or back-
+     * loading them, and lands exactly on `streamTotal` at the final tick.
+     * Since streamTotal <= totalTicks, consecutive calls differ by 0 or 1. */
+    function dueTotal(streamTotal: number, ticksFired: number): number {
+      return Math.round((ticksFired / totalTicks) * streamTotal)
     }
 
-    return () => {
-      if (timer !== null) window.clearInterval(timer)
+    let ticksFired = 0
+    let timer: number | null = null
+
+    function tick() {
+      ticksFired += 1
+      const kinds: Array<'birth' | 'death'> = []
+      // while, not if, purely as a guard: dueTotal cannot advance by more
+      // than 1 per tick given streamTotal <= totalTicks, but a future
+      // change to either could break that silently, and the loop degrades
+      // to "this tick carries two of a kind" rather than permanently
+      // stranding a marble.
+      while (birthsSpawned < dueTotal(birthMarbleCount, ticksFired)) {
+        kinds.push('birth')
+        birthsSpawned += 1
+      }
+      while (deathsSpawned < dueTotal(deathMarbleCount, ticksFired)) {
+        kinds.push('death')
+        deathsSpawned += 1
+      }
+      if (kinds.length > 0) {
+        spawnBatch(kinds)
+        reportProgress()
+      }
+      if (ticksFired < totalTicks) {
+        // Progress AFTER this tick drives the NEXT gap, so the very first
+        // gap is spawnGapMs(0) = SPAWN_GAP_START_MS and the batch's last
+        // marble is not followed by a pointless trailing wait.
+        timer = window.setTimeout(tick, spawnGapMs(ticksFired / totalTicks))
+      } else {
+        timer = null
+      }
     }
-  }, [birthMarbleCount, deathMarbleCount, birthAnnualTotal, deathAnnualTotal, onProgress])
+
+    timer = window.setTimeout(tick, spawnGapMs(0))
+
+    return () => {
+      if (timer !== null) window.clearTimeout(timer)
+    }
+  }, [
+    spawnEnabled,
+    birthMarbleCount,
+    deathMarbleCount,
+    birthAnnualTotal,
+    deathAnnualTotal,
+    onProgress,
+  ])
 
   return (
     // pointer-events-none so the sliders and toggles underneath stay fully

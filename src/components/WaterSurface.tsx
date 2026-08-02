@@ -504,14 +504,15 @@ void main() {
 `
 
 // Ambient, data-independent rain. Deliberately NOT tied to
-// BATCH_SPAWN_INTERVAL_MS: a batch drains in a handful of seconds, after
-// which the water would sit perfectly dead for the rest of the session --
-// an effect that stops. Beads also all spawn from one narrow band at screen
-// top (SPAWN_JITTER_PX), so a ripple anywhere else carries no perceivable
-// correspondence to the bead that "caused" it. GlobeRain, this app's own
-// rain precedent, is atmospheric for the same reasons. This is a DIFFERENT
-// system from BeadScene.tsx's BATCH_SPAWN_INTERVAL_MS (bead batch playback
-// speed) -- the two must never be reasoned about as the same knob.
+// BeadScene.tsx's SPAWN_GAP_START_MS/SPAWN_GAP_END_MS: a batch now takes up
+// to ~11s to drain (was a handful of seconds), after which the water would
+// otherwise sit dead for the rest of the session -- an effect that stops.
+// Beads also all spawn from one narrow band at screen top (SPAWN_JITTER_PX),
+// so a ripple anywhere else carries no perceivable correspondence to the
+// bead that "caused" it. GlobeRain, this app's own rain precedent, is
+// atmospheric for the same reasons. This is a DIFFERENT system from
+// BeadScene.tsx's eased spawn pacing (bead batch playback speed) -- the two
+// must never be reasoned about as the same knob.
 //
 // Exponentially-distributed gaps (a Poisson arrival process), not a uniform
 // window. Rain is memoryless: drops genuinely cluster and genuinely leave

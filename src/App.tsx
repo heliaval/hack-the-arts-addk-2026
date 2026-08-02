@@ -409,6 +409,37 @@ function App() {
   const [selectedYear, setSelectedYear] = useState<number | null>(null)
   const [progress, setProgress] = useState({ births: 0, deaths: 0 })
 
+  // "The tile grid has finished its entire cover->reveal->fade cycle."
+  // Gates BeadScene's marble spawn timer, NOT its mount -- see
+  // TileTransition's LEAD_IN_FORWARD_MS comment for why the mount must
+  // still land in the same commit as the overlay.
+  //
+  // LIFTED here rather than living inside BeadScene, and the reason is the
+  // year dropdown: BeadScene's key is `${selectedIso3}-${selectedYear}`, so
+  // changing YEAR on an already-selected country fully remounts it -- but
+  // `beadSceneVisible` never changes across that remount, so TileTransition's
+  // `[active]` layout effect early-returns, no cover/reveal cycle plays, and
+  // no onSettled will ever fire. State owned by BeadScene and reset by its
+  // own remount would therefore be stuck false forever on a year switch and
+  // that country's marbles would never spawn at all. Keyed to
+  // `beadSceneVisible` instead, this is exactly right in both cases: a
+  // fresh globe->beads transition resets it and waits, a year switch leaves
+  // it true and the new batch starts immediately (correctly -- there is no
+  // transition to wait for).
+  const [tilesSettled, setTilesSettled] = useState(false)
+  // The `beadSceneVisible` value `tilesSettled` currently describes. The
+  // render-time comparison further down is the React-documented "adjust
+  // state when a prop changes" pattern, used here instead of a
+  // useEffect([beadSceneVisible]) reset for a specific race: a passive
+  // effect runs AFTER the commit, and child effects run before parent ones,
+  // so on the commit where beadSceneVisible flips true a stale `true` left
+  // over from the previous cycle would be visible to the freshly-mounted
+  // BeadScene, whose own spawn effect would fire before App's reset ever
+  // ran. Adjusting during render discards that render instead of committing
+  // it, so BeadScene never mounts having seen the stale value.
+  const [tilesSettledFor, setTilesSettledFor] = useState(false)
+  const handleTilesSettled = useCallback(() => setTilesSettled(true), [])
+
   // Defaults to the latest available year once a country's historical data
   // loads, and re-defaults on country switch unless the previously
   // selected year happens to also exist in the new country's map.
@@ -539,6 +570,16 @@ function App() {
   // React commit and there's never a frame where only one of them exists.
   const beadSceneVisible = !!(selected && yearTotals)
 
+  if (tilesSettledFor !== beadSceneVisible) {
+    setTilesSettledFor(beadSceneVisible)
+    setTilesSettled(false)
+  }
+  // The `beadSceneVisible &&` half is what makes the reverse direction a
+  // genuine no-op: the beads->globe cycle's own onSettled still fires
+  // ~1.98s after deselection, long after BeadScene unmounted, and this
+  // guard means that write can never leak into the next selection.
+  const beadsReady = beadSceneVisible && tilesSettled
+
   // Memoized/stabilized (found in a 2026-08-06 performance audit): App
   // re-renders up to ~16x/sec while BeadScene's onProgress callback is
   // firing (see handleProgress above), and without these, this inline
@@ -581,6 +622,7 @@ function App() {
           deathMarbleCount={deathMarbleCount}
           birthAnnualTotal={birthAnnualTotal}
           deathAnnualTotal={deathAnnualTotal}
+          spawnEnabled={beadsReady}
           onProgress={handleProgress}
           theme={theme}
           globeCircle={globeCircle}
@@ -647,7 +689,7 @@ function App() {
           </div>
         )}
       </div>
-      <TileTransition active={beadSceneVisible} circle={globeCircle} />
+      <TileTransition active={beadSceneVisible} circle={globeCircle} onSettled={handleTilesSettled} />
     </div>
   )
 }
