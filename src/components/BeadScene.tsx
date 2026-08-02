@@ -611,17 +611,23 @@ const BACKDROP_COLORS = {
 // i.e. this backdrop specifically, not the DOM overlay
 // (DotMatrixAtmosphere) that already sits above the beads.
 //
-// Contrast and opacity are LOWER here than the DOM layer's 1.5/0.23,
-// deliberately, not a copy of those values -- found live: this plane has
-// no cursor-reveal mask (unlike the DOM layer, which only ever shows a
-// localized 340px patch), so it's permanently visible across the WHOLE
-// backdrop, and the same contrast/opacity that reads as a subtle patch
-// under the cursor reads as a bold, obviously-a-photo pattern spread
-// across the entire scene. Toned down until it reads as background grain
-// again rather than a visible motif.
+// Contrast and opacity were originally kept LOWER here than the DOM
+// layer's 1.5/0.23, on the reasoning that this plane has no cursor-reveal
+// mask (unlike the DOM layer, which only ever shows a localized 340px
+// patch) and so is permanently visible across the WHOLE backdrop -- the
+// same contrast/opacity that read as a subtle patch under the cursor read
+// as a bold, obviously-a-photo pattern spread across the entire scene.
+// Raised again per explicit request ("make the bg texture quite more
+// apparent"): 0.1/1.15 had been toned down far enough that the grain was
+// barely legible at all, particularly now that the much larger live bead
+// count covers more of the backdrop and what's left visible needs to carry
+// more weight to read as textured rather than flat. Still below the DOM
+// layer's own values -- this plane really is permanently visible with no
+// reveal mask, so full parity would still be the "bold photo" look that
+// reasoning above was written to avoid.
 const BACKDROP_TEXTURE_URL = '/textures/brick.jpg'
-const BACKDROP_TEXTURE_FILTER = 'grayscale(1) contrast(1.15) brightness(1.05)'
-const BACKDROP_TEXTURE_OPACITY = 0.1
+const BACKDROP_TEXTURE_FILTER = 'grayscale(1) contrast(1.3) brightness(1.05)'
+const BACKDROP_TEXTURE_OPACITY = 0.2
 
 // Module-level singleton, not per-component-instance: the image only
 // ever needs to be fetched/decoded once for the whole app lifetime, and
@@ -1543,16 +1549,29 @@ export const BeadScene = memo(function BeadScene({
             this light is what keeps the beads reading as glass, not just
             reflective blobs.
 
-            Dark-theme intensity lowered further, alongside
-            BeadEnvironment's own dark-theme cut above -- 0.4 was tuned
-            against the light theme's bright backdrop, and reused as-is in
-            dark theme it was the other main source of the "not pitch
-            black" grey read (a full-strength Lambert term brightens the
-            whole lit hemisphere of every bead, not just an edge highlight).
-            Light theme keeps 0.4: a near-white backdrop needs the stronger
-            light this was originally tuned for, and that theme was not
-            part of the "should be pitch black" report. */}
-        <directionalLight position={[200, 400, 300]} intensity={theme === 'dark' ? 0.15 : 0.4} />
+            Dark-theme intensity: was cut to 0.15 alongside BeadEnvironment's
+            own dark-theme reduction above, then raised back to 0.3 -- found
+            live, "originally black and then something causes them to go
+            grey": at 0.15 this light was too weak to put a real
+            highlight-vs-body CONTRAST on every bead, so the only thing
+            strong enough to do that was MouseLight's point light (position-
+            dependent, ~400px falloff radius) -- beads near the cursor got a
+            concentrated highlight against a dark body and read as glossy
+            black, while beads elsewhere had nothing but the low, spatially
+            UNIFORM env/ambient fill spread evenly across their whole
+            surface, which reads as flat medium grey rather than black with
+            a shine, even at a similar or lower average luminance (a
+            concentrated highlight vs. a soft even wash is a genuine
+            perceptual-contrast difference, not just a brightness one). This
+            directionalLight has no distance falloff, so raising it gives
+            EVERY bead the same highlight-vs-body contrast MouseLight only
+            gave to whichever ones happened to be near the cursor --
+            BeadEnvironment's own low intensity above still keeps the body
+            itself dark; this is what keeps it from flattening into an
+            all-over grey sheen. Light theme keeps 0.4: a near-white
+            backdrop needs the stronger light this was originally tuned for,
+            and that theme was not part of the report. */}
+        <directionalLight position={[200, 400, 300]} intensity={theme === 'dark' ? 0.3 : 0.4} />
         <MouseLight />
         <Backdrop theme={theme} circle={globeCircle} globeElement={globeElement} />
         {/* Rapier's WASM is loaded via suspend-react, so Physics suspends. */}

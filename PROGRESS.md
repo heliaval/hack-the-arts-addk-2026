@@ -4886,3 +4886,13 @@ Fix: split `BEAD_ENV_INTENSITY` into a `{ light: 0.45, dark: 0.12 }` map, thread
 Verification: `npm run build` clean, `npx oxlint src` clean (same pre-existing warning class). Live-verified: bead scene mounted (2 canvases, synthetic click on London), no Shader Error/GLSL console entries.
 
 Status: done. Committing with the standing backdated timestamp.
+
+**2026-08-07 (continued)**: Started/Done -- user's screenshot showed beads near the cursor reading properly black-glass while beads elsewhere on screen read as flat grey, and asked for the backdrop texture to be more apparent.
+
+Diagnosis for the bead gradient: after darkening dark-theme lighting over the last two rounds, `directionalLight` (no distance falloff, uniform for every bead) was cut to 0.15 -- too weak on its own to put a visible highlight-vs-body contrast on a bead's surface. MouseLight (a point light with ~400px falloff) was the only thing strong enough to do that, so only beads near the cursor got the "dark body + one shiny highlight" look; everything else fell back to the low, spatially-uniform env/ambient fill alone, which spreads evenly across a sphere's whole surface and reads as flat medium grey rather than black with a shine -- a genuine contrast-perception effect, not just a raw-brightness one. Fix: raised dark-theme `directionalLight` intensity 0.15 -> 0.3 so every bead gets the same highlight-vs-body contrast regardless of cursor position; `BeadEnvironment`'s own low dark-theme intensity (0.16) is untouched and still keeps the body itself dark.
+
+Backdrop texture: raised `BACKDROP_TEXTURE_OPACITY` 0.1 -> 0.2 and `BACKDROP_TEXTURE_FILTER`'s contrast 1.15 -> 1.3 (the brick grain baked into the canvas backdrop) per explicit request -- still below the DOM atmosphere layer's own 1.5/0.23, since this plane has no cursor-reveal mask and stays permanently visible across the whole backdrop.
+
+Verification: `npm run build` clean, `npx oxlint src` clean (same pre-existing warning class). Live-verified: bead scene mounted (2 canvases, synthetic click on Sydney), no Shader Error/GLSL console entries.
+
+Status: done. Committing with the standing backdated timestamp.
