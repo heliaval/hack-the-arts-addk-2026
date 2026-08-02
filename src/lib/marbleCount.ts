@@ -6,11 +6,13 @@
 // interval curve: each 10x in real total is an equal step in marble count.
 //
 // [5, 25] per stream (not a literal reading of births+deaths capped at 70
-// from the original design spec) — see the Global Constraints note in
-// docs/superpowers/plans/2026-08-01-year-select-marble-batches.md: this
-// repo's live bead-capacity backstop is MAX_CAPACITY = 55
-// (src/components/BeadScene.tsx), set by a later perf pass, so keeping the
-// combined max at 50 stays under it with margin.
+// from the original design spec). This file's own comment used to claim a
+// MAX_CAPACITY = 55 backstop already existed in BeadScene.tsx -- it never
+// did, and 55 sits above this combined max of 50 anyway, which would have
+// meant eviction (and the leaf-departure effect it drives) silently never
+// fired for any single country/year. BeadScene.tsx's actual MAX_CAPACITY
+// is 40, deliberately below this file's max, so eviction reliably fires
+// for populous countries.
 const MIN_TOTAL = 1
 const MAX_TOTAL = 5e7
 const MIN_MARBLES = 5

@@ -1,4 +1,4 @@
-import { Suspense, memo, useEffect, useMemo, useRef, useState } from 'react'
+import { Suspense, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { Environment, Lightformer } from '@react-three/drei'
@@ -28,6 +28,22 @@ export const SPAWN_JITTER_PX = 200
 // year's totals landing," not "right now" — see
 // docs/superpowers/specs/2026-08-01-year-select-marble-batches-design.md.
 const BATCH_SPAWN_INTERVAL_MS = 120
+
+// Restores the per-bead eviction the leaf-departure effect was originally
+// designed around (see docs/superpowers/specs/2026-08-01-leaf-departure-
+// effect-design.md), lost when the year-select-marble-batches refactor
+// removed the old fixed-cap mechanism. marbleCount.ts's own comment
+// references a "MAX_CAPACITY = 55" backstop as already existing here --
+// it never actually did, and even if it had, 55 sits ABOVE this scene's
+// real max combined spawn (25 + 25 = 50, per marbleCount.ts's MAX_MARBLES),
+// so eviction would have silently never fired for any single country/year.
+// 40 sits below that max so it actually bites for populous countries
+// (where the effect is visible during normal viewing, not just on
+// country/year switch), while small countries under 40 combined simply
+// never reach it -- which is fine, there's nothing to evict yet.
+const MAX_CAPACITY = 40
+// How long a bead takes to shrink away once evicted.
+const BEAD_EXIT_MS = 400
 
 // No marble texture (see the removed painting pipeline further down this
 // file). MARBLE_VARIANTS survives purely so Bead.variant keeps the same
@@ -709,30 +725,41 @@ function GlobeCollider({ circle }: { circle: GlobeCircle }) {
 // React keys matter: a changing key would recreate the body and teleport a
 // settled bead back to the spawn point.
 //
-// There is no per-bead eviction in this file anymore (see the year-batch
-// spawn effect in BeadScene) — a marble's only way to "disappear" is the
-// whole scene unmounting, which happens when the selected country/year
-// changes (App's `key={selectedIso3}-${selectedYear}`) or the country is
-// deselected. `lastScreenPosRef` tracks this bead's most recent on-screen
-// position via useFrame (a plain ref write, not state — negligible cost per
-// bead per frame) purely so that the unmount cleanup below has a real
-// position to launch a departure leaf from, instead of guessing.
+// Per-bead eviction at MAX_CAPACITY (see that constant's comment): the
+// scene marks the oldest live bead `dying` rather than removing it
+// outright, so it shrinks away over BEAD_EXIT_MS instead of popping out of
+// existence. Physics keeps simulating it while it shrinks (only the mesh's
+// own scale changes, not the RigidBody) -- cheap, and matches the original
+// design's "quiet visual event" framing. `onDeparture` fires exactly once,
+// at the moment `dying` first turns true (the shrink's start, not its
+// end, so the leaf's launch is causally simultaneous with the marble
+// beginning to vanish) -- guarded by `departedRef` since `dying` stays
+// true for the whole shrink. Once the shrink completes, `onExpire` tells
+// the parent to actually remove this bead from state, which is the only
+// thing that unmounts this component.
 const BeadBody = memo(function BeadBody({
   bead,
   material,
   color,
+  dying,
   onDeparture,
+  onExpire,
 }: {
   bead: Bead
   material: THREE.Material
   color: string
+  dying: boolean
   onDeparture: (x: number, y: number, color: string) => void
+  onExpire: (id: number) => void
 }) {
   const { width, height } = useThree((state) => state.size)
   const meshRef = useRef<THREE.Mesh>(null)
   const lastScreenPosRef = useRef({ x: width / 2 + bead.x, y: height / 2 })
+  const exitElapsedMsRef = useRef(0)
+  const departedRef = useRef(false)
+  const expiredRef = useRef(false)
 
-  useFrame(() => {
+  useFrame((_, delta) => {
     const mesh = meshRef.current
     if (!mesh) return
     const worldPos = mesh.getWorldPosition(new THREE.Vector3())
@@ -740,15 +767,20 @@ const BeadBody = memo(function BeadBody({
     // centre, +y up (see this file's top-of-file comment) — flip to DOM
     // screen space (origin top-left, +y down) for LeafOverlay.
     lastScreenPosRef.current = { x: width / 2 + worldPos.x, y: height / 2 - worldPos.y }
-  })
 
-  useEffect(() => {
-    return () => onDeparture(lastScreenPosRef.current.x, lastScreenPosRef.current.y, color)
-    // Only the unmount matters here — deps intentionally exclude
-    // lastScreenPosRef/onDeparture/color's per-render identity so this
-    // effect doesn't re-fire (and re-register a fresh cleanup) every frame.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+    if (!dying) return
+    if (!departedRef.current) {
+      departedRef.current = true
+      onDeparture(lastScreenPosRef.current.x, lastScreenPosRef.current.y, color)
+    }
+    exitElapsedMsRef.current += delta * 1000
+    const t = Math.min(1, exitElapsedMsRef.current / BEAD_EXIT_MS)
+    mesh.scale.setScalar(1 - t)
+    if (t >= 1 && !expiredRef.current) {
+      expiredRef.current = true
+      onExpire(bead.id)
+    }
+  })
 
   return (
     <RigidBody
@@ -809,12 +841,53 @@ export function BeadScene({
   const materials = useBeadMaterials(colors)
 
   const [beads, setBeads] = useState<Bead[]>([])
+  // ids currently mid-shrink-out (evicted at MAX_CAPACITY, or -- once
+  // added -- expired via handleExpire). A bead in `beads` but not yet in
+  // `dyingIds` is fully live; one in both is fading; handleExpire removes
+  // it from both once its shrink finishes.
+  const [dyingIds, setDyingIds] = useState<Set<number>>(() => new Set())
+  // Mirrors of the two states above, read by spawn() to decide eviction.
+  // spawn() is called from setInterval closures that don't see fresh
+  // `beads`/`dyingIds` via React's normal closure capture (the same reason
+  // the append below already had to use the setBeads updater form) --
+  // refs kept in sync post-render give spawn() a same-or-previous-render
+  // snapshot, plenty fresh at this spawn cadence (>=40ms, far slower than
+  // a commit).
+  const beadsRef = useRef<Bead[]>([])
+  useEffect(() => {
+    beadsRef.current = beads
+  }, [beads])
+  const dyingIdsRef = useRef<Set<number>>(new Set())
+  useEffect(() => {
+    dyingIdsRef.current = dyingIds
+  }, [dyingIds])
   // Monotonic counter, not Math.random(): React keys must be stable and
   // never collide, or Rapier bodies get torn down and recreated mid-fall.
   const nextIdRef = useRef(0)
 
+  const handleExpire = useCallback((id: number) => {
+    setBeads((prev) => prev.filter((b) => b.id !== id))
+    setDyingIds((prev) => {
+      if (!prev.has(id)) return prev
+      const next = new Set(prev)
+      next.delete(id)
+      return next
+    })
+  }, [])
+
   useEffect(() => {
     function spawn(kind: 'birth' | 'death') {
+      const liveCount = beadsRef.current.length - dyingIdsRef.current.size
+      if (liveCount >= MAX_CAPACITY) {
+        const oldest = beadsRef.current.find((b) => !dyingIdsRef.current.has(b.id))
+        if (oldest) {
+          setDyingIds((prev) => {
+            const next = new Set(prev)
+            next.add(oldest.id)
+            return next
+          })
+        }
+      }
       setBeads((prev) => [
         ...prev,
         {
@@ -940,7 +1013,9 @@ export function BeadScene({
                 bead={bead}
                 material={(bead.kind === 'birth' ? materials.birth : materials.death)[bead.variant]}
                 color={bead.kind === 'birth' ? colors.birth : colors.death}
+                dying={dyingIds.has(bead.id)}
                 onDeparture={onDeparture}
+                onExpire={handleExpire}
               />
             ))}
           </Physics>
