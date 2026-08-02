@@ -1496,7 +1496,18 @@ export const BeadScene = memo(function BeadScene({
             transmission shading from going flat (see the "stripped"
             comparison this was restored from). MouseLight supplies the one
             highlight that IS meant to be seen, tracking the cursor. */}
-        <BeadEnvironment intensity={theme === 'dark' ? 0.35 : 0.55} resolution={BEAD_ENV_RESOLUTION} />
+        {/* Dark-theme intensity lowered 0.35 -> 0.16: at 0.35 the baked
+            rig's ambient/reflection contribution was keeping the glass
+            body noticeably grey rather than reading as near-black, dark
+            glass over a dark backdrop. transmission=0.98 (BEAD_TRANSMISSION)
+            is what should carry the "pitch black" look -- clear glass over
+            an actually-dark scene reads dark on its own -- so cutting the
+            ambient/reflection term this much is what lets that show through
+            instead of being washed out by it. Kept well above 0 rather than
+            removed: some ambient fill is still what stops the clearcoat
+            layer and MouseLight's highlight from looking pasted onto a flat
+            black sphere with nothing else visible. */}
+        <BeadEnvironment intensity={theme === 'dark' ? 0.16 : 0.55} resolution={BEAD_ENV_RESOLUTION} />
         {/* Was briefly removed as a bead-count perf cut, then restored: the
             baked Lightformer rig above supplies IBL (reflections + ambient
             fill via envMapIntensity) but not a real-time Lambert shading
@@ -1509,8 +1520,18 @@ export const BeadScene = memo(function BeadScene({
             frame cost of the larger bead count needs trimming again, look
             at BEAD_CLEARCOAT or gl.transmissionResolutionScale first --
             this light is what keeps the beads reading as glass, not just
-            reflective blobs. */}
-        <directionalLight position={[200, 400, 300]} intensity={0.4} />
+            reflective blobs.
+
+            Dark-theme intensity lowered further, alongside
+            BeadEnvironment's own dark-theme cut above -- 0.4 was tuned
+            against the light theme's bright backdrop, and reused as-is in
+            dark theme it was the other main source of the "not pitch
+            black" grey read (a full-strength Lambert term brightens the
+            whole lit hemisphere of every bead, not just an edge highlight).
+            Light theme keeps 0.4: a near-white backdrop needs the stronger
+            light this was originally tuned for, and that theme was not
+            part of the "should be pitch black" report. */}
+        <directionalLight position={[200, 400, 300]} intensity={theme === 'dark' ? 0.15 : 0.4} />
         <MouseLight />
         <Backdrop theme={theme} circle={globeCircle} globeElement={globeElement} />
         {/* Rapier's WASM is loaded via suspend-react, so Physics suspends. */}
