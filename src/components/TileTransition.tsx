@@ -1,4 +1,4 @@
-import { memo, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { memo, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { computeSweepDelays } from '@/lib/sweep'
 import type { GlobeCircle } from '@/components/ui/cobe-globe'
 
@@ -79,14 +79,52 @@ const FALLBACK_ROWS = 4
 // Applied to front and back faces so lighting reads on whichever one is
 // currently facing the viewer.
 const FACE_LIGHT_SHADOW = 'inset 0 1px 0 oklch(1 0 0 / 14%), inset 0 -10px 14px -10px oklch(0 0 0 / 35%)'
+// Copied verbatim from dot-matrix-background.tsx's dot-grid layer (same
+// radial-gradient, same 24px cell, same 0.18 opacity) so the resting front
+// face reads as the app's own background rather than an approximation of
+// it. Only the base grid is replicated here -- that component's
+// cursor-reveal mask, sheen and glass-photo layers are all driven by live
+// --mx/--my pointer tracking and have no meaning on a face that exists for
+// ~200ms and is about to rotate away.
+//
+// Its own layer (a child of the face) rather than a backgroundImage on the
+// face itself: the source's dot alpha comes from a layer `opacity: 0.18`,
+// and putting that directly on the face would also fade its bg-muted
+// tint, its border and FACE_LIGHT_SHADOW. Module-level constant, not an
+// inline object literal -- this component re-renders ~16x/sec mid-
+// transition (see the memo comment below), and a stable reference is one
+// fewer allocation per tile per render.
+const DOT_GRID_BASE_STYLE: CSSProperties = {
+  backgroundImage: 'radial-gradient(circle at center, var(--foreground) 0 1px, transparent 1px)',
+  backgroundSize: '24px 24px',
+  opacity: 0.18,
+}
+// Dots tile every 24px from their own box's origin, but a cell is
+// innerWidth/COLUMNS px wide -- almost never a multiple of 24 -- so an
+// un-offset pattern restarts its phase at every tile boundary and the
+// resting grid reads as mismatched patches with visible seams. Negative
+// background-position equal to the tile's own viewport offset re-anchors
+// every tile to a single viewport-origin lattice -- the exact lattice
+// DotMatrixBackground uses (it's `absolute inset-0` on the root container
+// at 0,0, and this overlay is `fixed inset-0`), so the two line up
+// dot-for-dot where they meet.
+function dotGridPosition(row: number, col: number, cellPx: number): string {
+  return `${-col * cellPx}px ${-row * cellPx}px`
+}
 
 interface Tile {
   id: string
   delayMs: number
+  // Grid coordinates, carried through purely so the front face's dot-grid
+  // background can be offset into a single continuous lattice (see
+  // dotGridPosition). Not used by the stagger -- that's the normalized
+  // x/y computed below, which are mirrored on the column axis.
+  row: number
+  col: number
 }
 
 function buildTiles(rows: number): Tile[] {
-  const items: { id: string; x: number; y: number }[] = []
+  const items: { id: string; x: number; y: number; row: number; col: number }[] = []
   const rowSpan = Math.max(rows - 1, 1)
   for (let row = 0; row < rows; row++) {
     for (let col = 0; col < COLUMNS; col++) {
@@ -105,11 +143,13 @@ function buildTiles(rows: number): Tile[] {
         id: `${row}-${col}`,
         x: (COLUMNS - 1 - col) / (COLUMNS - 1),
         y: row / rowSpan,
+        row,
+        col,
       })
     }
   }
   const delays = computeSweepDelays(items)
-  return items.map(({ id }) => ({ id, delayMs: delays.get(id) ?? 0 }))
+  return items.map(({ id, row, col }) => ({ id, row, col, delayMs: delays.get(id) ?? 0 }))
 }
 
 interface TileTransitionProps {
@@ -341,17 +381,18 @@ export const TileTransition = memo(function TileTransition({ active, circle }: T
                   line at each internal seam instead of a 1px one. The
                   grid container's own border-l/border-t above closes off
                   the two edges this leaves open on the overlay's outer
-                  boundary. Placeholder tint only (--muted/--border
-                  tokens) -- real artwork is a one-line swap here, same
-                  pattern as dot-matrix-background.tsx's glass layer:
-                  backgroundImage: 'url(/textures/tile.jpg)',
-                  backgroundSize: 'cover', backgroundPosition: 'center'.
-                  Plain tint only, no gradient overlay -- a gradient
-                  highlight was tried and explicitly reverted per request,
-                  since a real texture is replacing this background
-                  outright once supplied; keep this the same flat tint
-                  until then rather than layering a treatment that'll just
-                  get thrown away. */}
+                  boundary.
+                  This is the face that represents the scene being
+                  transitioned AWAY FROM (it faces the viewer at
+                  rotateY(0deg), i.e. throughout `covering`, in BOTH
+                  directions), so it carries the app's own dot-matrix
+                  texture -- see DOT_GRID_BASE_STYLE. The bg-muted/55 tint
+                  stays underneath it as the face's opaque body; the dot
+                  layer is a child rather than a second background on this
+                  div so its 0.18 opacity applies to the dots alone and
+                  not to the tint/border/FACE_LIGHT_SHADOW. Still no
+                  gradient overlay -- one was tried on this face and
+                  explicitly reverted per request. */}
               <div
                 className="absolute inset-0 border-r border-b border-border bg-muted/55"
                 style={{
@@ -359,7 +400,15 @@ export const TileTransition = memo(function TileTransition({ active, circle }: T
                   transform: `translateZ(${halfWidthPx}px)`,
                   boxShadow: FACE_LIGHT_SHADOW,
                 }}
-              />
+              >
+                <div
+                  className="absolute inset-0"
+                  style={{
+                    ...DOT_GRID_BASE_STYLE,
+                    backgroundPosition: dotGridPosition(tile.row, tile.col, halfWidthPx * 2),
+                  }}
+                />
+              </div>
               {/* Back face: briefly visible as the tile turns, settles
                   facing the viewer once the flip completes -- still a
                   plain tinted surface, not different content (the actual

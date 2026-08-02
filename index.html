@@ -5,6 +5,19 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Red Thread</title>
+    <!-- Fills the gap before React mounts (and before src/index.css's own
+         --background tokens apply) with something close to the app's real
+         background instead of the browser's default pure white flash.
+         Matches src/index.css's light/dark --background values directly
+         rather than guessing -- no JS needed since prefers-color-scheme is
+         available at parse time, same signal useTheme.ts falls back to
+         when there's no localStorage choice yet. -->
+    <style>
+      html, body { background: #fffffa; }
+      @media (prefers-color-scheme: dark) {
+        html, body { background: #0d0d0d; }
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>

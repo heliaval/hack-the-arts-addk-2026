@@ -4300,3 +4300,60 @@ bug; after the fix, all sampled labels land within the globe container's
 own box.
 
 Status: done. Committed with the standing backdated timestamp.
+
+## 2026-08-06 (continued) — Bead backdrop to pure black, tile front face gets real dot texture, startup background
+
+Three changes from one message: (1) a tiny direct fix for a startup flash,
+(2) a larger change planned with Opus per explicit request.
+
+**Startup loading flash** (`index.html`): the page was pure white before
+React mounted / index.css's tokens applied. Added an inline `<style>` in
+`<head>` matching `--background` for both themes via `prefers-color-scheme`
+(`#fffffa` light / `#0d0d0d` dark) -- no JS needed, available at parse
+time. Confirmed live via `getComputedStyle` on `html`/`body`.
+
+**BeadScene backdrop gradient -> pure black** (`src/components/
+BeadScene.tsx`): the user was looking at the bead scene and said the
+gradient backdrop (a vertical light-to-dark canvas gradient behind the
+globe, `useBackdropBase`) "reads as unnatural" and asked to ditch it for
+pure black. Dispatched an Opus planning agent first per explicit request
+("make sure to plan with opus"). It confirmed nothing downstream depends
+on the gradient's specific color stops (the `BOKEH_SPOTS` Lightformer rig
+was already moved out of this canvas in an earlier pass; the alpha-leak
+invariant just needs the fill to stay opaque, which `#000000` satisfies).
+Recommended unconditional black in both themes rather than theme-
+conditional, since the request was about a look, not a token -- flagged as
+a real judgment call (light mode's bead scene becomes a full-screen black
+field over the app's near-white background) with the one-line revert if
+that reads wrong live. Implemented as recommended: `ctx.fillStyle =
+'#000000'` replaces the `createLinearGradient` block. Also caught and
+fixed a resulting `exhaustive-deps` warning (`theme` no longer read inside
+the memo callback, since the fill isn't theme-conditional) by dropping it
+from the dependency array and marking the still-accepted parameter `void
+theme` -- kept the parameter itself so the hook's signature stays ready
+for a future theme-conditional fill or real artwork.
+
+**Tile front face gets the real dot texture** (`src/components/
+TileTransition.tsx`): confirmed via the front/back face comments that the
+front face (rotateY(0deg), facing the viewer throughout `covering` in
+both directions) is "the side switching from." Added `DOT_GRID_BASE_STYLE`
+copied verbatim from `dot-matrix-background.tsx`'s dot layer (same
+radial-gradient, 24px cell, 0.18 opacity) as a child div inside the front
+face (not a second backgroundImage on the face itself, so the 0.18 alpha
+only touches the dots, not the tint/border/lighting shadow already
+there). Each tile's dot layer is offset via `background-position:
+-col*cellPx -row*cellPx` so all tiles share one continuous viewport-origin
+lattice instead of each restarting the 24px pattern at its own corner --
+required threading `row`/`col` through the `Tile` interface and
+`buildTiles`, previously only tracked as normalized 0..1 stagger
+coordinates.
+
+Verification: `npm run build` clean, `npx oxlint src` clean (same
+pre-existing unrelated warnings, plus one new one caught and fixed as
+described above). Confirmed live: startup background color via
+`getComputedStyle`, no new console errors. The dot-grid tile face and
+black backdrop are only visible during/after an active transition, which
+this sandbox's Browser pane can't reliably trigger via synthetic canvas
+clicks (documented limitation, unchanged) -- user should confirm live.
+
+Status: done. Committed with the standing backdated timestamp.
