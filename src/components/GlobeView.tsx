@@ -15,6 +15,13 @@ interface GlobeViewProps {
    * stable reference — a plain useState setter is ideal — or this
    * component's React.memo stops working. */
   onCircleChange: (circle: GlobeCircle | null) => void
+  /** Called once the globe's live <canvas> element is mounted (and with
+   * null on unmount). BeadScene uses it to draw the actual rendered globe
+   * into its own backdrop each frame, rather than punching a transparent
+   * hole for the DOM globe to show through underneath — see BeadScene's
+   * Backdrop for why a real hole leaks into the beads' own transmission
+   * shading. Same stable-reference requirement as onCircleChange. */
+  onElementChange?: (element: HTMLCanvasElement | null) => void
   cityCount: number
   rotationSpeedKmS: number
 }
@@ -506,6 +513,7 @@ export const GlobeView = memo(function GlobeView({
   lang,
   onSelectCountry,
   onCircleChange,
+  onElementChange,
   cityCount,
   rotationSpeedKmS,
 }: GlobeViewProps) {
@@ -639,14 +647,16 @@ export const GlobeView = memo(function GlobeView({
       onCircleChange(circle)
     }
     report()
+    onElementChange?.(canvas)
     const observer = new ResizeObserver(report)
     observer.observe(canvas)
     window.addEventListener('resize', report)
     return () => {
       observer.disconnect()
       window.removeEventListener('resize', report)
+      onElementChange?.(null)
     }
-  }, [onCircleChange])
+  }, [onCircleChange, onElementChange])
 
   return (
     <div

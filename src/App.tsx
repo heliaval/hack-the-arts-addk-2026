@@ -280,6 +280,7 @@ function App() {
   const demographics = useDemographics()
   const [selectedIso3, setSelectedIso3] = useState<string | null>(null)
   const [globeCircle, setGlobeCircle] = useState<GlobeCircle | null>(null)
+  const [globeElement, setGlobeElement] = useState<HTMLCanvasElement | null>(null)
   const [lang, setLang] = useState<Lang>('en')
   const [langHintVisible, setLangHintVisible] = useState(false)
   const [themeHintVisible, setThemeHintVisible] = useState(false)
@@ -356,6 +357,7 @@ function App() {
           lang={lang}
           onSelectCountry={handleSelectCountry}
           onCircleChange={setGlobeCircle}
+          onElementChange={setGlobeElement}
           cityCount={cityCount}
           rotationSpeedKmS={rotationSpeedKmS}
         />
@@ -366,6 +368,7 @@ function App() {
           demographics={selected}
           theme={theme}
           globeCircle={globeCircle}
+          globeElement={globeElement}
         />
       )}
       <div className="absolute right-4 top-4 z-10 flex gap-2">

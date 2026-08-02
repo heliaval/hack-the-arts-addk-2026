@@ -5,7 +5,7 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { Environment, Lightformer } from '@react-three/drei'
 import { BallCollider, CuboidCollider, Physics, RigidBody } from '@react-three/rapier'
 import type { CountryDemographics } from '@/lib/worldbank'
-import type { GlobeCircle } from '@/components/ui/cobe-globe'
+import { GLOBE_SURFACE_RADIUS_FRACTION, type GlobeCircle } from '@/components/ui/cobe-globe'
 import { spawnIntervalMs } from '@/lib/beadSpawnRate'
 
 // With <Canvas orthographic> and no manual frustum override, react-three-
@@ -46,22 +46,10 @@ export const MAX_BEADS = 70
 // streams, so at most ~7 beads are mid-exit at any moment.
 const BEAD_EXIT_MS = 420
 
-// Marble textures. Each is an equirectangular canvas painted once per
-// theme and handed to one shared material as its `map`.
-//
-// 256x128 because SphereGeometry's UVs are equirectangular (2:1) and
-// because a bead is at most ~68 CSS pixels across on screen — a texel
-// density well past what refraction through a 1.52-IOR sphere can resolve.
-// All eight textures together are 8 * 256 * 128 * 4 bytes ~= 1.0MB, ~1.4MB
-// once three has built the mipmap chain. Negligible next to the
-// environment cube map.
-const MARBLE_TEXTURE_WIDTH = 256
-const MARBLE_TEXTURE_HEIGHT = 128
-// Three swirl variants and one catseye, per tint. Four is enough that a
-// 70-bead pile does not read as 70 copies of one object, and few enough
-// that generation stays a handful of milliseconds on a theme flip. The
-// catseye is deliberately a minority: it is the distinctive one, and it
-// reads as special precisely because roughly a quarter of the pile has it.
+// No marble texture (see the removed painting pipeline further down this
+// file). MARBLE_VARIANTS survives purely so Bead.variant keeps the same
+// range and the material-array indexing in useBeadMaterials/BeadBody stays
+// unchanged — each entry is currently the same clear-glass material.
 const MARBLE_SWIRL_VARIANTS = 3
 const MARBLE_CATSEYE_VARIANTS = 1
 export const MARBLE_VARIANTS = MARBLE_SWIRL_VARIANTS + MARBLE_CATSEYE_VARIANTS
@@ -77,17 +65,16 @@ export const MARBLE_VARIANTS = MARBLE_SWIRL_VARIANTS + MARBLE_CATSEYE_VARIANTS
 // replaced by the refracted sample and only attenuationColor tints it —
 // which, against a near-white page in the light theme, loses the
 // birth/death colour distinction the whole feature is built on. Holding
-// back 10% of the diffuse term keeps a red bead legibly red without
+// back a slice of the diffuse term keeps a red bead legibly red without
 // making it look painted.
 const BEAD_TRANSMISSION = 0.98
-// Beer-Lambert attenuation. Deliberately weak now: it multiplies the same
+// Beer-Lambert attenuation. Deliberately weak: it multiplies the same
 // transmitted term the marble texture does (see the shader trace on
-// useBeadMaterials), so the tight one-radius distance this used to have
-// would multiply every ribbon by a full-strength tint and flatten the
-// swirl back into a single hue — technically present, visually gone.
-// Three radii leaves a residual body tint, which is what still separates a
-// red pile from a grey one at a glance, and lets the texture be the thing
-// you actually look at.
+// useBeadMaterials), so a tight attenuation distance would multiply every
+// ribbon by a full-strength tint and flatten the swirl back into a single
+// hue — technically present, visually gone. Six radii leaves a residual
+// body tint, which is what still separates a red pile from a grey one at a
+// glance, and lets the texture be the thing you actually look at.
 const BEAD_ATTENUATION_DISTANCE = BEAD_RADIUS * 6
 const BEAD_THICKNESS = BEAD_RADIUS * 2
 // 1.52 is soda-lime glass. 1.0 would be air (no bending at all), 2.4
@@ -95,7 +82,7 @@ const BEAD_THICKNESS = BEAD_RADIUS * 2
 const BEAD_IOR = 1.52
 // Low but not zero: a perfectly smooth sphere reads as a flat disc, a
 // slightly rough one catches a readable highlight.
-const BEAD_ROUGHNESS = 0.08
+const BEAD_ROUGHNESS = 0.05
 // three's native chromatic aberration (MeshPhysicalMaterial.dispersion,
 // requires transmission > 0). This is what drei's MeshTransmissionMaterial
 // used to be needed for.
@@ -112,7 +99,7 @@ const BEAD_DISPERSION = 2.5
 // available. What it costs is one more cube-map sample plus a GGX term per
 // fragment; there is no clearcoatNormalMap, so three uses the geometry
 // normal for free.
-const BEAD_CLEARCOAT = 0.05
+const BEAD_CLEARCOAT = 0.6
 // Lower than BEAD_ROUGHNESS on purpose: the whole point of the layer is
 // that it is sharper than the surface underneath it.
 const BEAD_CLEARCOAT_ROUGHNESS = 0.04
@@ -132,7 +119,7 @@ const BEAD_ENV_RESOLUTION = 256
 // Lowered from 1.4 with the move to a 256px map and a clearcoat layer:
 // both add specular energy, and the previous value blows the highlights
 // out into white discs.
-const BEAD_ENV_INTENSITY = 0.15
+const BEAD_ENV_INTENSITY = 0.45
 
 // One geometry for every bead, built once at module scope. Phase 1 gave
 // each bead its own <sphereGeometry> element, i.e. up to MAX_BEADS
@@ -209,187 +196,72 @@ function resolveBeadColors(): BeadColors {
   }
 }
 
-// Deterministic PRNG (mulberry32). Math.random() would repaint different
-// marbles on every reload and every theme flip, which makes the human
-// visual checkpoint impossible to reason about — "the catseye variant
-// looked wrong" has to mean the same thing twice in a row.
-function mulberry32(seed: number) {
-  let a = seed >>> 0
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0
-    let t = Math.imul(a ^ (a >>> 15), 1 | a)
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
-  }
-}
+const LENS_TEXTURE_WIDTH = 256
+const LENS_TEXTURE_HEIGHT = 128
 
-interface MarblePalette {
-  /** The clear body of the glass. Near-white, because it multiplies the
-   * refracted light everywhere the ribbons are not (see the shader note on
-   * useBeadMaterials) — anything dark here reads as a hole, not as glass. */
-  base: string
-  /** Ribbon / vane colours, most saturated first. */
-  ribbons: string[]
-}
-
-// Every colour in a marble is derived from one of the two resolved tints,
-// so a birth marble is still unmistakably the accent red and a death
-// marble unmistakably the foreground tone. The birth/death distinction is
-// the entire point of the feature and the swirls must not blur it; what
-// the extra hues buy is that a bead reads as *swirled glass* rather than
-// as a flat coloured ball.
+// A single flattened lens of colour suspended in otherwise-clear glass —
+// the reference-photo cat's-eye look: a light, bright core inside a
+// saturated rim, not a flat swirl. Painted on an equirectangular canvas, so
+// under SphereGeometry's UVs the lens converges to a point at both poles of
+// the bead exactly the way a real vane does.
 //
-// HSL is read and written in explicit SRGBColorSpace. three's default
-// working colour space is Linear-sRGB (Color.getHSL/setHSL default to
-// ColorManagement.workingColorSpace, node_modules/three/src/math/Color.js
-// lines 248 and 567), so an unqualified round-trip would rotate hue and
-// scale lightness in linear light and produce visibly darker, differently
-// hued results than the CSS-style colours the rest of this file deals in.
-function marblePalette(tint: string): MarblePalette {
+// The base is opaque white, not transparent: this material still relies on
+// `transmission` (see BEAD_TRANSMISSION) for its clear-glass read, and a
+// transparent/black canvas area would multiply the transmitted light to
+// zero and read as a hole rather than clear glass — the same trap the
+// removed marble pipeline's `base` colour was built to avoid.
+//
+// Colour is derived from the tint, not hard-coded to the reference photo's
+// purple/green, so birth/death legibility survives — the shape is what's
+// being matched, not the specific hue.
+function paintLens(ctx: CanvasRenderingContext2D, tint: string) {
+  const w = LENS_TEXTURE_WIDTH
+  const h = LENS_TEXTURE_HEIGHT
+  ctx.fillStyle = '#ffffff'
+  ctx.fillRect(0, 0, w, h)
   const hsl = { h: 0, s: 0, l: 0 }
   new THREE.Color(tint).getHSL(hsl, THREE.SRGBColorSpace)
   const shade = (dh: number, s: number, l: number) =>
     `#${new THREE.Color()
-      .setHSL(
-        (hsl.h + dh + 1) % 1,
-        THREE.MathUtils.clamp(s, 0, 1),
-        THREE.MathUtils.clamp(l, 0, 1),
-        THREE.SRGBColorSpace,
-      )
+      .setHSL((hsl.h + dh + 1) % 1, THREE.MathUtils.clamp(s, 0, 1), THREE.MathUtils.clamp(l, 0, 1), THREE.SRGBColorSpace)
       .getHexString(THREE.SRGBColorSpace)}`
-  // Lightness floor. The light theme's --foreground is oklch(0.2 0 0),
-  // i.e. very nearly black, and a near-black texel does not read as "dark
-  // glass" — it multiplies the refracted light to zero and reads as a hole
-  // punched in the bead.
-  const l = Math.max(hsl.l, 0.16)
-  return {
-    base: shade(0, hsl.s * 0.1, Math.min(0.85, l + (1 - l) * 0.75)),
-    ribbons: [
-      shade(0, hsl.s, l),
-      shade(0.055, hsl.s * 0.85, Math.min(0.85, l + 0.22)),
-      shade(-0.055, Math.min(1, hsl.s * 1.15), Math.max(0.16, l - 0.06)),
-      shade(0, hsl.s * 0.4, Math.min(0.95, l + 0.42)),
-    ],
+  const x = w / 2
+  const halfWidth = 0.15 * w
+  for (const dx of [-w, 0, w]) {
+    // Outer rim: saturated, derived straight from the tint.
+    ctx.fillStyle = shade(0, Math.min(1, hsl.s * 1.3 + 0.15), Math.max(0.32, hsl.l))
+    ctx.beginPath()
+    ctx.moveTo(x + dx, 0)
+    ctx.quadraticCurveTo(x + dx + halfWidth, h * 0.5, x + dx, h)
+    ctx.quadraticCurveTo(x + dx - halfWidth, h * 0.5, x + dx, 0)
+    ctx.fill()
+    // Inner core: lighter, narrower — the bright "hot" centre a real
+    // cat's-eye vane has, which is what separates a lens from a flat blob.
+    ctx.fillStyle = shade(0.03, hsl.s * 0.35, Math.min(0.95, hsl.l + 0.35))
+    const innerHalf = halfWidth * 0.42
+    ctx.beginPath()
+    ctx.moveTo(x + dx, h * 0.1)
+    ctx.quadraticCurveTo(x + dx + innerHalf, h * 0.5, x + dx, h * 0.9)
+    ctx.quadraticCurveTo(x + dx - innerHalf, h * 0.5, x + dx, h * 0.1)
+    ctx.fill()
   }
 }
 
-// Swirl variant: soft ribbons running pole to pole.
-//
-// SphereGeometry's UVs are equirectangular, so a stroke that runs
-// top-to-bottom in this canvas maps to a band that converges to a point at
-// both poles of the bead — which is exactly how the ribbons in a real
-// swirl marble are arranged. The notorious equirectangular pole pinch
-// works FOR us here rather than against us.
-//
-// Each ribbon is drawn three times, offset by -W, 0 and +W, so a stroke
-// that crosses the u = 0 seam appears on both sides of it and the texture
-// wraps without a visible join. The texture's wrapS is RepeatWrapping for
-// the same reason.
-function paintSwirl(ctx: CanvasRenderingContext2D, palette: MarblePalette, rand: () => number) {
-  const w = MARBLE_TEXTURE_WIDTH
-  const h = MARBLE_TEXTURE_HEIGHT
-  ctx.fillStyle = palette.base
-  ctx.fillRect(0, 0, w, h)
-  // Canvas 2D's own blur is what sells "suspended inside the glass";
-  // hard-edged strokes read as paint on the surface instead. This runs
-  // once per texture, not per frame, so its cost is irrelevant.
-  ctx.filter = 'blur(3px)'
-  ctx.lineCap = 'round'
-  const ribbons = 5
-  for (let i = 0; i < ribbons; i++) {
-    const x = ((i + 0.5 + (rand() - 0.5) * 0.6) / ribbons) * w
-    const sway = (0.1 + rand() * 0.22) * w * (rand() < 0.5 ? -1 : 1)
-    ctx.strokeStyle = palette.ribbons[i % palette.ribbons.length]
-    ctx.lineWidth = (0.045 + rand() * 0.075) * w
-    for (const dx of [-w, 0, w]) {
-      ctx.beginPath()
-      // Start above and end below the canvas so the stroke's round cap is
-      // never visible as a blunt end at the poles.
-      ctx.moveTo(x + dx, -0.1 * h)
-      ctx.bezierCurveTo(x + dx + sway, 0.3 * h, x + dx - sway, 0.7 * h, x + dx, 1.1 * h)
-      ctx.stroke()
-    }
-  }
-  ctx.filter = 'none'
-}
-
-// Catseye variant: a real cat's-eye marble is clear glass with a single
-// flattened fan of coloured vanes suspended in the middle of it — hard
-// edges, few of them, symmetric, on an otherwise colourless body. It is
-// NOT a swirl, and the whole reason the user asked for it is that it reads
-// as a different object.
-//
-// Each vane is a filled lens/leaf: widest at the equator, tapering to a
-// point at both poles, which under equirectangular UVs is exactly the
-// shape a real vane has. Much less blur than paintSwirl, because the edge
-// of a cat's-eye vane is genuinely sharp.
-function paintCatseye(ctx: CanvasRenderingContext2D, palette: MarblePalette, rand: () => number) {
-  const w = MARBLE_TEXTURE_WIDTH
-  const h = MARBLE_TEXTURE_HEIGHT
-  ctx.fillStyle = palette.base
-  ctx.fillRect(0, 0, w, h)
-  ctx.filter = 'blur(1.5px)'
-  const vanes = 3
-  for (let i = 0; i < vanes; i++) {
-    const x = ((i + 0.5) / vanes) * w + (rand() - 0.5) * 0.05 * w
-    const halfWidth = (0.055 + rand() * 0.03) * w
-    ctx.fillStyle = palette.ribbons[i % palette.ribbons.length]
-    for (const dx of [-w, 0, w]) {
-      ctx.beginPath()
-      ctx.moveTo(x + dx, 0)
-      ctx.quadraticCurveTo(x + dx + halfWidth, h * 0.5, x + dx, h)
-      ctx.quadraticCurveTo(x + dx - halfWidth, h * 0.5, x + dx, 0)
-      ctx.fill()
-    }
-  }
-  ctx.filter = 'none'
-}
-
-// One THREE.CanvasTexture per variant, for one tint. Called twice (birth,
-// death) from inside useBeadMaterials' useMemo, so it runs on mount and
-// then only on a theme flip — never per bead, never per frame.
-//
-// Returns a fixed-length array with a null wherever a 2D context could not
-// be obtained. That is the same defensive shape normalizeCssColor already
-// uses in this file, and it degrades honestly: a null map makes
-// useBeadMaterials fall back to exactly the flat-tint glass this file
-// shipped before marbles existed, rather than producing a black bead.
-function createMarbleTextures(tint: string, seed: number): (THREE.CanvasTexture | null)[] {
-  const palette = marblePalette(tint)
-  const textures: (THREE.CanvasTexture | null)[] = []
-  for (let variant = 0; variant < MARBLE_VARIANTS; variant++) {
-    const canvas = document.createElement('canvas')
-    canvas.width = MARBLE_TEXTURE_WIDTH
-    canvas.height = MARBLE_TEXTURE_HEIGHT
-    const ctx = canvas.getContext('2d')
-    if (!ctx) {
-      textures.push(null)
-      continue
-    }
-    // A distinct but stable stream per variant. 7919 is just a prime
-    // stride, so variant 0 and variant 1 do not start from adjacent seeds
-    // and come out looking like each other.
-    const rand = mulberry32(seed + variant * 7919)
-    if (variant < MARBLE_SWIRL_VARIANTS) paintSwirl(ctx, palette, rand)
-    else paintCatseye(ctx, palette, rand)
-    const texture = new THREE.CanvasTexture(canvas)
-    // The canvas holds CSS colours, i.e. sRGB. Without this three treats
-    // the bytes as already-linear and every marble comes out pale and
-    // washed out — the classic silent colour-space bug, with no warning.
-    texture.colorSpace = THREE.SRGBColorSpace
-    // u wraps around the bead (paintSwirl draws seam-crossing strokes on
-    // both sides for this to be seamless); v runs pole to pole and must
-    // clamp, or the north pole would sample the south pole's texels.
-    texture.wrapS = THREE.RepeatWrapping
-    texture.wrapT = THREE.ClampToEdgeWrapping
-    // Beads are viewed at a grazing angle around their silhouette, which
-    // is where the ribbons are most compressed. 4x is the cheap end of
-    // anisotropic filtering and is what stops the edge ribbons aliasing
-    // into shimmer as a bead rolls.
-    texture.anisotropy = 4
-    textures.push(texture)
-  }
-  return textures
+// One texture per tint (birth, death) — not per variant. Called from inside
+// useBeadMaterials' useMemo, so it runs on mount and on a theme flip only.
+function createLensTexture(tint: string): THREE.CanvasTexture | null {
+  const canvas = document.createElement('canvas')
+  canvas.width = LENS_TEXTURE_WIDTH
+  canvas.height = LENS_TEXTURE_HEIGHT
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return null
+  paintLens(ctx, tint)
+  const texture = new THREE.CanvasTexture(canvas)
+  texture.colorSpace = THREE.SRGBColorSpace
+  texture.wrapS = THREE.RepeatWrapping
+  texture.wrapT = THREE.ClampToEdgeWrapping
+  texture.anisotropy = 4
+  return texture
 }
 
 // A small FIXED set of materials for the entire scene — MARBLE_VARIANTS
@@ -456,15 +328,15 @@ function useBeadMaterials(colors: BeadColors) {
       material.dispersion = BEAD_DISPERSION
       return material
     }
-    // Fixed seeds, not Date.now() or Math.random(): the same country in
-    // the same theme must produce the same marbles on every reload, or the
-    // human visual checkpoint has nothing stable to judge.
-    const birthMaps = createMarbleTextures(colors.birth, 0x9e3779b1)
-    const deathMaps = createMarbleTextures(colors.death, 0x85ebca77)
+    // One lens texture per kind (birth, death), reused across all
+    // MARBLE_VARIANTS material-array slots — bead.variant indexing stays
+    // valid, but every entry currently points at the same lens look.
+    const birthMap = createLensTexture(colors.birth)
+    const deathMap = createLensTexture(colors.death)
     return {
-      birth: birthMaps.map((map) => glass(colors.birth, map)),
-      death: deathMaps.map((map) => glass(colors.death, map)),
-      textures: [...birthMaps, ...deathMaps].filter((map): map is THREE.CanvasTexture => map !== null),
+      birth: Array.from({ length: MARBLE_VARIANTS }, () => glass(colors.birth, birthMap)),
+      death: Array.from({ length: MARBLE_VARIANTS }, () => glass(colors.death, deathMap)),
+      textures: [birthMap, deathMap].filter((t): t is THREE.CanvasTexture => t !== null),
     }
   }, [colors])
 
@@ -515,13 +387,13 @@ const BeadEnvironment = memo(function BeadEnvironment({
 }) {
   return (
     <Environment resolution={resolution} frames={1} environmentIntensity={intensity}>
-      <Lightformer form="rect" intensity={0.25} color="#ffffff" position={[0, 320, 140]} scale={[700, 320, 1]} />
-      <Lightformer form="circle" intensity={0.15} color="#ffd9c4" position={[-360, 60, 220]} scale={[260, 260, 1]} />
-      <Lightformer form="circle" intensity={0.12} color="#c7ddff" position={[360, -40, 220]} scale={[260, 260, 1]} />
-      <Lightformer form="rect" intensity={0.08} color="#ffffff" position={[0, -320, 180]} scale={[700, 260, 1]} />
+      <Lightformer form="rect" intensity={0.3} color="#ffffff" position={[0, 320, 140]} scale={[700, 320, 1]} />
+      <Lightformer form="circle" intensity={0.15} color="#ffffff" position={[-360, 60, 220]} scale={[260, 260, 1]} />
+      <Lightformer form="circle" intensity={0.15} color="#ffffff" position={[360, -40, 220]} scale={[260, 260, 1]} />
+      <Lightformer form="rect" intensity={0.1} color="#ffffff" position={[0, -320, 180]} scale={[700, 260, 1]} />
       <Lightformer
         form="rect"
-        intensity={3}
+        intensity={2}
         color="#ffffff"
         position={[-150, 190, 300]}
         rotation={[0, 0.45, 0]}
@@ -530,6 +402,210 @@ const BeadEnvironment = memo(function BeadEnvironment({
     </Environment>
   )
 })
+
+// An opaque, warm-toned backdrop the beads genuinely refract, with the
+// actual live globe drawn into it. three's transmission pass only samples
+// OPAQUE geometry inside this scene, and without one there is none — the
+// cobe globe is a separate canvas composited via CSS, invisible to this
+// scene's own render — so transmission fell back to the lighting rig,
+// reading as reflective rather than see-through. The bokeh backdrop (soft
+// round highlights, not a flat gradient) gives transmission real structure
+// to bend, and matches a real photographed marble's blurred background.
+//
+// An earlier version tried a transparent hole here so the DOM globe could
+// show through underneath instead. That leaked: with no opaque geometry
+// behind a bead, three's transmission shader lowers that fragment's own
+// output alpha, and because the canvas is alpha-composited into the page,
+// the browser then blends the bead itself with whatever DOM content sits
+// below it — the globe's brightness bled straight into the glass. Drawing
+// the globe's actual pixels INTO this canvas (ctx.drawImage, ordinary
+// source-over onto an already-opaque base) sidesteps that entirely: the
+// canvas stays alpha=1 everywhere, so there is nothing for the browser to
+// blend through, and the beads now refract the real rotating globe as
+// genuine in-scene content — the "actually see-through" look asked for
+// from the start of this pass, without the compositing bug.
+const BACKDROP_SCALE = 0.35
+
+// Static base only (gradient + bokeh) — memoized on theme/viewport size
+// alone, so it is NOT rebuilt every time the globe rotates or the circle
+// moves a pixel during layout. The live globe is composited on top of a
+// copy of this each frame in Backdrop's useFrame, below.
+function useBackdropBase(theme: 'light' | 'dark', width: number, height: number) {
+  return useMemo(() => {
+    if (width <= 0 || height <= 0) return null
+    const canvas = document.createElement('canvas')
+    const w = Math.max(1, Math.round(width * BACKDROP_SCALE))
+    const h = Math.max(1, Math.round(height * BACKDROP_SCALE))
+    canvas.width = w
+    canvas.height = h
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return null
+    const gradient = ctx.createLinearGradient(0, 0, 0, h)
+    if (theme === 'dark') {
+      gradient.addColorStop(0, '#4a4a4a')
+      gradient.addColorStop(0.55, '#262626')
+      gradient.addColorStop(1, '#0d0d0d')
+    } else {
+      gradient.addColorStop(0, '#ffffff')
+      gradient.addColorStop(0.55, '#dcdcdc')
+      gradient.addColorStop(1, '#b0b0b0')
+    }
+    ctx.fillStyle = gradient
+    ctx.fillRect(0, 0, w, h)
+    // Soft round highlights (photographic bokeh), scattered so a bead
+    // rolling anywhere across the pile still refracts something with shape
+    // rather than a flat wash. Neutral greys/whites, not warm tones — the
+    // page's palette is black/white/wine-red, not gold.
+    const bokeh =
+      theme === 'dark'
+        ? ['#8a8a8a', '#6b6b6b', '#a8a8a8', '#4a4a4a']
+        : ['#ffffff', '#f2f2f2', '#e8e8e8', '#cfcfcf']
+    const spots: Array<[number, number, number]> = [
+      [0.18, 0.22, 0.14],
+      [0.72, 0.15, 0.1],
+      [0.85, 0.55, 0.16],
+      [0.35, 0.68, 0.12],
+      [0.6, 0.82, 0.09],
+      [0.1, 0.75, 0.08],
+    ]
+    spots.forEach(([nx, ny, nr], i) => {
+      const cx = nx * w
+      const cy = ny * h
+      const r = nr * Math.max(w, h)
+      const radial = ctx.createRadialGradient(cx, cy, 0, cx, cy, r)
+      const color = bokeh[i % bokeh.length]
+      radial.addColorStop(0, `${color}b0`)
+      radial.addColorStop(1, `${color}00`)
+      ctx.fillStyle = radial
+      ctx.beginPath()
+      ctx.arc(cx, cy, r, 0, Math.PI * 2)
+      ctx.fill()
+    })
+    return canvas
+  }, [theme, width, height])
+}
+
+const Backdrop = memo(function Backdrop({
+  theme,
+  circle,
+  globeElement,
+}: {
+  theme: 'light' | 'dark'
+  circle: GlobeCircle | null
+  globeElement: HTMLCanvasElement | null
+}) {
+  const { width, height } = useThree((state) => state.size)
+  const base = useBackdropBase(theme, width, height)
+
+  // The live composited canvas + its texture. Recreated only when the base
+  // (theme/size) changes — circle and globeElement are read fresh every
+  // frame in useFrame instead of triggering a recreate, since the globe
+  // rotates continuously and a circle-keyed useMemo would thrash.
+  const { canvas, texture } = useMemo(() => {
+    if (!base) return { canvas: null, texture: null }
+    const canvas = document.createElement('canvas')
+    canvas.width = base.width
+    canvas.height = base.height
+    const texture = new THREE.CanvasTexture(canvas)
+    texture.colorSpace = THREE.SRGBColorSpace
+    return { canvas, texture }
+  }, [base])
+  useEffect(() => () => texture?.dispose(), [texture])
+
+  useFrame(() => {
+    if (!canvas || !base || !texture) return
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+    ctx.drawImage(base, 0, 0)
+    // `circle` is the sphere's own on-screen radius, which is
+    // GLOBE_SURFACE_RADIUS_FRACTION of the globe canvas's full CSS box —
+    // there is a margin around the sphere within that canvas — so the
+    // destination rect has to be sized back up to the box, or the globe
+    // image gets drawn shrunk-in with its own margin visible as a seam.
+    // Coordinates are DOM/CSS pixels with a top-left origin, matching this
+    // canvas's own 2D coordinate system directly (unlike GlobeCollider,
+    // which has to flip into world-space for Rapier).
+    if (globeElement && circle) {
+      // GLOBE_SURFACE_RADIUS_FRACTION (0.4) is already "sphere radius as a
+      // fraction of the FULL canvas box width" — dividing circle.radius by
+      // it yields the box width directly, not a radius that still needs
+      // doubling into a diameter.
+      const boxSize = (circle.radius / GLOBE_SURFACE_RADIUS_FRACTION) * BACKDROP_SCALE
+      const cx = circle.centerX * BACKDROP_SCALE
+      const cy = circle.centerY * BACKDROP_SCALE
+      ctx.drawImage(globeElement, cx - boxSize / 2, cy - boxSize / 2, boxSize, boxSize)
+    }
+    texture.needsUpdate = true
+  })
+
+  if (!texture) return null
+  return (
+    <mesh position={[0, 0, -420]}>
+      <planeGeometry args={[width, height]} />
+      <meshBasicMaterial map={texture} toneMapped={false} />
+    </mesh>
+  )
+})
+
+// The one highlight in the scene that's deliberately meant to be seen: a
+// point light that tracks the cursor, so the specular hot-spot on whichever
+// beads are nearby visibly slides as the mouse moves — the interactive cue
+// the flat lighting rig above intentionally doesn't provide on its own.
+//
+// Position is read from a plain mutable ref, not React state: mousemove can
+// fire far faster than React commits, and this only needs to feed useFrame,
+// which already runs once per animation frame — a state update per pointer
+// event would just be discarded work.
+//
+// Coordinates convert DOM (top-left origin, +y down) into this orthographic
+// scene's convention (origin at viewport centre, +y up, 1 unit = 1 CSS
+// pixel) — the same conversion GlobeCollider does for the globe's circle.
+// z is fixed in front of the pile (BEAD_RADIUS puts it just past a bead's
+// front face) so the light always grazes the beads facing the camera rather
+// than sitting behind them.
+const MOUSE_LIGHT_Z = BEAD_RADIUS * 4
+const MOUSE_LIGHT_LERP = 0.25
+// three's point/spot lights have used physically-based inverse-square decay
+// (intensity / distance^2, in candela) since r155 — there is no
+// "physicallyCorrectLights" toggle to opt out of it anymore. So this has to
+// scale with MOUSE_LIGHT_DISTANCE^2 to land in the same visible range as
+// the directionalLight above (which has no distance falloff at all), rather
+// than being a small unitless number like that light's 0.4.
+const MOUSE_LIGHT_DISTANCE = BEAD_RADIUS * 12
+const MOUSE_LIGHT_INTENSITY = 0.5 * MOUSE_LIGHT_DISTANCE * MOUSE_LIGHT_DISTANCE
+
+function MouseLight() {
+  const { width, height } = useThree((state) => state.size)
+  const targetRef = useRef({ x: 0, y: 0 })
+  const lightRef = useRef<THREE.PointLight>(null)
+
+  useEffect(() => {
+    function handlePointerMove(e: PointerEvent) {
+      targetRef.current = { x: e.clientX - width / 2, y: height / 2 - e.clientY }
+    }
+    window.addEventListener('pointermove', handlePointerMove, { passive: true })
+    return () => window.removeEventListener('pointermove', handlePointerMove)
+  }, [width, height])
+
+  useFrame(() => {
+    const light = lightRef.current
+    if (!light) return
+    light.position.x = THREE.MathUtils.lerp(light.position.x, targetRef.current.x, MOUSE_LIGHT_LERP)
+    light.position.y = THREE.MathUtils.lerp(light.position.y, targetRef.current.y, MOUSE_LIGHT_LERP)
+  })
+
+  return (
+    <pointLight
+      ref={lightRef}
+      position={[0, 0, MOUSE_LIGHT_Z]}
+      intensity={MOUSE_LIGHT_INTENSITY}
+      distance={MOUSE_LIGHT_DISTANCE}
+      decay={2}
+      color="#ffffff"
+    />
+  )
+}
 
 // Invisible static colliders sized to the current viewport: a floor, two
 // side walls, and a front/back pair that pins beads to the z=0 plane so the
@@ -716,9 +792,13 @@ interface BeadSceneProps {
    * globe canvas has been laid out — the scene simply runs without the
    * globe obstacle until it arrives. */
   globeCircle: GlobeCircle | null
+  /** The globe's live <canvas> element, for Backdrop to draw into its own
+   * backdrop each frame (see Backdrop's comment for why). Null until
+   * GlobeView's canvas has mounted. */
+  globeElement: HTMLCanvasElement | null
 }
 
-export function BeadScene({ demographics, theme, globeCircle }: BeadSceneProps) {
+export function BeadScene({ demographics, theme, globeCircle, globeElement }: BeadSceneProps) {
   // Re-resolved whenever the theme flips. Deliberately inside a rAF: the
   // `.dark` class is toggled by App's own useTheme effect, and child
   // effects run BEFORE parent effects in React — reading the computed
@@ -831,17 +911,16 @@ export function BeadScene({ demographics, theme, globeCircle }: BeadSceneProps) 
           gl.transmissionResolutionScale = 0.5
         }}
       >
-        {/* Phase 1's ambientLight is deliberately gone: a transmissive
-            material mixes its diffuse term out, so flat ambient light only
-            washes out the highlights that make a bead read as glass. The
-            directional light stays — it supplies the one crisp specular
-            hot-spot per bead that separates "glass" from "fogged plastic" —
-            at a lower intensity now that the environment map handles the
-            rest. environmentIntensity is the only theme-dependent dial: the
-            dark theme needs less lift or the pile blows out against a
-            near-black page. */}
-        <BeadEnvironment intensity={theme === 'dark' ? 0.15 : 0.25} resolution={BEAD_ENV_RESOLUTION} />
-        <directionalLight position={[200, 400, 300]} intensity={0.35} />
+        {/* Deliberately subtle: every Lightformer here is desaturated and
+            low-intensity so none of them reads as a visible light shape on
+            a bead's surface — they only exist to keep the clearcoat/
+            transmission shading from going flat (see the "stripped"
+            comparison this was restored from). MouseLight supplies the one
+            highlight that IS meant to be seen, tracking the cursor. */}
+        <BeadEnvironment intensity={theme === 'dark' ? 0.35 : 0.55} resolution={BEAD_ENV_RESOLUTION} />
+        <directionalLight position={[200, 400, 300]} intensity={0.4} />
+        <MouseLight />
+        <Backdrop theme={theme} circle={globeCircle} globeElement={globeElement} />
         {/* Rapier's WASM is loaded via suspend-react, so Physics suspends. */}
         <Suspense fallback={null}>
           <Physics gravity={[0, -GRAVITY_PX_PER_S2, 0]}>

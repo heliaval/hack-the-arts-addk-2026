@@ -2044,3 +2044,135 @@ in this file.
 Status: done. Tuned constants only, no architectural or physics changes;
 the degrade ladder in the plan was not needed since frame rate cleared
 30fps with no adjustment.
+
+## 2026-08-01 (continued) — Backdrop architecture pivot: opaque bokeh + live globe bake, lighting rig experiments
+
+Started: continuing from the previous entry's "barely affected by light"
+settling point, user kept pushing for genuinely see-through glass ("change
+the rendering engine if you have to"), eventually asking "can you use
+actual 3d models?" — which led to the actual unblock: **the beads don't
+need to optically refract the globe specifically**, only look like real
+glass. That single scope relaxation is what made the rest of this entry
+possible; every earlier attempt this project had been fighting the "globe
+must stay opaque-plane-free" constraint from the previous entry.
+
+**Backdrop made opaque again, deliberately.** With the globe constraint
+lifted, `Backdrop` in `BeadScene.tsx` went back to a full-viewport opaque
+plane (reverting the earlier revert) — but painted with actual structure
+(a vertical gradient plus 6 soft radial "bokeh" highlight circles) instead
+of a flat colour, since `renderTransmissionPass` needs real detail to bend
+for the beads to read as see-through rather than merely reflective. User
+confirmed this round ("absolutely perfect. DO NOT change the marbles.")
+with `BEAD_CLEARCOAT` at 0.6, `BEAD_ENV_INTENSITY` at 0.45, the lightformer
+rig roughly 2-3x its previous "barely affected by light" values, and
+`directionalLight` at 0.7 — a much stronger reflection profile than the
+prior entry's, made possible precisely because the opaque backdrop now
+gives those reflections/refractions something real to land on.
+
+**Real bug found and fixed: a transparent hole leaks into the beads
+themselves, not just the gap around them.** User then asked for the globe
+back, "completely isolated from the marbles in terms of lighting." First
+attempt cut a feathered alpha=0 hole in the Backdrop texture at the
+globe's on-screen circle so the DOM-composited globe could show through.
+This visibly discoloured beads sitting over that region (screenshot showed
+them washed white, matching the globe's brightness) — root cause: with no
+opaque geometry behind a transmissive fragment, three's transmission
+shader lowers that fragment's own output alpha, and because the canvas is
+alpha-composited into the page, the browser then blends the bead itself
+with whatever DOM content sits underneath it. A hole doesn't just reveal
+content behind the bead, it leaks that content *through* the bead's own
+pixels. Root-caused via first-principles reasoning about the shader/canvas
+interaction (not reproduced/debugged in-sandbox — same recurring
+composited-frame limitation), explained to the user, confirmed by the
+screenshot's exact symptom (globe's white bleeding through nearby beads).
+
+**Fix: bake the actual live globe canvas into the backdrop instead of
+punching a hole.** `GlobeView` now takes an `onElementChange` callback
+(mirroring the existing `onCircleChange`) that reports the live
+`<canvas>` element cobe renders to; `App.tsx` threads it down as
+`globeElement`, a new `BeadScene` prop alongside `globeCircle`. Inside
+`Backdrop`, a `useFrame` loop `ctx.drawImage()`s that live canvas onto a
+copy of the static gradient+bokeh base every frame (ordinary
+`source-over`, onto an already-opaque destination, so the canvas stays
+alpha=1 everywhere — no leak), sized back up from the sphere's on-screen
+radius to the globe canvas's full CSS box via
+`GLOBE_SURFACE_RADIUS_FRACTION` (cobe's sphere doesn't fill its square
+canvas, ~10% margin per side). Net effect: the globe is visible, rotates
+live, and is now genuinely part of the same opaque in-scene content the
+beads' `transmission` refracts — the "actually see-through" result asked
+for since early in this project, arrived at via a different mechanism than
+originally assumed (baked content, not real-time ray interaction with a
+separate canvas).
+
+**Bug found and fixed: globe rendered 2x oversized.** The box-size formula
+divided `circle.radius` by `GLOBE_SURFACE_RADIUS_FRACTION` (which already
+yields the full canvas box width directly) and then multiplied by 2 again,
+doubling it. Removed the erroneous `* 2`.
+
+**Reverted per explicit request**: the `AmbientBackdrop` dot-matrix/glow
+CSS layer in `App.tsx` and the `.dark` background token change in
+`src/index.css` (`oklch(0.16 0 0)` → `oklch(0.32 0.006 270)`) — both from
+an earlier entry — were fully reverted back to their original values
+("literally just make it the previous black and white"). Also reworked
+the Backdrop's own palette from warm gold/tan bokeh tones to neutral
+greys/whites for the same reason: at full-viewport opaque size the warm
+tones read as "yellow background" dominating the whole screen, not a
+tight accent around a pile.
+
+**Lighting-rig legibility experiments, three rounds**: (1) user asked if
+the rig could "stay but not be visible" — desaturated the two tinted
+lightformers to white and cut the hotspot from intensity 7 to 2; (2) user
+asked to strip it entirely as an A/B test — removed `<BeadEnvironment>`
+and `<directionalLight>` from the Canvas JSX outright (left the now-unused
+`BeadEnvironment` component/`BEAD_ENV_RESOLUTION` constant in place rather
+than deleting, given the test framing); screenshot showed flat, ugly matte
+circles, confirming the rig is load-bearing for the glass read; (3) user
+asked for the rig back but "hidden" (contributing to shading without
+reading as a visible light shape) plus a new ask — the mouse cursor should
+visibly affect the beads. Restored the rig at low, fully-desaturated
+intensity (`BeadEnvironment` 0.35/0.55 dark/light, `directionalLight` 0.4,
+lightformers all white at 0.1-0.3, hotspot at 2) and added a new
+`MouseLight`: a `pointLight` whose position lerps toward the cursor's
+world-space coordinate every frame (tracked via a `pointermove` listener
+into a ref, not React state — avoids a state update per mouse event when
+only `useFrame` needs the value), giving one deliberate, moving highlight
+that's meant to be seen, distinct from the rig's now-subtle ambient
+contribution. Intensity scaled by `MOUSE_LIGHT_DISTANCE^2` since three's
+point lights have used physically-based inverse-square decay (no
+`physicallyCorrectLights` opt-out) since r155 — a small unitless intensity
+like the directional light's would have been invisible at this light's
+distance scale.
+
+**User also pasted an unrelated "spotlight-cursor" component-integration
+prompt** (a full-page canvas effect that paints a radial gradient glow
+following the mouse, framed as a shadcn-style "integrate this component"
+task) asking for "a stronger version" of it to replace the "ugly white
+circles." Recognized this as a different mechanism than what was actually
+needed — a page-wide overlay can't give individual 3D spheres per-object
+shading — flagged that mismatch back to the user via `AskUserQuestion`
+rather than implementing it as pasted; user's actual answer (see above)
+was the mouse-tracked point light, not the pasted canvas overlay.
+
+**Also fixed, unrelated**: a `git stash` run to A/B-test whether a console
+warning was pre-existing accidentally stashed the in-progress working
+changes; caught immediately and recovered with `git stash pop` before any
+other command touched the tree — confirmed via `git diff --stat` matching
+the pre-stash diff exactly.
+
+**Console warning investigated, concluded not a real bug**: a React
+"effect deps array changed size between renders" error appeared in the
+long-lived sandbox tab (open since early in this session) after the
+`onElementChange` prop was added to `GlobeView`, and persisted across a
+`navigate` reload and even a full dev-server restart. Opening a *new*
+browser tab and loading the same URL showed zero console errors —
+concluded this was accumulated stale state in that one tab from dozens of
+HMR cycles across this long session (the same class of issue as the
+earlier-documented WebGL-context-exhaustion incident), not a real defect
+in the shipped code. `npx tsc --noEmit` and `npx oxlint src` clean
+throughout this entire entry, aside from the two long-standing
+pre-existing warnings (`baseUrl` deprecation, `button.tsx` fast-refresh).
+
+Status: done for this round, pending final user confirmation on the
+mouse-light + restored-rig combination (screenshot-based, same sandbox
+compositing limitation as every prior phase). Deadline is 2026-08-01
+8:45pm PDT — same day as this entry.
