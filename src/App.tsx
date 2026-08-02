@@ -3,6 +3,7 @@ import NumberFlow from '@number-flow/react'
 import { Globe as GlobeIcon, Moon, Sun } from 'lucide-react'
 import { GlobeView } from '@/components/GlobeView'
 import { BeadScene } from '@/components/BeadScene'
+import { GlobeRain } from '@/components/GlobeRain'
 import type { GlobeCircle } from '@/components/ui/cobe-globe'
 import { useDemographics } from '@/lib/useDemographics'
 import { useTheme } from '@/lib/useTheme'
@@ -371,6 +372,7 @@ function App() {
           globeElement={globeElement}
         />
       )}
+      {!selected && <GlobeRain globeCircle={globeCircle} theme={theme} />}
       <div className="absolute right-4 top-4 z-10 flex gap-2">
         <LanguageToggle lang={lang} onToggle={handleLanguageToggle} onHoverChange={setLangHintVisible} />
         <ThemeToggle theme={theme} toggleTheme={toggleTheme} onHoverChange={setThemeHintVisible} />
