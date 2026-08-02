@@ -1,4 +1,5 @@
-import { Suspense, memo, useEffect, useMemo, useRef, useState } from 'react'
+import { Suspense, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { RefObject } from 'react'
 import * as THREE from 'three'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { Environment, Lightformer } from '@react-three/drei'
@@ -28,9 +29,9 @@ export const SPAWN_JITTER_PX = 200
 // bigger window fills with more beads instead of showing the same-size pile
 // with more empty space around it — see
 // docs/superpowers/specs/2026-08-01-fast-fill-bead-burst-design.md. Once the
-// cap is reached, spawning simply stops (see the spawn effect below) rather
-// than evicting old beads to make room, so a settled pile is permanent —
-// beads never disappear.
+// cap is reached, spawning keeps going forever — each new bead evicts the
+// oldest live one (see the spawn effect below) to make room, so the pile
+// keeps turning over rather than growing without bound.
 //
 // PACKING_FACTOR is well under 1: beads pile under gravity against a floor
 // and two side walls (see Boundaries below), so they never tile the full
@@ -70,6 +71,20 @@ export function computeBeadCapacity(width: number, height: number): number {
 // by requestAnimationFrame rather than wall-clock timing — see the spawn
 // effect below for why.
 const BURST_SPAWN_INTERVAL_MS = 40
+
+// How long an evicted bead takes to shrink away before it is actually
+// removed from the array — and therefore from the physics world, since a
+// removed <RigidBody> is torn out of Rapier on the next commit.
+//
+// Short relative to the original 420ms: eviction happens on every spawn
+// once at capacity, including the burst's 40ms cadence, so a slower exit
+// would let dying beads back up faster than they clear — visibly more of
+// them mid-shrink at once the longer this is. 180ms keeps the exit
+// reading as a deliberate shrink rather than a snap, while keeping pace
+// with spawns down to roughly a 4-5x faster cadence than this duration
+// before beads would start backing up (BURST_SPAWN_INTERVAL_MS is 40ms,
+// so at most ~4-5 beads are ever mid-exit at once during the burst).
+const BEAD_EXIT_MS = 180
 
 // No marble texture (see the removed painting pipeline further down this
 // file). MARBLE_VARIANTS survives purely so Bead.variant keeps the same
@@ -172,6 +187,10 @@ interface Bead {
    * once at spawn and never changed, so a bead does not swap appearance
    * mid-fall. */
   variant: number
+  /** Set by the spawn loop when this bead is evicted at the live-bead cap.
+   * The bead stays in the array — and in the physics world — until
+   * BeadFadeOut has shrunk it away and called onExpire. */
+  dying: boolean
 }
 
 interface BeadColors {
@@ -727,34 +746,102 @@ function GlobeCollider({ circle }: { circle: GlobeCircle }) {
   )
 }
 
+// Drives the shrink-out of an evicted bead, and is the thing that finally
+// removes it. Rendered only while `bead.dying` is true, deliberately:
+// useFrame cannot be called conditionally, so subscribing every live bead
+// to the render loop just so that a couple of them can animate would put a
+// callback on every frame for nothing. A conditionally rendered companion
+// moves that cost onto exactly the beads that need it.
+//
+// Scale, not opacity. Fading a MeshPhysicalMaterial needs transparent:true
+// and a per-bead `opacity`, and opacity lives on the material — with the
+// shared materials this file is built around (see useBeadMaterials) that
+// would mean cloning a material per dying bead, which is precisely the
+// per-bead allocation this scene avoids. Scale lives on the mesh's own
+// Object3D, so it is per-bead by nature and touches no material state at
+// all. It also simply looks better: a shrinking sphere of glass keeps
+// refracting the whole way down, so it reads as receding rather than as
+// dissolving.
+//
+// The collider is NOT resized. Rapier reads collider args once, at body
+// creation, so resizing means recreating the body — which would teleport a
+// settled bead back to the spawn point. For these ~180ms the bead
+// therefore occupies slightly more space than it draws, and the pile
+// visibly settles into the gap just after it has gone. That is the correct
+// reading, and at this duration nobody parses the in-between frames.
+function BeadFadeOut({
+  meshRef,
+  id,
+  onExpire,
+}: {
+  meshRef: RefObject<THREE.Mesh | null>
+  id: number
+  onExpire: (id: number) => void
+}) {
+  const elapsedRef = useRef(0)
+  // onExpire triggers a setState, and React may render one more frame
+  // before the removal commits. Without this latch that frame would call
+  // onExpire a second time with an id that is already gone.
+  const doneRef = useRef(false)
+  useFrame((_, delta) => {
+    if (doneRef.current) return
+    // useFrame's delta is in seconds.
+    elapsedRef.current += delta * 1000
+    const t = Math.min(elapsedRef.current / BEAD_EXIT_MS, 1)
+    // Smoothstep, so the collapse has no jerk at either end.
+    const scale = 1 - t * t * (3 - 2 * t)
+    // Never exactly 0: a zero scale gives a singular model matrix, which
+    // makes three's normal-matrix inverse produce NaNs and can blow out the
+    // whole transmission pass for that frame.
+    meshRef.current?.scale.setScalar(Math.max(scale, 0.001))
+    if (t >= 1) {
+      doneRef.current = true
+      onExpire(id)
+    }
+  })
+  return null
+}
+
 // Beads share one geometry and one of a small fixed set of materials (see
 // BEAD_GEOMETRY and useBeadMaterials), passed in as a prop rather than
 // declared as a child element — declaring it as a child is what would give
 // every bead its own copy. `dispose={null}` tells react-three-fiber not to
-// dispose these shared objects when the scene unmounts (country switch);
-// their lifetimes are owned by the module and by useBeadMaterials.
-//
-// Once the live-bead cap is reached, spawning simply stops (see the spawn
-// effect below) rather than evicting the oldest bead to make room — so a
-// bead, once it lands, is never removed or animated away. There is
-// therefore no fade-out/expiry machinery here; a settled pile just stays
-// settled.
+// dispose these shared objects when an individual bead is culled by the
+// live-bead cap; their lifetimes are owned by the module and by
+// useBeadMaterials.
 //
 // RigidBody `position` is only read when the body is created, so stable
 // React keys matter: a changing key would recreate the body and teleport a
 // settled bead back to the spawn point.
-const BeadBody = memo(function BeadBody({ bead, material }: { bead: Bead; material: THREE.Material }) {
+//
+// BeadFadeOut sits OUTSIDE the RigidBody on purpose. It renders null, so
+// it is inert either way, but keeping it out of the RigidBody's subtree
+// keeps react-three-rapier's child traversal (which is what derives the
+// ball collider from the mesh) looking at exactly one child, as before.
+const BeadBody = memo(function BeadBody({
+  bead,
+  material,
+  onExpire,
+}: {
+  bead: Bead
+  material: THREE.Material
+  onExpire: (id: number) => void
+}) {
   const height = useThree((state) => state.size.height)
+  const meshRef = useRef<THREE.Mesh>(null)
   return (
-    <RigidBody
-      colliders="ball"
-      position={[bead.x, height / 2 + BEAD_RADIUS * 2, 0]}
-      restitution={0.25}
-      friction={0.6}
-      linearDamping={0.1}
-    >
-      <mesh geometry={BEAD_GEOMETRY} material={material} dispose={null} />
-    </RigidBody>
+    <>
+      <RigidBody
+        colliders="ball"
+        position={[bead.x, height / 2 + BEAD_RADIUS * 2, 0]}
+        restitution={0.25}
+        friction={0.6}
+        linearDamping={0.1}
+      >
+        <mesh ref={meshRef} geometry={BEAD_GEOMETRY} material={material} dispose={null} />
+      </RigidBody>
+      {bead.dying && <BeadFadeOut meshRef={meshRef} id={bead.id} onExpire={onExpire} />}
+    </>
   )
 })
 
@@ -830,23 +917,46 @@ export function BeadScene({ demographics, theme, globeCircle, globeElement }: Be
     [demographics.deathsPerSecond],
   )
 
+  // Stable identity: BeadBody is memo()'d, so a fresh callback on every
+  // render would defeat that memo for every live bead on every spawn tick.
+  // The functional setState means it never needs to close over `beads`.
+  const expireBead = useCallback((id: number) => {
+    setBeads((prev) => prev.filter((bead) => bead.id !== id))
+  }, [])
+
   useEffect(() => {
-    // Once the live-bead cap is reached, spawning just stops — no eviction,
-    // no fade-out. A settled pile is therefore permanent: nothing here ever
-    // removes a bead once it's in the array, so `beads.length` alone is
-    // "live count", and returning the same `prev` reference when already at
-    // capacity makes this a no-op React bails out of (no re-render), rather
-    // than a churn of add-one-remove-one every tick once full.
+    function countLive(list: Bead[]): number {
+      return list.reduce((count, bead) => (bead.dying ? count : count + 1), 0)
+    }
+
+    // Evicting the oldest live bead is what keeps the pile bounded once at
+    // capacity — spawning never stops. Deleting it outright would make
+    // beads blink out of existence: the oldest bead is almost always one
+    // that has already settled at the bottom of the pile, so an instant
+    // removal reads as a settled bead vanishing at the exact instant a new
+    // one appears at the top. Instead the oldest live bead is flagged
+    // `dying`; BeadFadeOut shrinks it over BEAD_EXIT_MS and then calls
+    // expireBead, which is what finally removes it. `capacity` therefore
+    // caps live beads, not array length — a handful of dying beads ride
+    // along for under BEAD_EXIT_MS each.
     function spawn(kind: 'birth' | 'death') {
       setBeads((prev) => {
-        if (prev.length >= capacity) return prev
+        const live = countLive(prev)
+        let next = prev
+        if (live >= capacity) {
+          // find() returns the first non-dying entry, i.e. the oldest one,
+          // because the array is append-ordered.
+          const oldest = prev.find((bead) => !bead.dying)
+          if (oldest) next = prev.map((bead) => (bead === oldest ? { ...bead, dying: true } : bead))
+        }
         return [
-          ...prev,
+          ...next,
           {
             id: nextIdRef.current++,
             kind,
             x: (Math.random() - 0.5) * 2 * SPAWN_JITTER_PX,
             variant: Math.floor(Math.random() * MARBLE_VARIANTS),
+            dying: false,
           },
         ]
       })
@@ -862,11 +972,12 @@ export function BeadScene({ demographics, theme, globeCircle, globeElement }: Be
     }
 
     // Burst phase: fill up to `capacity` fast, alternating kind, before
-    // falling back to the normal demographic-paced timers (which, once the
-    // pile is already full, just keep no-oping — see spawn() above).
-    // liveEstimate is a local counter, not a re-read of React state —
-    // setBeads is async, so beadsRef.current would still show the pre-spawn
-    // count on the very next tick.
+    // falling back to the normal demographic-paced timers. liveEstimate is a
+    // local counter, not a re-read of React state — setBeads is async, so
+    // beadsRef.current would still show the pre-spawn count on the very next
+    // tick. It only needs to track progress toward `capacity`, which spawn()
+    // above keeps stable once reached (an eviction and an addition land in
+    // the same update), so liveEstimate correctly stops advancing there too.
     //
     // Paced with requestAnimationFrame, not setInterval: a wall-clock timer
     // keeps firing on schedule even if a frame takes far longer than
@@ -877,7 +988,7 @@ export function BeadScene({ demographics, theme, globeCircle, globeElement }: Be
     // once a frame has actually been delivered, so under load the burst
     // automatically slows to match — it can slow down, but it can never
     // outrun the renderer the way a timer could.
-    let liveEstimate = beadsRef.current.length
+    let liveEstimate = countLive(beadsRef.current)
     let burstKind: 'birth' | 'death' = 'birth'
     let lastBurstSpawnAt = 0
 
@@ -975,6 +1086,7 @@ export function BeadScene({ demographics, theme, globeCircle, globeElement }: Be
                 key={bead.id}
                 bead={bead}
                 material={(bead.kind === 'birth' ? materials.birth : materials.death)[bead.variant]}
+                onExpire={expireBead}
               />
             ))}
           </Physics>
