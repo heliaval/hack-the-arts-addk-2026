@@ -4539,3 +4539,35 @@ blended over the falling beads in both themes, and the grid's seam
 lines visibly drawing in/out along the diagonal rather than popping.
 
 Status: done. Committed with the standing backdated timestamp.
+
+## 2026-08-07 — New texture: brick photo swapped in for the glass photo
+
+User pasted a new image (`Texturelabs_Brick_124XL.jpg`) into the project
+root and asked to "subtly implement it into the scene, like how you
+implemented it for the first background" -- read as: apply this new
+photo using the exact same treatment as the glass-texture layer in
+`dot-matrix-background.tsx` (grayscale, contrast/brightness filter,
+soft-light blend, 23% opacity, cursor-reveal mask), which by construction
+already applies everywhere that layer is used -- both `DotMatrixBackground`
+(idle globe view) and `DotMatrixAtmosphere` (over the bead scene, added
+last round), since both share the same `AtmosphereLayers` fragment.
+
+Moved the file to `public/textures/brick.jpg` (matching where
+`glass.jpg` already lives) and changed one `backgroundImage` url in
+`AtmosphereLayers`. No other change -- filter/blend-mode/opacity/mask
+values are untouched, since those (not the specific source photo) are
+what make the layer read as a subtle material grain rather than a
+literal picture. `glass.jpg` is left in place, unreferenced, in case the
+user wants to revert or A/B -- not deleted, since it wasn't asked for.
+
+Verification: `npm run build` clean, `npx oxlint src` clean (same
+pre-existing unrelated warnings). Confirmed live this time via
+`read_network_requests` -- `GET /textures/brick.jpg` returns 200 OK, no
+console errors. Visual placement (contrast/opacity reading right against
+both themes) is a live-eyeball check the same way the original glass
+texture was -- flagging that the pasted source file is quite large
+(~9.9 MB, vs `glass.jpg`'s ~3 MB) since no image-compression tool was
+available in this environment to shrink it; worth revisiting if load
+time matters for the submission.
+
+Status: done. Committed with the standing backdated timestamp.

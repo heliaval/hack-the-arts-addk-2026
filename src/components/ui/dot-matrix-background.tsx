@@ -156,16 +156,24 @@ function AtmosphereLayers({ sheenRef }: { sheenRef: RefObject<HTMLDivElement | n
           opacity: SHEEN_BASE_OPACITY,
         }}
       />
-      {/* Real glass-texture photo, revealed in the same footprint as the
-          sheen above (mask radius intentionally matches its 340px/70%
-          falloff) so the two read as one lit patch of glass rather than
-          two separate circles. Position/size are fixed, not tied to
-          --mx/--my, so the pane itself stays stationary while the reveal
-          window slides over it. */}
+      {/* Real texture photo, revealed in the same footprint as the sheen
+          above (mask radius intentionally matches its 340px/70% falloff)
+          so the two read as one lit patch rather than two separate
+          circles. Position/size are fixed, not tied to --mx/--my, so the
+          pane itself stays stationary while the reveal window slides over
+          it.
+
+          Swapped from a glass photo to a brick photo (2026-08-07, "an
+          interesting new texture", same treatment as before) -- the
+          filter/blend/opacity/mask are untouched on purpose. grayscale +
+          soft-light at 23% is what keeps either photo reading as a subtle
+          material grain the cursor reveals, not a literal picture of glass
+          or brick; the specific source photo is incidental to that
+          treatment, which is why swapping it was a one-line change. */}
       <div
         className="absolute inset-0"
         style={{
-          backgroundImage: 'url(/textures/glass.jpg)',
+          backgroundImage: 'url(/textures/brick.jpg)',
           backgroundSize: 'cover',
           backgroundPosition: 'center',
           filter: 'grayscale(1) contrast(1.5) brightness(1.1)',
