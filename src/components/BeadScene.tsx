@@ -40,14 +40,16 @@ export const SPAWN_JITTER_PX = 200
 //
 // MAX_CAPACITY is a hard performance backstop: this scene's frame cost rises
 // with live bead count (each one is a Rapier rigid body plus a transmissive
-// glass draw call), and 70 is the count this scene has actually been run at
-// without lag reports before this cap became viewport-computed — anything
-// above it is unproven, so the clamp never exceeds it. MIN_CAPACITY keeps a
-// very narrow window from looking empty.
+// glass draw call). Lowered from 70 after live testing on real hardware
+// still showed lag at 70 even after fixing burst pacing, dropping DPR to
+// 1x, and removing dispersion's 3x transmission-sampling cost (see
+// BEAD_DISPERSION) — so the bead count itself needed to come down too, not
+// just the per-bead cost. MIN_CAPACITY keeps a very narrow window from
+// looking empty.
 const BEAD_DIAMETER = BEAD_RADIUS * 2
-const CAPACITY_PACKING_FACTOR = 0.35
-const MIN_CAPACITY = 30
-const MAX_CAPACITY = 70
+const CAPACITY_PACKING_FACTOR = 0.3
+const MIN_CAPACITY = 25
+const MAX_CAPACITY = 55
 
 /** How many live beads the current viewport should hold before the spawn
  * loop stops bursting and spawning stops entirely. Pure function of
@@ -61,7 +63,7 @@ export function computeBeadCapacity(width: number, height: number): number {
 }
 
 // Burst-phase spawn interval: fast enough to visibly fill the screen in a
-// few seconds even at MAX_CAPACITY (70 beads * 40ms = 2.8s worst case),
+// few seconds even at MAX_CAPACITY (55 beads * 40ms = 2.2s worst case),
 // comparable to the fastest single-stream demographic rate this scene
 // already exercises today (FASTEST_SPAWN_INTERVAL_MS = 120ms in
 // src/lib/beadSpawnRate.ts) rather than an order of magnitude faster. Paced
@@ -109,7 +111,16 @@ const BEAD_ROUGHNESS = 0.05
 // three's native chromatic aberration (MeshPhysicalMaterial.dispersion,
 // requires transmission > 0). This is what drei's MeshTransmissionMaterial
 // used to be needed for.
-const BEAD_DISPERSION = 2.5
+//
+// 0, not a subtle value: three only compiles the dispersion code path
+// (USE_DISPERSION) when dispersion > 0 at all, and that path samples the
+// transmission background THREE times per fragment (once per colour
+// channel, offset) instead of once — turning it down to e.g. 1.0 keeps
+// that same 3x sampling cost while only making the effect subtler. For up
+// to MAX_CAPACITY beads' worth of fragments, every frame, this was the
+// single most expensive line in the material — a real render-cost trade
+// against the chromatic-fringing "raytraced" cue, not a free tune.
+const BEAD_DISPERSION = 0
 
 // A second, much sharper specular layer on top of the glass body.
 // MeshPhysicalMaterial composites it over everything else, transmission
