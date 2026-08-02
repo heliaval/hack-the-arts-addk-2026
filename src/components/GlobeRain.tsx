@@ -25,6 +25,16 @@ const GLOBE_BAND_SPAWN_FRACTION = 0.82
 // spawn fraction above — a narrower band concentrates the extra density
 // directly over the globe instead of just widening the diffuse spread.
 const GLOBE_BAND_RADIUS_MULTIPLIER = 1.15
+// Of the spawns pulled into the globe band, the fraction that use the
+// angle-weighted pick below rather than a flat pick across the band width.
+// A flat pick in X under-represents the globe's edges: dx = radius*sin(a),
+// so a fixed slice of X near the center covers a much smaller entry-angle
+// range than the same width near the edge does (d(angle)/dx = 1/sqrt(r²-dx²)
+// is smallest at dx=0 and grows without bound as dx→r) — that's what made
+// rain visibly concentrate through dead center. Splitting the biased spawns
+// between the two keeps some flat coverage (including the near-miss margin
+// past the silhouette) while still meaningfully lifting the edges.
+const GLOBE_BAND_ANGLE_WEIGHTED_FRACTION = 0.5
 
 function randomBetween(min: number, max: number): number {
   return min + Math.random() * (max - min)
@@ -77,6 +87,18 @@ function randomDrop(x: number, y: number): Drop {
  * back to a full-width uniform pick once no globe has been measured yet. */
 function randomSpawnX(viewportWidth: number, globe: GlobeCircleLike | null): number {
   if (!globe || Math.random() >= GLOBE_BAND_SPAWN_FRACTION) return Math.random() * viewportWidth
+
+  if (Math.random() < GLOBE_BAND_ANGLE_WEIGHTED_FRACTION) {
+    // Sample the entry ANGLE uniformly (0 = dead center top, π/2 = the
+    // silhouette's outer edge) rather than x directly, then convert back —
+    // see GLOBE_BAND_ANGLE_WEIGHTED_FRACTION for why this is what actually
+    // lifts the edges instead of just widening the flat spread.
+    const angle = Math.random() * (Math.PI / 2)
+    const side: -1 | 1 = Math.random() < 0.5 ? -1 : 1
+    const x = globe.centerX + globe.radius * Math.sin(angle) * side
+    return Math.min(viewportWidth, Math.max(0, x))
+  }
+
   const bandHalfWidth = globe.radius * GLOBE_BAND_RADIUS_MULTIPLIER
   const min = Math.max(0, globe.centerX - bandHalfWidth)
   const max = Math.min(viewportWidth, globe.centerX + bandHalfWidth)
