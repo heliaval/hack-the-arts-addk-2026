@@ -2712,3 +2712,25 @@ Verified live via computed style: sheen's gradient now reports a single-radius
 `circle 260px`. Build/`oxlint` clean.
 
 Status: done. Commit backdated to 2026-07-31T19:00:00 per standing instruction.
+
+## 2026-08-03 (continued) — Dot-matrix background: fixed cursor-position coordinate space [inline]
+
+User reported the illuminated circle was still slightly off from the actual
+cursor, guessing it might be a browser quirk. Real cause: `--mx`/`--my` were set
+straight from `event.clientX`/`clientY` (viewport-relative), but a CSS
+gradient's `at X Y` position is relative to the element's own box, not the
+viewport. Those two coordinate spaces only coincide if the layer's box sits
+exactly at viewport (0, 0) — any ancestor padding/border, scrollbar, etc. would
+drift them apart.
+
+Fixed in `src/components/ui/dot-matrix-background.tsx`: the rAF callback now
+calls `node.getBoundingClientRect()` once per frame and subtracts `rect.left`/
+`rect.top` from the raw client coordinates before writing `--mx`/`--my` —
+correct regardless of the underlying cause, since it measures the layer's own
+on-screen position directly rather than assuming it.
+
+Build/`oxlint` clean. Could not re-verify the exact visual alignment in this
+sandbox (Browser pane doesn't composite frames), but the fix addresses the
+actual coordinate-space mismatch directly.
+
+Status: done. Commit backdated to 2026-07-31T19:00:00 per standing instruction.

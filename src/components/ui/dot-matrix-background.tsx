@@ -20,8 +20,13 @@ export function DotMatrixBackground() {
         rafPendingRef.current = false
         const node = layerRef.current
         if (!node) return
-        node.style.setProperty('--mx', `${latestRef.current.x}px`)
-        node.style.setProperty('--my', `${latestRef.current.y}px`)
+        // Gradient `at X Y` is relative to this element's own box, not the
+        // viewport — clientX/clientY are viewport-relative, so they only
+        // lined up by coincidence when the layer's box sat exactly at
+        // (0, 0). Subtract the layer's own on-screen position to convert.
+        const rect = node.getBoundingClientRect()
+        node.style.setProperty('--mx', `${latestRef.current.x - rect.left}px`)
+        node.style.setProperty('--my', `${latestRef.current.y - rect.top}px`)
       })
     }
 
