@@ -4126,3 +4126,40 @@ pre-existing unrelated warnings). Not visually re-confirmed in this sandbox
 bounce, density, and sweep direction live.
 
 Status: done. Committed with the standing backdated timestamp.
+
+## 2026-08-06 (continued) — Square tiles, top-right sweep, box-shadow lighting
+
+Further direct tweaks: sweep direction reverted back to top-right-to-
+bottom-left (superseding the previous round's top-left change), tile
+density bumped slightly (COLUMNS 4 -> 6), tiles made genuinely square
+regardless of viewport aspect ratio, and lighting added via box-shadow
+rather than a background gradient (explicitly reconfirmed as unwanted).
+
+- **Square tiles**: `ROWS` was a fixed constant before, which only
+  produced square cells if the viewport's aspect ratio happened to match
+  COLUMNS/ROWS. Replaced with a `rows` state value derived at measurement
+  time: `cellPx = innerWidth / COLUMNS`, `rows = ceil(innerHeight /
+  cellPx)`. `buildTiles` now takes `rows` as a parameter and the grid's
+  `gridTemplateColumns`/`gridTemplateRows` use explicit `${cellPx}px`
+  cells instead of `1fr`, so every cell is provably square. The grid's
+  total height can slightly exceed the viewport (rows is a ceil()) --
+  harmless, it's a `fixed inset-0` overlay and the viewport itself clips
+  anything past the bottom edge.
+- **Sweep direction**: `buildTiles` mirrors the column axis again
+  (`x: (COLUMNS - 1 - col) / (COLUMNS - 1)`), restoring the top-right-first
+  diagonal.
+- **Lighting without a gradient**: removed `EDGE_SHADE` (a `linear-
+  gradient` with two identical stops, functionally a gradient background
+  even though it read as flat) entirely. Added `FACE_LIGHT_SHADOW`, a
+  `box-shadow` (inset top highlight + inset bottom shadow, not a
+  background-image) applied to the front and back faces -- gives the
+  tiles a lit/raised look without reintroducing anything the user
+  classified as "a gradient background."
+
+Verification: `npm run build` clean, `npx oxlint src` clean (same
+pre-existing unrelated warnings). Not visually re-confirmed in this
+sandbox (same recurring Browser-pane limitation).
+
+Status: done. Committed with the standing backdated timestamp. Next:
+dispatch an Opus performance-audit agent per explicit request, then
+implement any fixes as Sonnet.

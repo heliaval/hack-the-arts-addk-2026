@@ -19,8 +19,12 @@ import type { GlobeCircle } from '@/components/ui/cobe-globe'
 // LEAD_IN_FORWARD_MS is a starting estimate for that cold-start cost, not
 // a measured value -- if a transparent-hole flash is ever visible on a
 // cold selection, this is the first constant to raise.
-const COLUMNS = 4
-const ROWS = 3
+// ROWS is NOT a constant -- see FALLBACK_ROWS and the layout effect below.
+// Tiles must render square regardless of viewport aspect ratio, so only
+// the column count is fixed; row count is derived at measurement time from
+// the viewport's actual height/width so each cell works out to the same
+// pixel size on both axes.
+const COLUMNS = 6
 const LEAD_IN_FORWARD_MS = 220
 const LEAD_IN_REVERSE_MS = 180
 const TILE_FLIP_MS = 460
@@ -56,35 +60,42 @@ const FLIP_EASING = 'cubic-bezier(0.34, 1.56, 0.64, 1)'
 // that happens (see `phase === 'idle'`), so this value is never actually
 // painted; it just needs to exist as a starting default for useState.
 const FALLBACK_HALF_WIDTH_PX = 90
-// Edge faces are the "shadowed side": a flat darken, no gradient. A plain
-// black overlay rather than a heavier bg-muted/* class, because --muted is
-// LIGHTER than --background in dark mode (see src/index.css) -- raising
-// muted's alpha there would make the rim brighter, backwards from what a
-// shadowed edge should look like. A neutral black layer darkens correctly
-// in both themes. Eyeball-tuned starting point, adjustable later.
-const EDGE_SHADE = 'linear-gradient(oklch(0 0 0 / 12%), oklch(0 0 0 / 12%))'
+// Same reasoning as FALLBACK_HALF_WIDTH_PX -- never actually painted,
+// just a starting default before the first real measurement.
+const FALLBACK_ROWS = 4
+// Physical light cue via box-shadow, NOT a background gradient (a gradient
+// background was tried on the front face and explicitly reverted per
+// request) -- a bright inset line along the top edge and a soft inset
+// shadow along the bottom, like a raised panel catching light from above.
+// Applied to front and back faces so lighting reads on whichever one is
+// currently facing the viewer.
+const FACE_LIGHT_SHADOW = 'inset 0 1px 0 oklch(1 0 0 / 14%), inset 0 -10px 14px -10px oklch(0 0 0 / 35%)'
 
 interface Tile {
   id: string
   delayMs: number
 }
 
-function buildTiles(): Tile[] {
+function buildTiles(rows: number): Tile[] {
   const items: { id: string; x: number; y: number }[] = []
-  for (let row = 0; row < ROWS; row++) {
+  const rowSpan = Math.max(rows - 1, 1)
+  for (let row = 0; row < rows; row++) {
     for (let col = 0; col < COLUMNS; col++) {
       // computeSweepDelays sorts purely by (x + y) -- a top-left-first
-      // diagonal, used as-is (per explicit request for a top-left ->
-      // bottom-right sweep). Coordinates are normalized 0..1 (not raw cell
-      // indices) so the wavefront stays proportionally diagonal regardless
-      // of the grid's column/row counts. Note this is independent of each
-      // tile's own rotation direction (still right-to-left per-tile, via
-      // rotateY below) -- stagger order and individual rotation axis are
-      // separate controls, not the same thing.
+      // diagonal. Mirroring the column axis here turns that same
+      // comparator into a top-right-first diagonal instead (per explicit
+      // request for a top-right -> bottom-left sweep), with zero changes
+      // to the shared util or its other (perf-sensitive) callers in
+      // GlobeView/cobe-globe. Coordinates are normalized 0..1 (not raw
+      // cell indices) so the wavefront stays proportionally diagonal
+      // regardless of the grid's column/row counts. This is independent
+      // of each tile's own rotation direction (still right-to-left
+      // per-tile, via rotateY below) -- stagger order and individual
+      // rotation axis are separate controls, not the same thing.
       items.push({
         id: `${row}-${col}`,
-        x: col / (COLUMNS - 1),
-        y: row / (ROWS - 1),
+        x: (COLUMNS - 1 - col) / (COLUMNS - 1),
+        y: row / rowSpan,
       })
     }
   }
@@ -110,7 +121,12 @@ interface TileTransitionProps {
 type Phase = 'idle' | 'covering' | 'revealing' | 'fadingOut'
 
 export function TileTransition({ active, circle }: TileTransitionProps) {
-  const tiles = useMemo(buildTiles, [])
+  // Row count is derived from the viewport, not fixed -- see the layout
+  // effect below, which sets this alongside halfWidthPx so both stay in
+  // sync (rows changing without a matching halfWidthPx update, or vice
+  // versa, would make cells non-square).
+  const [rows, setRows] = useState(FALLBACK_ROWS)
+  const tiles = useMemo(() => buildTiles(rows), [rows])
   const maxDelayMs = useMemo(() => Math.max(...tiles.map((t) => t.delayMs)), [tiles])
 
   const [phase, setPhase] = useState<Phase>('idle')
@@ -120,7 +136,10 @@ export function TileTransition({ active, circle }: TileTransitionProps) {
   // actually meet at a shared edge (a visible slit/overlap at every
   // tile's leading corner). Measured fresh at the start of each cycle
   // rather than tracked via ResizeObserver, since the overlay only exists
-  // for ~1.1s and a mid-transition resize isn't worth handling.
+  // for ~1.1s and a mid-transition resize isn't worth handling. Cell width
+  // == cell height (tiles are square), so this same value also derives
+  // `rows` below -- there's only one "tile size" now, not independent
+  // width/height knobs.
   const [halfWidthPx, setHalfWidthPx] = useState(FALLBACK_HALF_WIDTH_PX)
   const prevActiveRef = useRef(active)
   // Latest `phase`, read (not depended on) inside the layout effect below
@@ -142,7 +161,9 @@ export function TileTransition({ active, circle }: TileTransitionProps) {
     const wasMidFlight = phaseRef.current !== 'idle'
     prevActiveRef.current = active
     setRetriggered(wasMidFlight)
-    setHalfWidthPx(window.innerWidth / COLUMNS / 2)
+    const cellPx = window.innerWidth / COLUMNS
+    setHalfWidthPx(cellPx / 2)
+    setRows(Math.max(1, Math.ceil(window.innerHeight / cellPx)))
     setPhase('covering')
     const leadIn = wasMidFlight ? RETRIGGER_COVER_MS : forward ? LEAD_IN_FORWARD_MS : LEAD_IN_REVERSE_MS
     const t1 = window.setTimeout(() => setPhase('revealing'), leadIn)
@@ -201,8 +222,19 @@ export function TileTransition({ active, circle }: TileTransitionProps) {
       aria-hidden="true"
       className="fixed inset-0 z-40 grid border-l border-t border-border transition-opacity ease-out"
       style={{
-        gridTemplateColumns: `repeat(${COLUMNS}, 1fr)`,
-        gridTemplateRows: `repeat(${ROWS}, 1fr)`,
+        // Explicit px cells, not 1fr -- 1fr stretches each cell to fill the
+        // container's exact width/COLUMNS x height/ROWS box, which only
+        // happens to be square if the viewport's own aspect ratio matches
+        // COLUMNS/ROWS. Since `rows` is now derived FROM halfWidthPx*2 to
+        // guarantee square cells (see the layout effect), the grid must
+        // actually be sized in those same px terms, not left to stretch.
+        // The grid's own total height (rows * cellPx) can slightly exceed
+        // the viewport height by design (ROWS is a ceil()) -- harmless,
+        // since this is a `fixed inset-0` viewport-covering overlay and
+        // anything past the bottom edge is naturally clipped by the
+        // viewport itself.
+        gridTemplateColumns: `repeat(${COLUMNS}, ${halfWidthPx * 2}px)`,
+        gridTemplateRows: `repeat(${rows}, ${halfWidthPx * 2}px)`,
         opacity: phase === 'fadingOut' ? 0 : 1,
         transitionDuration: `${FADE_OUT_MS}ms`,
         maskImage,
@@ -284,7 +316,11 @@ export function TileTransition({ active, circle }: TileTransitionProps) {
                   get thrown away. */}
               <div
                 className="absolute inset-0 border-r border-b border-border bg-muted/55"
-                style={{ backfaceVisibility: 'hidden', transform: `translateZ(${halfWidthPx}px)` }}
+                style={{
+                  backfaceVisibility: 'hidden',
+                  transform: `translateZ(${halfWidthPx}px)`,
+                  boxShadow: FACE_LIGHT_SHADOW,
+                }}
               />
               {/* Back face: briefly visible as the tile turns, settles
                   facing the viewer once the flip completes -- still a
@@ -310,6 +346,7 @@ export function TileTransition({ active, circle }: TileTransitionProps) {
                 style={{
                   backfaceVisibility: 'hidden',
                   transform: `rotateY(-90deg) translateZ(${halfWidthPx}px)`,
+                  boxShadow: FACE_LIGHT_SHADOW,
                 }}
               />
               {/* Edge faces -- the rim of the same rigid assembly (inside
@@ -339,7 +376,6 @@ export function TileTransition({ active, circle }: TileTransitionProps) {
                   width: `${halfWidthPx * 2}px`,
                   backfaceVisibility: 'hidden',
                   transform: `rotateY(90deg) translateZ(${halfWidthPx}px)`,
-                  backgroundImage: EDGE_SHADE,
                 }}
               />
               <div
@@ -350,7 +386,6 @@ export function TileTransition({ active, circle }: TileTransitionProps) {
                   width: `${halfWidthPx * 2}px`,
                   backfaceVisibility: 'hidden',
                   transform: `rotateY(90deg) translateZ(-${halfWidthPx}px)`,
-                  backgroundImage: EDGE_SHADE,
                 }}
               />
             </div>
