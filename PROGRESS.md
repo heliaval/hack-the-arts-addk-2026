@@ -3024,3 +3024,44 @@ geometry directly via the Node script described above instead.
 
 Status: done, pending live visual confirmation. Commit backdated to
 2026-07-31T19:00:00 per standing instruction.
+
+## 2026-08-04 (continued) — GlobeRain: deeper/varied red + fade-out near bottom [inline]
+
+User asked for three tweaks to the new teardrop rain: deeper red, slight
+per-drop color variation, and a disappearing effect.
+
+- **Deeper red**: `resolveRainColors()` now mixes `--accent` toward a fixed
+  dark blood-red anchor (`mixHex(accent, '#4a0e14', 0.4)`) before deriving
+  body/highlight colors, instead of using the raw accent — dark mode's
+  accent (`#c17b8a`) in particular reads as a light pink, not a rain-drop
+  red. Also bumped each tier's `bodyAlpha` up (0.42/0.3/0.2 ->
+  0.55/0.42/0.3) for a richer, less washed-out fill.
+- **Per-drop variation**: new `colorVariant` field on `Drop` (one of 3
+  discrete shades: darker/base/lighter, `COLOR_VARIANT_OFFSETS`), assigned
+  randomly at creation like `depth` already was. Kept as 3 DISCRETE steps
+  rather than a continuous per-drop mix specifically so drops can still be
+  grouped and batched — now by `(depth tier, colorVariant)`, 9 buckets
+  instead of 3, each still getting one fill/stroke/fill per style (27 draw
+  calls total instead of 9, still trivial next to the original 260-per-drop
+  baseline).
+- **Disappearing effect**: new `dropFadeAlpha()` — alpha ramps from 1 to 0
+  over the last `FADE_ZONE_PX` (90) pixels before the visible bottom edge,
+  reaching exactly 0 right at `viewportHeight` (verified via a standalone
+  Node check: alpha=1 through y=710 on an 800px-tall viewport, 0.5 at
+  y=755, 0.0 at y=800 and beyond). Previously a drop's disappearance had NO
+  visible cue at all — it just kept falling at full opacity until silently
+  recycled `RESPAWN_MARGIN_PX` further down, already off-screen. Drops
+  inside the fade zone are pulled out of the batched draw path (can't vary
+  `ctx.globalAlpha` per subpath within one shared fill()/stroke() call) and
+  drawn individually via `drawSingleFadingDrop` instead — bounded to
+  whatever small number of the 130 drops happen to be in that 90px band at
+  once, not a per-frame cost concern.
+
+Build/`oxlint` clean (6 pre-existing only-export-components warnings, one
+more than before from the new exported `dropFadeAlpha` — same harmless
+class as the rest). Could not visually confirm in this sandbox (same
+`document.hidden`/frozen-rAF limitation as prior GlobeRain entries) —
+verified the fade math directly instead, as above.
+
+Status: done, pending live visual confirmation. Commit backdated to
+2026-07-31T19:00:00 per standing instruction.
